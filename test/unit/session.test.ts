@@ -4,7 +4,7 @@ import { CcuError } from "../../src/middleware/error-mapper.js";
 import { Logger } from "../../src/logger.js";
 
 const logger = new Logger("error");
-const baseConfig = { host: "test", port: 80, https: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 30000 };
+const baseConfig = { host: "test", port: 80, https: false, tlsVerify: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 30000 };
 
 function createMockClient() {
   return { call: vi.fn() };
@@ -27,6 +27,48 @@ describe("SessionManager", () => {
       const session = createSession(client);
       await session.login();
       expect(session.getSessionId()).toBe("sess-abc");
+      session.destroy();
+    });
+
+    // Regression: concurrent logins stampeded Session.login → "too many sessions" (issue #2)
+    it("coalesces concurrent logins into a single Session.login", async () => {
+      const client = createMockClient();
+      let resolveLogin!: (v: string) => void;
+      client.call.mockImplementation(async (method: string) => {
+        if (method === "Session.login") return new Promise((r) => { resolveLogin = r; });
+        return true;
+      });
+
+      const session = createSession(client);
+      // Skip the fs-based restore so doLogin reaches Session.login without real I/O
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+      const p1 = session.login();
+      const p2 = session.login();
+      await vi.advanceTimersByTimeAsync(0); // flush microtasks so doLogin reaches Session.login
+      resolveLogin("sess-shared");
+      await Promise.all([p1, p2]);
+
+      const loginCalls = client.call.mock.calls.filter((c) => c[0] === "Session.login");
+      expect(loginCalls.length).toBe(1);
+      expect(session.getSessionId()).toBe("sess-shared");
+      session.destroy();
+    });
+
+    it("allows a fresh login after the previous one completed", async () => {
+      const client = createMockClient();
+      client.call.mockResolvedValue("sess-1");
+      const session = createSession(client);
+      await session.login();
+
+      client.call.mockClear();
+      client.call.mockImplementation(async (method: string) => {
+        if (method === "Session.login") return "sess-2";
+        throw new Error("renew fail"); // force restore to fail so doLogin does a fresh login
+      });
+      await (session as any).clearPersistedSession();
+      await session.login();
+
+      expect(session.getSessionId()).toBe("sess-2");
       session.destroy();
     });
 

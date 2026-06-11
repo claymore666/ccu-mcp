@@ -72,6 +72,49 @@ describe("set_value handler", () => {
   });
 });
 
+describe("set_system_variable handler", () => {
+  // Regression: missing variables silently fell back to SysVar.setBool (issue #9)
+  it("returns NOT_FOUND error when the variable does not exist", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValueOnce([{ name: "Anwesenheit", type: "BOOL" }]), // SysVar.getAll
+    });
+
+    const result: any = await callTool(server, "set_system_variable", { name: "DoesNotExist", value: true });
+
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe("NOT_FOUND");
+    expect(parsed.message).toContain("DoesNotExist");
+    cleanupDeps(deps);
+  });
+
+  it("returns INVALID_INPUT error for unsupported variable types", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValueOnce([{ name: "Weird", type: "TIMESTAMP" }]), // SysVar.getAll
+    });
+
+    const result: any = await callTool(server, "set_system_variable", { name: "Weird", value: "x" });
+
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+
+  it("uses SysVar.setBool for bool variables", async () => {
+    const sessionCall = vi.fn()
+      .mockResolvedValueOnce([{ name: "Anwesenheit", type: "BOOL" }]) // SysVar.getAll
+      .mockResolvedValueOnce(true);                                    // SysVar.setBool
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true }));
+
+    expect((result as any).method).toBe("SysVar.setBool");
+    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: true });
+    cleanupDeps(deps);
+  });
+});
+
 describe("execute_program handler", () => {
   it("calls Program.execute and returns success", async () => {
     const sessionCall = vi.fn().mockResolvedValue(true);

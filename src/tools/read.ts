@@ -115,17 +115,25 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
 }
 
 // Helper HM Script fragment: write channel datapoints as JSON object
-// Quote all values as JSON strings for safety — empty values, special chars, enums all handled
+// Quote all values as JSON strings for safety — empty values, special chars, enums all handled.
+// Names and values are JSON-escaped (backslash first, then quote) since channel names and
+// STRING datapoints are user-controlled; addresses and HssType are CCU identifiers and safe.
 const WRITE_CHANNEL_DPS = `
           if (!first) { Write(","); } first = false;
-          Write('{"address":"' # ch.Address() # '","name":"' # ch.Name() # '","datapoints":{');
+          string chNameEsc = ch.Name();
+          chNameEsc = chNameEsc.Replace("\\\\", "\\\\\\\\");
+          chNameEsc = chNameEsc.Replace("\\"", "\\\\\\"");
+          Write('{"address":"' # ch.Address() # '","name":"' # chNameEsc # '","datapoints":{');
           boolean firstDp = true;
           string dpId;
           foreach(dpId, ch.DPs()) {
             object dp = dom.GetObject(dpId);
             if (dp) {
               if (!firstDp) { Write(","); } firstDp = false;
-              Write('"' # dp.HssType() # '":"' # dp.Value() # '"');
+              string dpValEsc = "" # dp.Value();
+              dpValEsc = dpValEsc.Replace("\\\\", "\\\\\\\\");
+              dpValEsc = dpValEsc.Replace("\\"", "\\\\\\"");
+              Write('"' # dp.HssType() # '":"' # dpValEsc # '"');
             }
           }
           Write("}}");

@@ -54,6 +54,15 @@ describe("resolveAuthToken", () => {
     expect(token).toBe("override-token");
   });
 
+  // Regression: trailing \r from CRLF line endings was kept in the token (issue #13)
+  it("trims trailing CR when .env has CRLF line endings", async () => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(tempDir, ".env"), "MCP_AUTH_TOKEN=crlf-token\r\n", "utf-8");
+
+    const token = await resolveAuthToken(undefined, tempDir, logger);
+    expect(token).toBe("crlf-token");
+  });
+
   it("generates base64url token (no padding, URL-safe)", async () => {
     const token = await resolveAuthToken(undefined, tempDir, logger);
     // base64url uses only [A-Za-z0-9_-], no = padding

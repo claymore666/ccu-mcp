@@ -147,6 +147,8 @@ export interface CcuConfig {
   host: string;
   port: number;
   https: boolean;
+  /** Verify the CCU's TLS certificate. Off by default: CCUs ship self-signed certs. */
+  tlsVerify: boolean;
   user: string;
   password: string;
   timeout: number;

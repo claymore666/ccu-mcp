@@ -18,7 +18,7 @@ export class CcuClient {
 
     if (config.https) {
       this.dispatcher = new Agent({
-        connect: { rejectUnauthorized: false },
+        connect: { rejectUnauthorized: config.tlsVerify },
         pipelining: 0,
         keepAliveTimeout: 1000,
       });
@@ -40,17 +40,22 @@ export class CcuClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
-      const httpResponse = await undiciFetch(this.baseUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-        signal: controller.signal,
-        dispatcher: this.dispatcher,
-      });
+      let text: string;
+      try {
+        const httpResponse = await undiciFetch(this.baseUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+          signal: controller.signal,
+          dispatcher: this.dispatcher,
+        });
 
-      clearTimeout(timer);
-
-      const text = await httpResponse.text();
+        // The abort signal also covers the body read, so the timeout
+        // applies to the full request, not just the response headers.
+        text = await httpResponse.text();
+      } finally {
+        clearTimeout(timer);
+      }
 
       try {
         response = JSON.parse(text) as CcuRpcResponse;

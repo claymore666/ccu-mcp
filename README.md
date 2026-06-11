@@ -136,7 +136,7 @@ CCU_HTTPS=true
 CCU_PORT=443
 ```
 
-The server accepts self-signed certificates automatically.
+The server accepts self-signed certificates automatically — certificate verification is **off by default** because CCUs ship with self-signed certs. If your CCU has a proper certificate, enable verification with `CCU_TLS_VERIFY=true`.
 
 ## Configuration
 
@@ -149,6 +149,7 @@ All configuration is via environment variables:
 | `CCU_USER` | `Admin` | CCU username |
 | `CCU_PORT` | `80` | API port (`443` when using HTTPS) |
 | `CCU_HTTPS` | `false` | Connect via HTTPS (self-signed certs supported) |
+| `CCU_TLS_VERIFY` | `false` | Verify the CCU's TLS certificate (enable if you have a proper cert) |
 | `CCU_TIMEOUT` | `10000` | CCU request timeout in milliseconds |
 | `CCU_SCRIPT_TIMEOUT` | `30000` | HM Script execution timeout in milliseconds |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |

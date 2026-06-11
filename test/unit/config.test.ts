@@ -24,6 +24,7 @@ describe("loadConfig", () => {
     delete process.env.RESOURCE_POLL_INTERVAL;
     delete process.env.CCU_TIMEOUT;
     delete process.env.CCU_SCRIPT_TIMEOUT;
+    delete process.env.CCU_TLS_VERIFY;
     delete process.env.LOG_LEVEL;
   });
 
@@ -131,5 +132,30 @@ describe("loadConfig", () => {
     expect(config.resourcePollInterval).toBe(120);
     expect(config.ccu.timeout).toBe(5000);
     expect(config.ccu.scriptTimeout).toBe(60000);
+  });
+
+  // Regression: zero/negative values were accepted (issue #14)
+  it("rejects zero and negative numeric env vars", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+
+    process.env.CCU_TIMEOUT = "0";
+    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive number/);
+
+    process.env.CCU_TIMEOUT = "-5000";
+    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive number/);
+    delete process.env.CCU_TIMEOUT;
+
+    process.env.RESOURCE_POLL_INTERVAL = "-60";
+    expect(() => loadConfig()).toThrow(/RESOURCE_POLL_INTERVAL must be a positive number/);
+  });
+
+  it("parses CCU_TLS_VERIFY (default off)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    expect(loadConfig().ccu.tlsVerify).toBe(false);
+
+    process.env.CCU_TLS_VERIFY = "true";
+    expect(loadConfig().ccu.tlsVerify).toBe(true);
   });
 });

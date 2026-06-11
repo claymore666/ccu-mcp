@@ -11,6 +11,15 @@ describe("buildGetValuesScript", () => {
     expect(script).toContain("ch.DPs()");
   });
 
+  // Regression: names/values were interpolated into JSON unescaped (issue #3)
+  it("JSON-escapes channel names and datapoint values in the script", () => {
+    const script = buildGetValuesScript('",addr1:1,"', "addresses");
+    expect(script).toContain('chNameEsc.Replace("\\\\", "\\\\\\\\")');
+    expect(script).toContain('chNameEsc.Replace("\\"", "\\\\\\"")');
+    expect(script).toContain('dpValEsc.Replace("\\\\", "\\\\\\\\")');
+    expect(script).toContain('dpValEsc.Replace("\\"", "\\\\\\"")');
+  });
+
   it("generates room-based script", () => {
     const script = buildGetValuesScript('"Wohnzimmer"', "room");
     expect(script).toContain("ID_ROOMS");

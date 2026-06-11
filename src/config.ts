@@ -37,7 +37,9 @@ export function loadConfig(): AppConfig {
 
   const parseIntEnv = (name: string, fallback: string): number => {
     const val = parseInt(process.env[name] || fallback, 10);
-    if (isNaN(val)) throw new Error(`${name} must be a number, got: "${process.env[name]}"`);
+    if (isNaN(val) || val <= 0) {
+      throw new Error(`${name} must be a positive number, got: "${process.env[name]}"`);
+    }
     return val;
   };
 
@@ -46,6 +48,7 @@ export function loadConfig(): AppConfig {
       host,
       port: parseIntEnv("CCU_PORT", process.env.CCU_HTTPS === "true" ? "443" : "80"),
       https: process.env.CCU_HTTPS === "true",
+      tlsVerify: process.env.CCU_TLS_VERIFY === "true",
       user: process.env.CCU_USER || "Admin",
       password,
       timeout: parseIntEnv("CCU_TIMEOUT", "10000"),

@@ -23,7 +23,8 @@ export async function resolveAuthToken(
     const match = content.match(/^MCP_AUTH_TOKEN=(.+)$/m);
     if (match?.[1]) {
       logger.info("auth_token_from_file");
-      return match[1];
+      // trim: tolerate trailing \r if the file was edited with CRLF line endings
+      return match[1].trim();
     }
   } catch {
     // File doesn't exist — will generate
@@ -35,7 +36,8 @@ export async function resolveAuthToken(
   try {
     await mkdir(dataDir, { recursive: true });
     const tmpPath = envPath + ".tmp";
-    await writeFile(tmpPath, `MCP_AUTH_TOKEN=${token}\n`, "utf-8");
+    // 0600: file contains the bearer token for the HTTP transport
+    await writeFile(tmpPath, `MCP_AUTH_TOKEN=${token}\n`, { encoding: "utf-8", mode: 0o600 });
     await rename(tmpPath, envPath);
     logger.info("auth_token_generated");
     // Log to stderr so user can copy it

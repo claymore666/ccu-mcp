@@ -28,14 +28,18 @@ export function tryParseJson(text: string): unknown {
  * Parse a CCU string value to a native JS type.
  * "19.000000" → 19, "true" → true, "false" → false, "" → null, else string.
  */
+// Plain decimal notation only. Rejects formats Number() would also accept but
+// that lose information on round-trip: leading zeros ("0123"), sign prefix
+// ("+49170..."), hex ("0x1A"), exponent ("1e5"), and "Infinity".
+const DECIMAL_RE = /^-?(0|[1-9]\d*)(\.\d+)?$/;
+
 export function parseValue(val: unknown): unknown {
   if (val === null || val === undefined) return null;
   const s = String(val);
   if (s === "") return null;
   if (s === "true") return true;
   if (s === "false") return false;
-  const n = Number(s);
-  if (!isNaN(n) && s.trim() !== "") return n;
+  if (DECIMAL_RE.test(s)) return Number(s);
   return s;
 }
 

@@ -97,7 +97,8 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
       inputSchema: {
         address: z.string().describe("Channel address"),
         paramsetKey: z.enum(["VALUES", "MASTER"]).describe("Paramset to write"),
-        set: z.record(z.string(), z.unknown()).describe("Key-value pairs to write (e.g. {TEMPERATURE_WINDOW_OPEN: 5.0})"),
+        set: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .describe("Key-value pairs to write (e.g. {TEMPERATURE_WINDOW_OPEN: 5.0})"),
         interface: z.string().optional().describe("Interface name override"),
       },
       annotations: {
@@ -198,14 +199,21 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
             return toolResult({ name: args.name, value: args.value, method: "ReGa.runScript (string)" });
           } else {
             logger.warn("sysvar_unknown_type", { name: args.name, type: sysVar.type });
-            method = "SysVar.setBool"; // Last resort fallback
+            throw new CcuError({
+              error: "INVALID_INPUT",
+              code: 0,
+              message: `System variable "${args.name}" has unsupported type: ${sysVar.type}`,
+              hint: "Supported types are bool/alarm, float/integer, enum/list, and string.",
+            });
           }
         } else {
-          // Variable not found — fall back to type inference from value
           logger.warn("sysvar_not_found", { name: args.name });
-          method = typeof args.value === "boolean" ? "SysVar.setBool"
-            : typeof args.value === "number" ? "SysVar.setFloat"
-            : "SysVar.setBool";
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: `System variable not found: ${args.name}`,
+            hint: "Call list_system_variables to see available variables (name must match exactly).",
+          });
         }
 
         await rateLimiter.acquire();

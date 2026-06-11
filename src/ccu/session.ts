@@ -17,6 +17,7 @@ export class SessionManager {
   private readonly cacheDir: string;
   private sessionId: string | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
+  private loginPromise: Promise<void> | null = null;
 
   constructor(config: CcuConfig, logger: Logger, cacheDir?: string) {
     this.config = config;
@@ -25,7 +26,20 @@ export class SessionManager {
     this.cacheDir = cacheDir || "/tmp";
   }
 
+  /**
+   * Single-flight: concurrent callers (parallel tool calls hitting AUTH,
+   * the renewal timer) share one login instead of stampeding Session.login,
+   * which is what drives the CCU into "too many sessions".
+   */
   async login(): Promise<void> {
+    if (this.loginPromise) return this.loginPromise;
+    this.loginPromise = this.doLogin().finally(() => {
+      this.loginPromise = null;
+    });
+    return this.loginPromise;
+  }
+
+  private async doLogin(): Promise<void> {
     // Try to reuse a persisted session first
     const restored = await this.tryRestoreSession();
     if (restored) return;
@@ -141,7 +155,8 @@ export class SessionManager {
         port: this.config.port,
         timestamp: new Date().toISOString(),
       });
-      await writeFile(tmpPath, data, "utf-8");
+      // 0600: the session ID grants full admin access to the CCU
+      await writeFile(tmpPath, data, { encoding: "utf-8", mode: 0o600 });
       await rename(tmpPath, filePath);
     } catch {
       // Best effort — don't fail if we can't persist

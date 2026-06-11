@@ -56,6 +56,11 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
                     }
                   }
                 }
+                ! JSON-escape user-controlled names (backslash first, then quote)
+                chName = chName.Replace("\\\\", "\\\\\\\\");
+                chName = chName.Replace("\\"", "\\\\\\"");
+                dpName = dpName.Replace("\\\\", "\\\\\\\\");
+                dpName = dpName.Replace("\\"", "\\\\\\"");
                 Write('{"id":"' # sId # '"');
                 Write(',"type":"' # dpName # '"');
                 Write(',"address":"' # chAddr # '"');
