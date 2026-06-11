@@ -58,3 +58,16 @@ describe("run_script handler", () => {
     cleanupDeps(deps);
   });
 });
+
+describe("run_script error paths (coverage round)", () => {
+  it("maps CcuError to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "TIMEOUT", code: 0, message: "slow script", hint: "" })),
+    });
+    const result: any = await callTool(server, "run_script", { script: "Write(1);" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("TIMEOUT");
+    cleanupDeps(deps);
+  });
+});

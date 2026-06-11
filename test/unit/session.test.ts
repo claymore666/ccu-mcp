@@ -243,3 +243,141 @@ describe("SessionManager", () => {
     });
   });
 });
+
+describe("session persistence and restore (coverage round)", () => {
+  let dir: string;
+  beforeEach(async () => {
+    vi.useRealTimers();
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    dir = await mkdtemp(join(tmpdir(), "debmatic-session-test-"));
+  });
+  afterEach(async () => {
+    const { rm } = await import("node:fs/promises");
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  async function writeSessionFile(data: Record<string, unknown>) {
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    await writeFile(join(dir, "session.json"), JSON.stringify(data), "utf-8");
+  }
+
+  function createSessionWithDir(client: ReturnType<typeof createMockClient>) {
+    const session = new SessionManager(baseConfig, logger, dir);
+    (session as any).client = client;
+    return session;
+  }
+
+  it("restores a persisted session when host, port, and user match", async () => {
+    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin" });
+    const client = createMockClient();
+    client.call.mockResolvedValue(true); // Session.renew
+    const session = createSessionWithDir(client);
+
+    await session.login();
+
+    expect(session.getSessionId()).toBe("persisted");
+    expect(client.call).not.toHaveBeenCalledWith("Session.login", expect.anything());
+    session.destroy();
+  });
+
+  // Regression: restore used to ignore the user (round-5 I-1)
+  it("ignores a persisted session belonging to a different user", async () => {
+    await writeSessionFile({ sessionId: "other-users", host: "test", port: 80, user: "SomeoneElse" });
+    const client = createMockClient();
+    client.call.mockImplementation(async (method: string) =>
+      method === "Session.login" ? "fresh" : true);
+    const session = createSessionWithDir(client);
+
+    await session.login();
+
+    expect(session.getSessionId()).toBe("fresh");
+    expect(client.call).not.toHaveBeenCalledWith("Session.renew", expect.anything());
+    session.destroy();
+  });
+
+  it("falls back to fresh login when the persisted session fails to renew", async () => {
+    await writeSessionFile({ sessionId: "expired", host: "test", port: 80, user: "Admin" });
+    const client = createMockClient();
+    client.call.mockImplementation(async (method: string) => {
+      if (method === "Session.renew") throw new Error("expired");
+      if (method === "Session.login") return "fresh";
+      return true;
+    });
+    const session = createSessionWithDir(client);
+
+    await session.login();
+    expect(session.getSessionId()).toBe("fresh");
+    session.destroy();
+  });
+
+  // Regression: session file used to be world-readable (round-5 W-2)
+  it("persists the session with mode 0600 and removes it on logout", async () => {
+    const client = createMockClient();
+    client.call.mockResolvedValue("sess-1");
+    const session = createSessionWithDir(client);
+    await session.login();
+
+    const { stat } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const file = join(dir, "session.json");
+    const st = await stat(file);
+    expect(st.mode & 0o777).toBe(0o600);
+
+    await session.logout();
+    await expect(stat(file)).rejects.toThrow();
+    session.destroy();
+  });
+
+  it("retries login on 'too many sessions' and succeeds", async () => {
+    vi.useFakeTimers();
+    const client = createMockClient();
+    let attempts = 0;
+    client.call.mockImplementation(async (method: string) => {
+      if (method === "Session.login") {
+        attempts++;
+        if (attempts === 1) {
+          throw new CcuError({ error: "AUTH", code: 400, message: "too many sessions", hint: "" });
+        }
+        return "second-try";
+      }
+      return true;
+    });
+    const session = createSessionWithDir(client);
+    // Skip the fs-based restore so the retry timer is scheduled deterministically
+    vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+
+    const login = session.login();
+    await vi.advanceTimersByTimeAsync(0); // first attempt fails, retry timer armed
+    await vi.advanceTimersByTimeAsync(3_500); // fire the 3s retry delay
+    await login;
+
+    expect(session.getSessionId()).toBe("second-try");
+    expect(attempts).toBe(2);
+    session.destroy();
+    vi.useRealTimers();
+  });
+});
+
+describe("renewal double failure (coverage round)", () => {
+  it("logs and survives when renewal and re-login both fail", async () => {
+    vi.useFakeTimers();
+    const client = createMockClient();
+    client.call.mockResolvedValueOnce("sess-1"); // initial login
+    const session = new SessionManager(baseConfig, logger, "/tmp/nonexistent-session-test-renewfail");
+    (session as any).client = client;
+    await session.login();
+
+    client.call.mockRejectedValue(new Error("everything is down"));
+    vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+
+    await vi.advanceTimersByTimeAsync(60_000); // renew fails
+    await vi.advanceTimersByTimeAsync(15_000); // login retries exhaust without throwing out of the timer
+
+    expect(session.isLoggedIn()).toBe(true); // old session id kept; no crash
+    session.destroy();
+    vi.useRealTimers();
+  });
+});

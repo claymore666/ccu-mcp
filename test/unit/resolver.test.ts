@@ -160,3 +160,15 @@ describe("Resolver", () => {
     });
   });
 });
+
+describe("resolveInterface failure (coverage round)", () => {
+  it("throws NOT_FOUND when the address is unknown even after refresh", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const resolver = new Resolver();
+    const session = { call: async () => mockDevices } as any;
+    const rateLimiter = { acquire: async () => {} } as any;
+
+    await expect(resolver.resolveInterface("DOES-NOT-EXIST:1", session, rateLimiter, logger))
+      .rejects.toSatisfy((e: unknown) => e instanceof CcuError && (e as any).structured.error === "NOT_FOUND");
+  });
+});

@@ -269,12 +269,31 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
+        // The CCU's Program.execute reports success even for nonexistent IDs
+        // (issue #18) — validate against the program list first.
+        await rateLimiter.acquire();
+        const programs = await withRetry(
+          () => session.call("Program.getAll"),
+          "Program.getAll",
+          logger,
+        ) as Array<{ id: string; name: string }>;
+
+        const program = programs.find((p) => String(p.id) === args.id);
+        if (!program) {
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: `Program not found: ${args.id}`,
+            hint: "Call list_programs to see available programs and their IDs.",
+          });
+        }
+
         await rateLimiter.acquire();
         // No retry — Program.execute is not idempotent
         await session.call("Program.execute", { id: args.id });
 
         logger.info("tool_call", { tool: "execute_program", duration_ms: Date.now() - start, status: "ok" });
-        return toolResult({ id: args.id, executed: true });
+        return toolResult({ id: args.id, name: program.name, executed: true });
       } catch (err) {
         logger.info("tool_call", { tool: "execute_program", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();

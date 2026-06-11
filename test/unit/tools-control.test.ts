@@ -138,6 +138,34 @@ describe("set_system_variable handler", () => {
     cleanupDeps(deps);
   });
 
+  it("uses ReGa.runScript for string variables, with escaping", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Notiz", type: "STRING" }];
+      return "";
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Notiz", value: 'say "hi" #1' }));
+
+    expect((result as any).method).toBe("ReGa.runScript (string)");
+    const scriptCall = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "ReGa.runScript");
+    const script = (scriptCall![1] as { script: string }).script;
+    expect(script).toContain('say \\"hi\\" #1'); // quotes escaped, # untouched (issue #16)
+    cleanupDeps(deps);
+  });
+
+  it("uses SysVar.setFloat for enum variables", async () => {
+    const sessionCall = vi.fn()
+      .mockResolvedValueOnce([{ name: "Modus", type: "ENUM" }])
+      .mockResolvedValueOnce(true);
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Modus", value: 2 }));
+
+    expect((result as any).method).toBe("SysVar.setFloat");
+    cleanupDeps(deps);
+  });
+
   it("uses SysVar.setBool for bool variables", async () => {
     const sessionCall = vi.fn()
       .mockResolvedValueOnce([{ name: "Anwesenheit", type: "BOOL" }]) // SysVar.getAll
@@ -153,14 +181,98 @@ describe("set_system_variable handler", () => {
 });
 
 describe("execute_program handler", () => {
-  it("calls Program.execute and returns success", async () => {
-    const sessionCall = vi.fn().mockResolvedValue(true);
+  const programList = [{ id: "123", name: "Morgenroutine" }];
+
+  it("validates the ID and calls Program.execute", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "Program.getAll") return programList;
+      return true;
+    });
     const { server, deps } = createTestServer({ sessionCall });
 
     const result = parseToolResult(await callTool(server, "execute_program", { id: "123" }));
 
     expect((result as any).executed).toBe(true);
+    expect((result as any).name).toBe("Morgenroutine");
     expect(sessionCall).toHaveBeenCalledWith("Program.execute", expect.objectContaining({ id: "123" }));
+    cleanupDeps(deps);
+  });
+
+  // Regression: the CCU reports executed:true even for nonexistent IDs (issue #18)
+  it("returns NOT_FOUND for nonexistent program IDs without executing", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "Program.getAll") return programList;
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result: any = await callTool(server, "execute_program", { id: "999999999" });
+
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toBe("NOT_FOUND");
+    expect(sessionCall).not.toHaveBeenCalledWith("Program.execute", expect.anything());
+    cleanupDeps(deps);
+  });
+});
+
+describe("remaining error paths (coverage round)", () => {
+  it("set_value maps CcuError to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "INVALID_INPUT", code: 505, message: "bad key", hint: "" })),
+    });
+    const result: any = await callTool(server, "set_value", { address: "AAA:1", valueKey: "NOPE", value: 1, interface: "HmIP-RF" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+
+  it("set_value rethrows non-CcuError failures", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new Error("boom")),
+    });
+    await expect(callTool(server, "set_value", { address: "AAA:1", valueKey: "STATE", value: true, interface: "HmIP-RF" }))
+      .rejects.toThrow("boom");
+    cleanupDeps(deps);
+  });
+
+  it("put_paramset resolves types from the device type cache", async () => {
+    const sessionCall = vi.fn().mockResolvedValue(true);
+    const { server, deps } = createTestServer({ sessionCall });
+    deps.resolver.updateDeviceList([
+      { id: "1", name: "T", address: "AAA", interface: "HmIP-RF", type: "HmIP-eTRV-2", operateGroupOnly: "false", isReady: "true", channels: [] },
+    ] as any);
+    (deps.deviceTypeCache as any).cache.set("HmIP-eTRV-2", {
+      interface: "HmIP-RF",
+      channels: { "1": { type: "HEATING", paramsets: { VALUES: { SET_POINT_TEMPERATURE: { type: "FLOAT", operations: 7 } } } } },
+    });
+
+    await callTool(server, "put_paramset", { address: "AAA:1", paramsetKey: "VALUES", set: { SET_POINT_TEMPERATURE: 21.5 }, interface: "HmIP-RF" });
+
+    const call = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "Interface.putParamset");
+    expect((call![1] as any).set).toEqual([{ name: "SET_POINT_TEMPERATURE", type: "double", value: "21.5" }]);
+    cleanupDeps(deps);
+  });
+
+  it("put_paramset maps CcuError to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "NOT_FOUND", code: 502, message: "no channel", hint: "" })),
+    });
+    const result: any = await callTool(server, "put_paramset", { address: "XXX:1", paramsetKey: "VALUES", set: { A: 1 }, interface: "HmIP-RF" });
+    expect(result.isError).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("set_system_variable surfaces SysVar.getAll failures as structured errors", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "UNREACHABLE", code: 0, message: "down", hint: "" })),
+    });
+    const result: any = await callTool(server, "set_system_variable", { name: "X", value: 1 });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("UNREACHABLE");
     cleanupDeps(deps);
   });
 });

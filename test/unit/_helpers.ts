@@ -47,6 +47,20 @@ export async function callTool(server: McpServer, toolName: string, args: Record
   return tool.handler(args);
 }
 
+export async function readResource(server: McpServer, uri: string) {
+  const resources = (server as any)._registeredResources as Record<string, { readCallback: (uri: URL, extra: unknown) => Promise<unknown> }>;
+  const resource = resources[uri];
+  if (!resource) throw new Error(`Resource '${uri}' not registered`);
+  return resource.readCallback(new URL(uri), {});
+}
+
+export async function getPrompt(server: McpServer, name: string, args: Record<string, unknown> = {}) {
+  const prompts = (server as any)._registeredPrompts as Record<string, { callback: (args: Record<string, unknown>, extra: unknown) => Promise<unknown> }>;
+  const prompt = prompts[name];
+  if (!prompt) throw new Error(`Prompt '${name}' not registered`);
+  return prompt.callback(args, {});
+}
+
 export function parseToolResult(result: any): unknown {
   if (result?.content?.[0]?.text) {
     try { return JSON.parse(result.content[0].text); } catch { return result.content[0].text; }

@@ -124,3 +124,55 @@ describe("get_paramset handler", () => {
     cleanupDeps(deps);
   });
 });
+
+describe("error and edge paths (coverage round)", () => {
+  it("get_value maps CcuError to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "NOT_FOUND", code: 502, message: "no device", hint: "" })),
+    });
+    const result: any = await callTool(server, "get_value", { address: "XXX:1", valueKey: "STATE", interface: "HmIP-RF" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    cleanupDeps(deps);
+  });
+
+  it("get_paramset parses flat object values to native types", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue({ LEVEL: "0.500000", STATE: "true" }),
+    });
+    const result = parseToolResult(await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "VALUES", interface: "HmIP-RF" })) as any;
+    expect(result.params.LEVEL).toBe(0.5);
+    expect(result.params.STATE).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("get_paramset passes arrays through unparsed", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue([1, 2, 3]),
+    });
+    const result = parseToolResult(await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "LINK", interface: "HmIP-RF" })) as any;
+    expect(result.params).toEqual([1, 2, 3]);
+    cleanupDeps(deps);
+  });
+
+  it("get_values maps CcuError (script timeout) to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "TIMEOUT", code: 0, message: "slow", hint: "" })),
+    });
+    const result: any = await callTool(server, "get_values", { room: "Bad" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("TIMEOUT");
+    cleanupDeps(deps);
+  });
+
+  it("get_values returns object results from the CCU as-is", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue([{ already: "parsed" }]),
+    });
+    const result = parseToolResult(await callTool(server, "get_values", { channels: ["AAA:1"] })) as any;
+    expect(result).toEqual([{ already: "parsed" }]);
+    cleanupDeps(deps);
+  });
+});

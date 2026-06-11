@@ -186,3 +186,48 @@ describe("DeviceTypeCache", () => {
     expect(cache.isWarming()).toBe(false);
   });
 });
+
+describe("warm edge cases (coverage round)", () => {
+  let tempDir: string;
+  beforeEach(async () => { tempDir = await mkdtemp(join(tmpdir(), "debmatic-cache-test2-")); });
+  afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
+
+  it("skips interfaces whose device listing fails and continues with the rest", async () => {
+    const cache = new DeviceTypeCache(tempDir, 86400, logger);
+    const session = {
+      call: async (method: string, params?: { interface?: string }) => {
+        if (method === "Interface.listInterfaces") return [{ name: "Broken" }, { name: "HmIP-RF" }];
+        if (method === "Interface.listDevices") {
+          if (params?.interface === "Broken") throw new Error("interface down");
+          return [{ type: "HmIP-A", address: "A1", children: ["A1:1"] }];
+        }
+        if (method === "Interface.getParamsetDescription") {
+          return [{ ID: "STATE", TYPE: "BOOL", OPERATIONS: "7" }];
+        }
+        return null;
+      },
+    } as any;
+    const rateLimiter = { acquire: async () => {} } as any;
+
+    await cache.warm(session, rateLimiter);
+    expect(cache.size()).toBe(1);
+  });
+
+  it("preserves optional param description fields (min/max/unit/valueList)", async () => {
+    const cache = new DeviceTypeCache(tempDir, 86400, logger);
+    const session = {
+      call: async (method: string, params?: { paramsetKey?: string }) => {
+        if (method === "Interface.getParamsetDescription" && params?.paramsetKey === "VALUES") {
+          return [{ ID: "LEVEL", TYPE: "FLOAT", OPERATIONS: "7", MIN: "0", MAX: "1.01", DEFAULT: "0", UNIT: "%", VALUE_LIST: ["a", "b"] }];
+        }
+        return [];
+      },
+    } as any;
+    const rateLimiter = { acquire: async () => {} } as any;
+
+    const cached = await cache.queryAndCache("HmIP-X", "A1", "HmIP-RF", ["A1:1"], session, rateLimiter);
+    const param = cached!.channels["1"]!.paramsets["VALUES"]!["LEVEL"]!;
+    expect(param).toMatchObject({ type: "FLOAT", operations: 7, min: 0, max: 1.01, unit: "%", valueList: ["a", "b"] });
+    await new Promise((r) => setTimeout(r, 25)); // let background save finish
+  });
+});

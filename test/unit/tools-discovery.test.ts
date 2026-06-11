@@ -138,4 +138,80 @@ describe("describe_device_type handler", () => {
     expect(result.message).toContain("not in cache");
     cleanupDeps(deps);
   });
+
+  it("falls back to a live query when the resolver knows a device of that type", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "Interface.getParamsetDescription") {
+        return [{ ID: "STATE", TYPE: "BOOL", OPERATIONS: "7" }];
+      }
+      return [];
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    deps.resolver.updateDeviceList(mockDevices as any);
+
+    const result = parseToolResult(await callTool(server, "describe_device_type", { deviceType: "HmIP-SWDO-I" })) as any;
+
+    expect(result.channels["1"].paramsets["VALUES"]["STATE"].type).toBe("BOOL");
+    expect(deps.deviceTypeCache.has("HmIP-SWDO-I")).toBe(true);
+    cleanupDeps(deps);
+  });
+});
+
+describe("simple list tools", () => {
+  const SIMPLE_TOOLS = [
+    ["list_interfaces", "Interface.listInterfaces", [{ name: "HmIP-RF", port: 2010, info: "" }]],
+    ["list_rooms", "Room.getAll", mockRooms],
+    ["list_functions", "Subsection.getAll", mockFunctions],
+  ] as const;
+
+  for (const [tool, method, response] of SIMPLE_TOOLS) {
+    it(`${tool} returns CCU data`, async () => {
+      const sessionCall = vi.fn().mockImplementation(async (m: string) => (m === method ? response : []));
+      const { server, deps } = createTestServer({ sessionCall });
+
+      const result = parseToolResult(await callTool(server, tool)) as any[];
+      expect(result.length).toBeGreaterThan(0);
+      expect(sessionCall).toHaveBeenCalledWith(method);
+      cleanupDeps(deps);
+    });
+
+    it(`${tool} maps CcuError to a structured tool error`, async () => {
+      const { CcuError } = await import("../../src/middleware/error-mapper.js");
+      const sessionCall = vi.fn().mockRejectedValue(
+        new CcuError({ error: "UNREACHABLE", code: 0, message: "down", hint: "" }),
+      );
+      const { server, deps } = createTestServer({ sessionCall });
+
+      const result: any = await callTool(server, tool);
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0].text).error).toBe("UNREACHABLE");
+      cleanupDeps(deps);
+    });
+  }
+
+  it("list_system_variables filters by substring", async () => {
+    const sessionCall = vi.fn().mockResolvedValue([
+      { name: "Anwesenheit" }, { name: "Alarmzone" }, { name: "Urlaub" },
+    ]);
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "list_system_variables", { name: "a" })) as any[];
+    expect(result.map((v: any) => v.name).sort()).toEqual(["Alarmzone", "Anwesenheit", "Urlaub"]);
+
+    const filtered = parseToolResult(await callTool(server, "list_system_variables", { name: "alarm" })) as any[];
+    expect(filtered.map((v: any) => v.name)).toEqual(["Alarmzone"]);
+    cleanupDeps(deps);
+  });
+});
+
+describe("list_devices error path (coverage round)", () => {
+  it("maps CcuError to a structured tool error", async () => {
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "UNREACHABLE", code: 0, message: "down", hint: "" })),
+    });
+    const result: any = await callTool(server, "list_devices", {});
+    expect(result.isError).toBe(true);
+    cleanupDeps(deps);
+  });
 });

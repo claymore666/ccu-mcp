@@ -159,4 +159,15 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     const res = await mcpPost(mcpPort, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
+
+  // Must be last: terminates the server and asserts a clean exit
+  it("shuts down gracefully on SIGTERM with exit code 0", async () => {
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    child.kill("SIGTERM");
+    const code = await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("shutdown timed out")), 12_000)),
+    ]);
+    expect(code).toBe(0);
+  }, 15_000);
 });
