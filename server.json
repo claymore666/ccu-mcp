@@ -1,0 +1,66 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.claymore666/debmatic-mcp",
+  "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
+  "repository": {
+    "url": "https://github.com/claymore666/debmatic-mcp",
+    "source": "github"
+  },
+  "version": "1.1.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "debmatic-mcp",
+      "version": "1.1.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "--stdio"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "CCU_HOST",
+          "description": "Hostname or IP of your HomeMatic CCU (debmatic, CCU3, or RaspberryMatic)",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "CCU_PASSWORD",
+          "description": "CCU admin password (same as the WebUI login)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CCU_USER",
+          "description": "CCU username",
+          "default": "Admin",
+          "format": "string"
+        },
+        {
+          "name": "CCU_HTTPS",
+          "description": "Connect to the CCU via HTTPS (self-signed certificates supported)",
+          "default": "false",
+          "format": "boolean"
+        },
+        {
+          "name": "CCU_PORT",
+          "description": "CCU API port (80 for HTTP, 443 for HTTPS)",
+          "default": "80",
+          "format": "number"
+        },
+        {
+          "name": "CACHE_DIR",
+          "description": "Directory for the device type cache and session persistence",
+          "default": "/data",
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
