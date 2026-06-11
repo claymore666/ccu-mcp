@@ -31,11 +31,17 @@ async function main(): Promise<void> {
   const session = new SessionManager(config.ccu, logger, config.cache.dir);
   const rateLimiter = new RateLimiter(config.rateLimiter.burst, config.rateLimiter.rate);
 
+  // A failed login must not kill the server: the MCP transport starts anyway
+  // (tool registration needs no CCU) and the session retries lazily on the
+  // first CCU call. This keeps the server alive through CCU outages and lets
+  // it start before the CCU is reachable.
   try {
     await session.login();
   } catch (err) {
-    logger.error("startup_failed", { error: (err as Error).message });
-    process.exit(1);
+    logger.warn("startup_degraded", {
+      error: (err as Error).message,
+      hint: "CCU unreachable at startup; will retry on first request",
+    });
   }
 
   // Initialize device type cache

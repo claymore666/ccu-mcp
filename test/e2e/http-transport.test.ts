@@ -69,6 +69,82 @@ async function parseSse(res: Response): Promise<any> {
   return JSON.parse(data!.slice(6));
 }
 
+// Degraded startup: the server must come up and speak MCP even when the CCU
+// is unreachable (required for CCU outages and for Glama's containerized
+// build checks, which start the server with placeholder credentials).
+describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () => {
+  let child: ChildProcess;
+  let mcpPort: number;
+  let cacheDir: string;
+
+  beforeAll(async () => {
+    cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-degraded-"));
+    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+
+    child = spawn("node", [DIST], {
+      env: {
+        ...process.env,
+        CCU_HOST: "127.0.0.1",
+        CCU_PORT: "9", // discard port — nothing listens, connection refused
+        CCU_HTTPS: "false",
+        CCU_PASSWORD: "placeholder",
+        CCU_TIMEOUT: "1000",
+        MCP_TRANSPORT: "http",
+        MCP_PORT: String(mcpPort),
+        MCP_AUTH_TOKEN: AUTH_TOKEN,
+        CACHE_DIR: cacheDir,
+        RESOURCE_POLL_INTERVAL: "3600",
+        LOG_LEVEL: "error",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+        if (r.status === 200 || r.status === 503) break;
+      } catch { /* not up yet */ }
+      if (Date.now() > deadline) throw new Error("server did not start without CCU");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }, 20_000);
+
+  afterAll(async () => {
+    child?.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 300));
+    child?.kill("SIGKILL");
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it("stays alive and reports degraded health", async () => {
+    expect(child.exitCode).toBeNull();
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+    expect(res.status).toBe(503);
+    const body = await res.json() as { status: string };
+    expect(body.status).toBe("degraded");
+  });
+
+  it("answers the MCP initialize handshake and lists tools without a CCU", async () => {
+    const sid = await initialize(mcpPort);
+    const res = await mcpPost(mcpPort, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, sid);
+    expect(res.status).toBe(200);
+    const msg = await parseSse(res);
+    expect(msg.result.tools.length).toBe(18);
+  });
+
+  it("returns a structured tool error (not a crash) when a tool needs the CCU", async () => {
+    const sid = await initialize(mcpPort);
+    const res = await mcpPost(mcpPort, {
+      jsonrpc: "2.0", id: 2, method: "tools/call",
+      params: { name: "get_system_info", arguments: {} },
+    }, sid);
+    expect(res.status).toBe(200);
+    await res.text();
+    expect(child.exitCode).toBeNull(); // server survived the failed CCU call
+  });
+});
+
 describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU)", () => {
   let ccu: { server: Server; port: number };
   let child: ChildProcess;

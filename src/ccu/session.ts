@@ -97,6 +97,11 @@ export class SessionManager {
   }
 
   async call(method: string, params: Record<string, unknown> = {}, timeout?: number): Promise<unknown> {
+    // Lazy login: the server starts even when the CCU is unreachable, so the
+    // first call after a failed startup (or a CCU outage) re-attempts login.
+    if (!this.isLoggedIn()) {
+      await this.login();
+    }
     const paramsWithSession = { ...params, _session_id_: this.getSessionId() };
 
     try {

@@ -129,6 +129,41 @@ describe("SessionManager", () => {
   });
 
   describe("call", () => {
+    // Degraded-startup support: the server boots without a CCU, so call()
+    // must log in lazily instead of throwing "No active session".
+    it("logs in lazily when no session exists yet", async () => {
+      const client = createMockClient();
+      client.call.mockImplementation(async (method: string) => {
+        if (method === "Session.login") return "lazy-sess";
+        return "result";
+      });
+      const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+
+      // No explicit login() — first call must establish the session itself
+      const result = await session.call("Interface.isPresent", { interface: "BidCos-RF" });
+
+      expect(result).toBe("result");
+      const loginCalls = client.call.mock.calls.filter((c) => c[0] === "Session.login");
+      expect(loginCalls.length).toBe(1);
+      expect(client.call).toHaveBeenLastCalledWith(
+        "Interface.isPresent",
+        expect.objectContaining({ _session_id_: "lazy-sess" }),
+        undefined,
+      );
+      session.destroy();
+    });
+
+    it("propagates the login error when lazy login fails", async () => {
+      const client = createMockClient();
+      client.call.mockRejectedValue(new Error("CCU down"));
+      const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+
+      await expect(session.call("Interface.isPresent", {})).rejects.toThrow("CCU down");
+      session.destroy();
+    });
+
     it("attaches _session_id_ to params", async () => {
       const client = createMockClient();
       client.call.mockResolvedValueOnce("sess").mockResolvedValueOnce("result");
