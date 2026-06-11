@@ -125,7 +125,8 @@ export class SessionManager {
       const filePath = join(this.cacheDir, SESSION_FILE);
       const data = JSON.parse(await readFile(filePath, "utf-8"));
 
-      if (data.sessionId && data.host === this.config.host && data.port === this.config.port) {
+      if (data.sessionId && data.host === this.config.host && data.port === this.config.port
+          && data.user === this.config.user) {
         // Test if session is still valid
         try {
           await this.client.call("Session.renew", { _session_id_: data.sessionId });
@@ -153,6 +154,7 @@ export class SessionManager {
         sessionId: this.sessionId,
         host: this.config.host,
         port: this.config.port,
+        user: this.config.user,
         timestamp: new Date().toISOString(),
       });
       // 0600: the session ID grants full admin access to the CCU

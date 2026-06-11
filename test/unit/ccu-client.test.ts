@@ -13,7 +13,7 @@ vi.mock("undici", () => ({
 const { CcuClient } = await import("../../src/ccu/client.js");
 
 const logger = new Logger("error");
-const baseConfig = { host: "test-ccu", port: 80, https: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 30000 };
+const baseConfig = { host: "test-ccu", port: 80, https: false, tlsVerify: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 30000 };
 
 function jsonResponse(body: object) {
   return Promise.resolve({ text: () => Promise.resolve(JSON.stringify(body)) });

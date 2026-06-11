@@ -9,7 +9,7 @@ import { Resolver } from "../../src/middleware/resolver.js";
 function createMockDeps() {
   return {
     config: {
-      ccu: { host: "test", port: 80, https: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 10000 },
+      ccu: { host: "test", port: 80, https: false, tlsVerify: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 10000 },
       mcp: { transport: "stdio" as const, port: 3000 },
       cache: { dir: "/tmp", ttl: 86400 },
       rateLimiter: { burst: 20, rate: 10 },

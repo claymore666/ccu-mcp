@@ -64,27 +64,37 @@ async function main(): Promise<void> {
     const httpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
 
     const httpServer = createServer(async (req, res) => {
-      // Health check endpoint
-      if (req.url === "/health" && req.method === "GET") {
-        handleHealthRequest(req, res, { session, deviceTypeCache });
-        return;
-      }
+      try {
+        // Health check endpoint
+        if (req.url === "/health" && req.method === "GET") {
+          handleHealthRequest(req, res, { session, deviceTypeCache });
+          return;
+        }
 
-      // Auth check for MCP endpoints (timing-safe: hash both sides so length
-      // differences don't create a timing side-channel)
-      const authHeader = req.headers.authorization ?? "";
-      const expected = `Bearer ${authToken}`;
-      const ha = createHash("sha256").update(authHeader).digest();
-      const hb = createHash("sha256").update(expected).digest();
-      const headerValid = timingSafeEqual(ha, hb);
-      if (!headerValid) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Unauthorized" }));
-        return;
-      }
+        // Auth check for MCP endpoints. The scheme is case-insensitive per
+        // RFC 7235; the token comparison is timing-safe (hash both sides so
+        // length differences don't create a timing side-channel).
+        const authHeader = req.headers.authorization ?? "";
+        const presented = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+        const ha = createHash("sha256").update(presented).digest();
+        const hb = createHash("sha256").update(authToken).digest();
+        const headerValid = timingSafeEqual(ha, hb);
+        if (!headerValid) {
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
 
-      // Delegate to MCP transport
-      await httpTransport.handleRequest(req, res);
+        // Delegate to MCP transport
+        await httpTransport.handleRequest(req, res);
+      } catch (err) {
+        // One bad request must not take down the process (unhandled rejection)
+        logger.error("http_handler_error", { error: (err as Error).message });
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+        }
+        res.end(JSON.stringify({ error: "Internal error" }));
+      }
     });
 
     await mcpServer.connect(httpTransport);

@@ -41,6 +41,7 @@ export class CcuClient {
       const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
       let text: string;
+      let httpStatus = 0;
       try {
         const httpResponse = await undiciFetch(this.baseUrl, {
           method: "POST",
@@ -49,6 +50,7 @@ export class CcuClient {
           signal: controller.signal,
           dispatcher: this.dispatcher,
         });
+        httpStatus = httpResponse.status;
 
         // The abort signal also covers the body read, so the timeout
         // applies to the full request, not just the response headers.
@@ -63,8 +65,8 @@ export class CcuClient {
         throw new CcuError({
           error: "CCU_ERROR",
           code: 0,
-          message: `Invalid JSON response from CCU: ${text.slice(0, 200)}`,
-          hint: "CCU returned invalid JSON. It may be overloaded or misconfigured.",
+          message: `Invalid JSON response from CCU (HTTP ${httpStatus}): ${text.slice(0, 200)}`,
+          hint: "CCU returned invalid JSON. It may be overloaded, misconfigured, or behind a proxy returning an error page.",
           ccuMethod: method,
         });
       }

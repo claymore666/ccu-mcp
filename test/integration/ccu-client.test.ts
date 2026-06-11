@@ -17,6 +17,7 @@ describeIf("CCU Integration (against debmatic)", () => {
     host: CCU_HOST!,
     port: parseInt(process.env.CCU_PORT || "80", 10),
     https: process.env.CCU_HTTPS === "true",
+    tlsVerify: process.env.CCU_TLS_VERIFY === "true",
     user: process.env.CCU_USER || "Admin",
     password: process.env.CCU_PASSWORD || "",
     timeout: 10_000,

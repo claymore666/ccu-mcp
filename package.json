@@ -21,7 +21,10 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && tsc -p tsconfig.test.json"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
