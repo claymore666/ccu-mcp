@@ -208,8 +208,10 @@ describe("SessionManager", () => {
       await session.login();
       expect(session.getSessionId()).toBe("sess");
 
-      // Clear persisted session so restore doesn't interfere
-      await (session as any).clearPersistedSession();
+      // Stub persistence out of the relogin chain: real fs I/O does not
+      // resolve deterministically under fake timers (flaked on CI).
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+      vi.spyOn(session as any, "persistSession").mockResolvedValue(undefined);
 
       // From here: renewal calls renew (fail), then login() tries Session.login (success)
       client.call.mockImplementation(async (method: string) => {
@@ -219,8 +221,9 @@ describe("SessionManager", () => {
       });
 
       await vi.advanceTimersByTimeAsync(60_000);
-      // Allow async login() chain to complete
-      await vi.advanceTimersByTimeAsync(100);
+      // Drain the microtask chain of the async relogin (no real I/O left)
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
 
       // Session should have been replaced
       expect(session.getSessionId()).toBe("new-sess");
