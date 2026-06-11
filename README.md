@@ -155,6 +155,12 @@ All configuration is via environment variables:
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
 | `CACHE_DIR` | `/data` | Where to store device type cache and session |
 | `CACHE_TTL` | `86400` | Cache lifetime in seconds (24h) |
+| `MCP_TRANSPORT` | `http` | `http` or `stdio` (the `--stdio` CLI flag overrides this) |
+| `MCP_PORT` | `3000` | HTTP server port (HTTP mode only) |
+| `MCP_AUTH_TOKEN` | auto-generated | Bearer token for HTTP mode; generated and saved to `$CACHE_DIR/.env` on first start |
+| `CCU_RATE_LIMIT_BURST` | `20` | Max burst of requests sent to the CCU |
+| `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
+| `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
 ## Tools
 
@@ -171,6 +177,23 @@ All configuration is via environment variables:
 **Other** — `help` (context-aware), `run_script` (raw HomeMatic Script for bulk operations, renaming devices/channels, querying room membership, or anything not covered by the other tools)
 
 Most tools auto-resolve the interface and value types from the device address — you don't need to know whether a device is on BidCos-RF or HmIP-RF.
+
+## Resources and prompts
+
+Besides tools, the server exposes MCP **resources** — browsable JSON snapshots your client can attach as context:
+
+`homematic://devices`, `homematic://rooms`, `homematic://functions`, `homematic://programs`, `homematic://sysvars`, `homematic://interfaces`, `homematic://device-types`, `homematic://system`
+
+The server polls the CCU in the background (every `RESOURCE_POLL_INTERVAL` seconds) and notifies connected clients when the device list changes.
+
+It also ships MCP **prompts** — ready-made workflows you can invoke from clients that support them (e.g. as slash commands in Claude Code):
+
+- `check-windows` — are any windows or doors open?
+- `room-status` — full status report for one room
+- `set-heating` — set a room's target temperature
+- `good-night` — prepare the house for night
+- `diagnostics` — check for device issues
+- `device-info` — detailed info about a device's capabilities and parameters
 
 ## How it works
 
