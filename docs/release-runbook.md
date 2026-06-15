@@ -57,6 +57,7 @@ Both publish targets have a dry-run that touches nothing remote. Run them on
 the release branch before tagging:
 
 ```sh
+npm run check:versions       # package.json <-> server.json versions agree
 npm publish --dry-run        # lists the tarball contents; no upload
 mcp-publisher validate       # validates server.json against the live schema
 ```
@@ -72,27 +73,26 @@ milestone — it's the source of the `Closes #N` list in the release PR.
 
 1. **Branch off `dev`:** `git checkout -b release/vX.Y.Z origin/dev`
 
-2. **Bump the version — three files must agree.** The MCP registry rejects a
-   publish where `server.json` and the npm package disagree, and the npm
-   version is immutable once published, so get this right before tagging:
-   - `package.json` `version` (and `package-lock.json`) — bump together with:
-     ```sh
-     npm version <patch|minor|major> --no-git-tag-version
-     ```
-     `--no-git-tag-version` is deliberate: it edits `package.json` +
-     `package-lock.json` only. The git tag is created later, on `main`
-     (step 7) — not here on the release branch.
-   - `server.json` — **two** spots: the root `version` and
-     `packages[0].version`. Both must equal the new `package.json` version.
-     (`packages[0].identifier` stays `debmatic-mcp`; the `$schema` date is a
-     schema version, not the release version — leave it.)
-
-   Verify they line up:
+2. **Bump the version — one command, three files.** The version lives in
+   `package.json`, `server.json` root `version`, and `server.json`
+   `packages[0].version`; the MCP registry rejects a publish where they
+   disagree and the npm version is immutable once published. A single command
+   keeps all three in sync:
    ```sh
-   node -e "const s=require('./server.json'),p=require('./package.json');
-   console.log(p.version, s.version, s.packages[0].version,
-   '->', p.version===s.version && p.version===s.packages[0].version)"
+   npm version <patch|minor|major> --no-git-tag-version
    ```
+   `npm version` runs the `version` lifecycle hook (`scripts/sync-server-version.mjs`),
+   which copies the new version into both `server.json` spots and stages it —
+   so you never hand-edit `server.json`. `--no-git-tag-version` is deliberate:
+   it edits `package.json` + `package-lock.json` (+ syncs `server.json`) but
+   creates **no** commit/tag here; the tag is made later on `main` (step 7).
+
+   Confirm they agree (the same check CI runs):
+   ```sh
+   npm run check:versions     # exits non-zero on any drift
+   ```
+   This gate also runs in CI on every push and in `prepublishOnly`, so a
+   drifted manifest can't merge or publish even if the bump is done by hand.
    The README install snippets use unversioned `npx debmatic-mcp` /
    `claude mcp add` — there are **no pinned version strings to bump there**.
    Keep it that way; don't add versioned `npx debmatic-mcp@X.Y.Z` snippets to

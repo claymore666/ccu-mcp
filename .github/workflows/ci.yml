@@ -21,6 +21,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Version sync check
+        run: npm run check:versions
+
       - name: Audit dependencies
         run: npm audit --audit-level=high
 
