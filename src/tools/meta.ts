@@ -48,7 +48,7 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 **Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, describe_device_type
 **Read:** get_value, get_values, get_paramset
 **Control:** set_value, put_paramset, set_system_variable, execute_program
-**Diagnostics:** get_service_messages, get_system_info
+**Diagnostics:** get_service_messages, acknowledge_service_messages, get_system_info
 **Meta:** help, run_script
 `;
 
@@ -121,6 +121,11 @@ Returns: {id, executed}`,
   get_service_messages: `Get active service messages (low battery, unreachable, etc.).
 Args: none
 Returns: Array of {id, name, address, channelName, timestamp}`,
+
+  acknowledge_service_messages: `Confirm/dismiss active service messages (e.g. clear a low-battery warning).
+Args: id (single alarm id from get_service_messages) OR address (all active messages on a channel) — at least one required
+Returns: {confirmed: Array of {id, type, address}, count}
+NOT_FOUND if no active message matches; the warning reappears if its condition persists.`,
 
   get_system_info: `Get CCU system info: firmware, serial, addresses, cache status.
 Args: none

@@ -47,6 +47,7 @@ describe("MCP Server Registration", () => {
     const toolNames = Object.keys(tools).sort();
 
     expect(toolNames).toEqual([
+      "acknowledge_service_messages",
       "describe_device_type",
       "execute_program",
       "get_paramset",
@@ -67,7 +68,7 @@ describe("MCP Server Registration", () => {
       "set_value",
     ]);
 
-    expect(Object.keys(tools).length).toBe(18);
+    expect(Object.keys(tools).length).toBe(19);
     deps.rateLimiter.destroy();
   });
 
@@ -122,8 +123,8 @@ describe("Tool annotations", () => {
     "get_value", "get_values", "help", "list_devices", "list_functions",
     "list_interfaces", "list_programs", "list_rooms", "list_system_variables",
   ];
-  const WRITE_TOOLS = ["execute_program", "put_paramset", "run_script", "set_system_variable", "set_value"];
-  const IDEMPOTENT_WRITES = ["put_paramset", "set_system_variable", "set_value"];
+  const WRITE_TOOLS = ["acknowledge_service_messages", "execute_program", "put_paramset", "run_script", "set_system_variable", "set_value"];
+  const IDEMPOTENT_WRITES = ["acknowledge_service_messages", "put_paramset", "set_system_variable", "set_value"];
   const LOCAL_TOOLS = ["help"]; // everything else reaches the external CCU
 
   type Ann = {
