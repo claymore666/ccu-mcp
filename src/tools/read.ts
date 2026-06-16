@@ -25,6 +25,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         valueKey: z.string().describe("Datapoint name (e.g. 'STATE', 'LEVEL', 'ACTUAL_TEMPERATURE')"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -68,6 +69,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         room: z.string().optional().describe("Room name — read all channels in this room"),
         function: z.string().optional().describe("Function name — read all channels in this function group"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -196,6 +198,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         paramsetKey: z.enum(["VALUES", "MASTER", "LINK"]).describe("Paramset to read"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;

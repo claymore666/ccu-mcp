@@ -31,6 +31,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
         type: z.string().optional().describe("Filter by device type (exact match, e.g. 'HmIP-eTRV-2')"),
         name: z.string().optional().describe("Filter by device/channel name (substring, case-insensitive)"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -131,6 +132,7 @@ function registerListInterfaces(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Interfaces",
       description: "List available communication interfaces (BidCos-RF, HmIP-RF, VirtualDevices, etc.).",
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
       const { session, rateLimiter, logger } = deps;
@@ -155,6 +157,7 @@ function registerListRooms(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Rooms",
       description: "List all rooms with their assigned channel IDs. Use with list_devices to find devices by room.",
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
       const { session, rateLimiter, logger } = deps;
@@ -179,6 +182,7 @@ function registerListFunctions(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Functions",
       description: "List all function groups (Heating, Lighting, etc.) with their assigned channel IDs.",
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
       const { session, rateLimiter, logger } = deps;
@@ -206,6 +210,7 @@ function registerListPrograms(server: McpServer, deps: ServerDeps): void {
       inputSchema: {
         name: z.string().optional().describe("Filter by program name (substring, case-insensitive)"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -239,6 +244,7 @@ function registerListSystemVariables(server: McpServer, deps: ServerDeps): void 
       inputSchema: {
         name: z.string().optional().describe("Filter by variable name (substring, case-insensitive)"),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -275,6 +281,7 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
       inputSchema: {
         deviceType: z.string().describe("Device type name (e.g. 'HmIP-eTRV-2', 'HmIP-SWDO-I'). Get from list_devices."),
       },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger, deviceTypeCache } = deps;
