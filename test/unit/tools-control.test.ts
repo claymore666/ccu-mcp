@@ -180,6 +180,105 @@ describe("set_system_variable handler", () => {
   });
 });
 
+describe("create_system_variable handler", () => {
+  const reGaScriptOf = (sessionCall: any): string => {
+    const call = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "ReGa.runScript");
+    return call?.[1]?.script ?? "";
+  };
+
+  it("creates a bool variable via ReGa and reports created:true", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return []; // no existing vars
+      return null;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "create_system_variable", { name: "Urlaub", type: "bool" })) as any;
+    expect(result).toEqual({ name: "Urlaub", type: "bool", created: true });
+    const script = reGaScriptOf(sessionCall);
+    expect(script).toContain("ivtBinary");
+    expect(script).toContain("istBool");
+    expect(script).toContain('sv.Name("Urlaub")');
+    cleanupDeps(deps);
+  });
+
+  it("creates a float variable with unit/min/max", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => (method === "SysVar.getAll" ? [] : null));
+    const { server, deps } = createTestServer({ sessionCall });
+
+    await callTool(server, "create_system_variable", { name: "Soll", type: "float", unit: "°C", min: 5, max: 30 });
+    const script = reGaScriptOf(sessionCall);
+    expect(script).toContain("ivtFloat");
+    expect(script).toContain('sv.ValueUnit("°C")');
+    expect(script).toContain("sv.ValueMin(5)");
+    expect(script).toContain("sv.ValueMax(30)");
+    cleanupDeps(deps);
+  });
+
+  it("rejects an enum without values (INVALID_INPUT, before any CCU call)", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "Modus", type: "enum" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    expect(sessionCall).not.toHaveBeenCalled();
+    cleanupDeps(deps);
+  });
+
+  it("rejects a duplicate name (INVALID_INPUT)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) =>
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : null);
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "Urlaub", type: "bool" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+});
+
+describe("delete_system_variable handler", () => {
+  it("deletes an existing variable via deleteSysVarByName", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) =>
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : null);
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "delete_system_variable", { name: "Urlaub" })) as any;
+    expect(result).toEqual({ name: "Urlaub", deleted: true });
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "SysVar.deleteSysVarByName")).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("returns NOT_FOUND for an unknown name (and never calls delete)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => (method === "SysVar.getAll" ? [] : null));
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "delete_system_variable", { name: "Ghost" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "SysVar.deleteSysVarByName")).toBe(false);
+    cleanupDeps(deps);
+  });
+});
+
+describe("sysvar type cache invalidation (issue #24)", () => {
+  it("create_system_variable invalidates the shared type cache so the next set re-fetches", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "BOOL" }];
+      return null;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const getAllCount = () => sessionCall.mock.calls.filter((c: unknown[]) => c[0] === "SysVar.getAll").length;
+
+    await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true });  // getAll #1 (cache fill)
+    await callTool(server, "set_system_variable", { name: "Anwesenheit", value: false }); // cached → no getAll
+    expect(getAllCount()).toBe(1);
+
+    await callTool(server, "create_system_variable", { name: "Neu", type: "bool" });        // getAll #2 (dup check) + invalidate
+    await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true });    // cache invalidated → getAll #3
+    expect(getAllCount()).toBe(3);
+    cleanupDeps(deps);
+  });
+});
+
 describe("execute_program handler", () => {
   const programList = [{ id: "123", name: "Morgenroutine" }];
 
