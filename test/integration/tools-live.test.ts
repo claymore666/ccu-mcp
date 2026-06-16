@@ -44,7 +44,7 @@ describeIf("MCP tools against live CCU", () => {
     deps = {
       config: {
         ccu: config,
-        mcp: { transport: "stdio", port: 3000, allowedHosts: [] },
+        mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [] },
         cache: { dir: tempDir, ttl: 86400 },
         rateLimiter: { burst: 20, rate: 10 },
         resourcePollInterval: 3600,
