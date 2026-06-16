@@ -85,6 +85,18 @@ describe.skipIf(!HAVE_OPENSSL)("CcuClient TLS verification (real HTTPS server)",
     await expect(client.call("Test", {})).resolves.toBe("ok");
   });
 
+  // Regression: TLS session resumption returns an empty peer cert on a resumed
+  // connection, which made fingerprint pinning reject those requests. One
+  // awaited call caches the TLS session; the following concurrent burst then
+  // opens fresh connections that would resume it. The client disables session
+  // caching so every connection presents the cert and all calls verify.
+  it("verifies the fingerprint on connections that would resume the TLS session", async () => {
+    const client = new CcuClient({ ...base, port, tlsFingerprint: fingerprint }, logger);
+    await client.call("Test", {}); // full handshake, caches the session
+    const results = await Promise.all(Array.from({ length: 8 }, () => client.call("Test", {})));
+    expect(results).toEqual(Array(8).fill("ok"));
+  });
+
   it("refuses to connect when the pinned fingerprint does not match", async () => {
     const wrong = "00:".repeat(31) + "00";
     const client = new CcuClient({ ...base, port, tlsFingerprint: wrong }, logger);
