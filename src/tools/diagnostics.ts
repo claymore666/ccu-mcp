@@ -4,7 +4,7 @@ import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
-import { toolResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
+import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
@@ -26,6 +26,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
       title: "Get Service Messages",
       description:
         "Get all active service messages (low battery, unreachable, etc.) with device details and timestamps.",
+      outputSchema: { messages: z.array(z.unknown()).describe("Active alarms: {id, type, address, channelName, timestamp}") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
@@ -113,7 +114,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
         }
 
         logger.info("tool_call", { tool: "get_service_messages", duration_ms: Date.now() - start, status: "ok" });
-        return toolResult(messages);
+        return structuredResult({ messages: Array.isArray(messages) ? messages : [] }, messages);
       } catch (err) {
         logger.info("tool_call", { tool: "get_service_messages", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
@@ -243,6 +244,15 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get System Info",
       description: "Get CCU system information: firmware version, serial number, addresses.",
+      outputSchema: {
+        serverVersion: z.string().optional(),
+        version: z.unknown().optional(),
+        serial: z.unknown().optional(),
+        address: z.unknown().optional(),
+        hmipAddress: z.unknown().optional(),
+        cacheTypes: z.number().optional(),
+        cacheWarming: z.boolean().optional(),
+      },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
@@ -272,7 +282,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         results.cacheWarming = deviceTypeCache.isWarming();
 
         logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "ok" });
-        return toolResult(results);
+        return structuredResult(results as Record<string, unknown>);
       } catch (err) {
         logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
@@ -294,6 +304,10 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
         "Use to answer 'why is this sensor flaky?'. Higher (closer to 0) dBm is better; null = no measurement.",
       inputSchema: {
         name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
+      },
+      outputSchema: {
+        devices: z.array(z.unknown()).describe("Per device: {address, name, interface, links:[{peer, rssiDevice, rssiPeer}]}"),
+        interfaces: z.unknown().describe("BidCos interface health (duty cycle, connected)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -427,7 +441,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
         }
 
         logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "ok", devices: deviceEntries.length });
-        return toolResult({ devices: deviceEntries, interfaces: bidcosInterfaces });
+        return structuredResult({ devices: deviceEntries, interfaces: bidcosInterfaces });
       } catch (err) {
         logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();

@@ -176,3 +176,34 @@ describe("error and edge paths (coverage round)", () => {
     cleanupDeps(deps);
   });
 });
+
+// Issue #26: tools expose structuredContent alongside the text block.
+describe("structured output (read tools)", () => {
+  it("get_value returns structuredContent matching the object", async () => {
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(21.5) });
+    deps.resolver.updateDeviceList([{ id: "1", name: "Dev", address: "AAA", interface: "HmIP-RF", type: "T", operateGroupOnly: "false", isReady: "true", channels: [] }] as any);
+    const res = await callTool(server, "get_value", { address: "AAA:1", valueKey: "ACTUAL_TEMPERATURE" }) as any;
+    expect(res.structuredContent).toEqual({ address: "AAA:1", valueKey: "ACTUAL_TEMPERATURE", value: 21.5 });
+    cleanupDeps(deps);
+  });
+
+  it("get_values wraps the array under structuredContent.values (text stays the bare array)", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue([{ address: "AAA:1", datapoints: {} }]),
+    });
+    const res = await callTool(server, "get_values", { channels: ["AAA:1"] }) as any;
+    expect(res.structuredContent).toEqual({ values: [{ address: "AAA:1", datapoints: {} }] });
+    expect(parseToolResult(res)).toEqual([{ address: "AAA:1", datapoints: {} }]); // backwards-compatible text
+    cleanupDeps(deps);
+  });
+
+  it("get_paramset returns structuredContent with address/paramsetKey/params", async () => {
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue({ TEMP: "21" }) });
+    deps.resolver.updateDeviceList([{ id: "1", name: "Dev", address: "AAA", interface: "HmIP-RF", type: "T", operateGroupOnly: "false", isReady: "true", channels: [] }] as any);
+    const res = await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "VALUES" }) as any;
+    expect(res.structuredContent.address).toBe("AAA:1");
+    expect(res.structuredContent.paramsetKey).toBe("VALUES");
+    expect(res.structuredContent.params).toBeDefined();
+    cleanupDeps(deps);
+  });
+});
