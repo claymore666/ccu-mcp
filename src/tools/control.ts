@@ -313,8 +313,11 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
         }
 
         // Create via ReGa (no SysVar.createString exists, and this keeps all four
-        // types on one code path). dom.CreateObject(OT_VARDP) + ValueType/SubType
-        // is the WebUI's own mechanism for new system variables.
+        // types on one code path). Modeled exactly on the CCU's own JSON-RPC
+        // method scripts (occu WebUI/www/api/methods/sysvar/create*.tcl): set
+        // ValueType + type-specifics, then oSysVars.Add(sv.ID()) LAST. We add
+        // ValueUnit (float) and DPInfo (description), which those methods don't
+        // expose as parameters. There is no createString method, hence ReGa.
         const name = escapeHmScript(args.name);
         const info = escapeHmScript(args.description ?? "");
         let typeSetup: string;
@@ -333,11 +336,10 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
             const max = Number.isFinite(args.max) ? args.max : 100;
             typeSetup =
               'sv.ValueType(ivtFloat);\n' +
-              'sv.ValueSubType(istGeneric);\n' +
-              `sv.ValueUnit("${unit}");\n` +
               `sv.ValueMin(${min});\n` +
               `sv.ValueMax(${max});\n` +
-              `sv.State(${min});`;
+              `sv.ValueUnit("${unit}");\n` +
+              'sv.State(0);';
             break;
           }
           case "enum": {
@@ -346,8 +348,6 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
               'sv.ValueType(ivtInteger);\n' +
               'sv.ValueSubType(istEnum);\n' +
               `sv.ValueList("${list}");\n` +
-              'sv.ValueMin(0);\n' +
-              `sv.ValueMax(${(args.values ?? []).length - 1});\n` +
               'sv.State(0);';
             break;
           }
@@ -355,20 +355,18 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
           default:
             typeSetup =
               'sv.ValueType(ivtString);\n' +
-              'sv.ValueSubType(istChar8859);\n' +
               'sv.State("");';
             break;
         }
 
         const script =
+          `object oSysVars = dom.GetObject(ID_SYSTEM_VARIABLES);\n` +
           `object sv = dom.CreateObject(OT_VARDP);\n` +
           `sv.Name("${name}");\n` +
-          `dom.GetObject(ID_SYSTEM_VARIABLES).Add(sv.ID());\n` +
           `${typeSetup}\n` +
           `sv.DPInfo("${info}");\n` +
           `sv.Internal(false);\n` +
-          `sv.Visible(true);\n` +
-          `dom.RTUpdate(false);`;
+          `oSysVars.Add(sv.ID());`;
 
         await rateLimiter.acquire();
         await withRetry(
