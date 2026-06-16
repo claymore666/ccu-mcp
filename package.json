@@ -28,7 +28,7 @@
     "prepublishOnly": "npm run check:versions && npm run lint && npm test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=24"
   },
   "repository": {
     "type": "git",
