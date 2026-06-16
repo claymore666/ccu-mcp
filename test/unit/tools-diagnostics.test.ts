@@ -126,17 +126,22 @@ describe("get_rssi handler", () => {
       switch (method) {
         case "Device.listAllDetail":
           return [
-            { id: "1", name: "Thermostat Büro", address: "ABC123", interface: "HmIP-RF", type: "HmIP-eTRV", channels: [] },
+            { id: "1", name: "Thermostat Büro", address: "ABC123", interface: "HmIP-RF", type: "HmIP-eTRV",
+              channels: [{ id: "10", name: "M", address: "ABC123:0", deviceId: "1", index: 0 }] },
             { id: "2", name: "Fenster Küche", address: "DEF456", interface: "BidCos-RF", type: "HM-SWDO", channels: [] },
           ];
         case "Interface.listInterfaces":
           return [{ name: "HmIP-RF" }, { name: "BidCos-RF" }, { name: "VirtualDevices" }];
         case "Interface.rssiInfo":
-          // Real JSON-RPC shape: array of {name: <addr>, partner: [{name: <addr>, rssiData: [a,b]}]}
-          if (params?.interface === "VirtualDevices") throw new Error("rssiInfo not supported");
-          if (params?.interface === "HmIP-RF") return [{ name: "ABC123", partner: [{ name: "HmIP-RF", rssiData: [-65, -70] }] }];
+          // Real JSON-RPC shape: array of {name: <addr>, partner: [{name: <addr>, rssiData: [a,b]}]}.
+          // HmIP-RF and VirtualDevices don't implement rssiInfo on a real CCU → throw.
           if (params?.interface === "BidCos-RF") return [{ name: "DEF456", partner: [{ name: "BidCoS-RF", rssiData: [65536, -80] }] }];
-          return [];
+          throw new Error("rssiInfo not supported");
+        case "Interface.getParamset":
+          // HmIP :0 maintenance channel exposes RSSI_DEVICE (dBm, negative).
+          // Raw getParamset returns STRING values (the tool coerces them).
+          if (params?.address === "ABC123:0") return { RSSI_DEVICE: "-72", UNREACH: "0" };
+          return {};
         case "Interface.listBidcosInterfaces":
           return [{ ADDRESS: "OEQ0123456", DUTY_CYCLE: 12, CONNECTED: true }];
         default:
@@ -144,17 +149,18 @@ describe("get_rssi handler", () => {
       }
     });
 
-  it("reports per-device RSSI (dBm) resolved to names, normalizing 65536 → null", async () => {
+  it("reports BidCos RSSI via rssiInfo (65536 → null) and HmIP RSSI via maintenance datapoints", async () => {
     const { server, deps } = createTestServer({ sessionCall: rssiMock() });
     const result = parseToolResult(await callTool(server, "get_rssi")) as any;
 
     const byAddr = Object.fromEntries(result.devices.map((d: any) => [d.address, d]));
-    expect(byAddr.ABC123.name).toBe("Thermostat Büro");
-    expect(byAddr.ABC123.links[0].rssiDevice).toBe(-65);
-    expect(byAddr.ABC123.links[0].rssiPeer).toBe(-70);
-    // 65536 sentinel normalized to null; the other direction kept
+    // BidCos via rssiInfo: 65536 sentinel → null, other direction kept
     expect(byAddr.DEF456.links[0].rssiDevice).toBeNull();
     expect(byAddr.DEF456.links[0].rssiPeer).toBe(-80);
+    // HmIP via RSSI_DEVICE datapoint (rssiInfo threw for HmIP-RF)
+    expect(byAddr.ABC123.name).toBe("Thermostat Büro");
+    expect(byAddr.ABC123.links[0].rssiDevice).toBe(-72);
+    expect(byAddr.ABC123.links[0].rssiPeer).toBeNull(); // no RSSI_PEER datapoint
     cleanupDeps(deps);
   });
 

@@ -288,11 +288,10 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get RSSI / Radio Quality",
       description:
-        "Report radio link quality (RSSI, in dBm) from Interface.rssiInfo, resolved to device names, " +
-        "plus BidCos interface health (duty cycle, connected state). Use to answer 'why is this " +
-        "sensor flaky?'. Higher (closer to 0) dBm is better; null means no measurement available. " +
-        "Note: rssiInfo covers BidCos-RF; HmIP-RF does not expose it, so pure-HmIP setups return no " +
-        "rssiInfo data (HmIP RSSI lives in per-device RSSI_DEVICE/RSSI_PEER datapoints — not yet read here).",
+        "Report radio link quality (RSSI, in dBm) for every device, resolved to device names, plus " +
+        "BidCos interface health (duty cycle, connected state). Covers both transports: BidCos-RF via " +
+        "Interface.rssiInfo, and HmIP-RF via each device's RSSI_DEVICE/RSSI_PEER maintenance datapoints. " +
+        "Use to answer 'why is this sensor flaky?'. Higher (closer to 0) dBm is better; null = no measurement.",
       inputSchema: {
         name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
       },
@@ -371,6 +370,45 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
             };
             if (needle && !`${entry.address} ${entry.name}`.toLowerCase().includes(needle)) continue;
             deviceEntries.push(entry);
+          }
+        }
+
+        // HmIP devices don't expose rssiInfo; their RSSI lives in the :0
+        // maintenance channel's RSSI_DEVICE / RSSI_PEER datapoints (dBm, negative).
+        // Read the :0 VALUES paramset per HmIP device (one call each — there's no
+        // bulk equivalent) and merge into the same output shape: rssiDevice =
+        // measured by the device, rssiPeer = measured by the peer (AP/CCU), where
+        // present. Values are already dBm; a non-negative reading means "no value".
+        // Interface.getParamset returns raw string values; coerce, and treat
+        // only a negative dBm as a real reading (0/positive/non-numeric = none).
+        const dbm = (v: unknown): number | null => {
+          const n = typeof v === "string" ? Number(v) : v;
+          return typeof n === "number" && Number.isFinite(n) && n < 0 ? n : null;
+        };
+        for (const d of devices) {
+          if (!/hmip/i.test(d.interface)) continue;
+          const maint = d.channels.find((c) => c.address.endsWith(":0"));
+          if (!maint) continue;
+          if (needle && !`${d.address} ${d.name}`.toLowerCase().includes(needle)) continue;
+          try {
+            await rateLimiter.acquire();
+            const vals = await withRetry(
+              () => session.call("Interface.getParamset", { interface: d.interface, address: maint.address, paramsetKey: "VALUES" }),
+              "Interface.getParamset",
+              logger,
+            ) as Record<string, unknown>;
+            const rssiDevice = dbm(vals?.RSSI_DEVICE);
+            const rssiPeer = dbm(vals?.RSSI_PEER);
+            if (rssiDevice === null && rssiPeer === null) continue; // no usable RSSI
+            deviceEntries.push({
+              address: d.address,
+              name: d.name,
+              interface: d.interface,
+              links: [{ peer: d.interface, peerName: "", rssiDevice, rssiPeer }],
+            });
+          } catch {
+            // device unreachable / paramset unreadable — skip, don't fail the call
+            continue;
           }
         }
 
