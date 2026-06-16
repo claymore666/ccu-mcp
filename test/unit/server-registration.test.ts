@@ -51,6 +51,7 @@ describe("MCP Server Registration", () => {
       "describe_device_type",
       "execute_program",
       "get_paramset",
+      "get_rssi",
       "get_service_messages",
       "get_system_info",
       "get_value",
@@ -68,7 +69,7 @@ describe("MCP Server Registration", () => {
       "set_value",
     ]);
 
-    expect(Object.keys(tools).length).toBe(19);
+    expect(Object.keys(tools).length).toBe(20);
     deps.rateLimiter.destroy();
   });
 
@@ -120,7 +121,7 @@ describe("MCP Server Registration", () => {
 describe("Tool annotations", () => {
   const READ_TOOLS = [
     "describe_device_type", "get_paramset", "get_service_messages", "get_system_info",
-    "get_value", "get_values", "help", "list_devices", "list_functions",
+    "get_rssi", "get_value", "get_values", "help", "list_devices", "list_functions",
     "list_interfaces", "list_programs", "list_rooms", "list_system_variables",
   ];
   const WRITE_TOOLS = ["acknowledge_service_messages", "execute_program", "put_paramset", "run_script", "set_system_variable", "set_value"];

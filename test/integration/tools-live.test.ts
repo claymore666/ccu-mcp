@@ -125,4 +125,26 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
   }, 30_000);
+
+  it("get_rssi returns devices with plausible dBm RSSI values (live)", async () => {
+    const result = parseToolResult(await callTool(server, "get_rssi")) as {
+      devices: Array<{ address: string; links: Array<{ rssiDevice: number | null; rssiPeer: number | null }> }>;
+      interfaces: unknown;
+    };
+    expect(Array.isArray(result.devices)).toBe(true);
+
+    for (const d of result.devices) {
+      expect(typeof d.address).toBe("string");
+      for (const link of d.links) {
+        for (const v of [link.rssiDevice, link.rssiPeer]) {
+          if (v !== null) {
+            // dBm: never the 65536 sentinel, within a physically plausible range
+            expect(v).not.toBe(65536);
+            expect(v).toBeGreaterThan(-130);
+            expect(v).toBeLessThan(0);
+          }
+        }
+      }
+    }
+  }, 60_000);
 });

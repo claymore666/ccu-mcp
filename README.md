@@ -178,7 +178,7 @@ All configuration is via environment variables:
 
 ## Tools
 
-19 tools organized by what you'd actually want to do:
+20 tools organized by what you'd actually want to do:
 
 **Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `describe_device_type`
 
@@ -186,7 +186,7 @@ All configuration is via environment variables:
 
 **Change things** — `set_value`, `put_paramset`, `set_system_variable`, `execute_program`
 
-**Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_system_info`
+**Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_rssi`, `get_system_info`
 
 **Other** — `help` (context-aware), `run_script` (raw HomeMatic Script for bulk operations, renaming devices/channels, querying room membership, or anything not covered by the other tools)
 
