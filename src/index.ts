@@ -124,7 +124,17 @@ async function main(): Promise<void> {
         const hb = createHash("sha256").update(authToken).digest();
         const headerValid = timingSafeEqual(ha, hb);
         if (!headerValid) {
-          res.writeHead(401, { "Content-Type": "application/json" });
+          // Challenge header so clients can discover the scheme (RFC 6750 /
+          // MCP auth spec). Add error=invalid_token only when a (bad) token was
+          // actually presented; RFC 6750 §3 omits the error param when no
+          // credentials were sent.
+          const challenge = presented
+            ? 'Bearer realm="debmatic-mcp", error="invalid_token"'
+            : 'Bearer realm="debmatic-mcp"';
+          res.writeHead(401, {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": challenge,
+          });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
         }
