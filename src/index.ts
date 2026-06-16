@@ -82,17 +82,27 @@ async function main(): Promise<void> {
     httpServer = createServer(async (req, res) => {
       try {
         // CORS so browser-based MCP clients (e.g. MCP Inspector) can connect
-        // directly. Auth is still enforced via the bearer token below.
-        // Mcp-Session-Id must be exposed or browsers can't reuse the session.
-        // Credit: @marcinn2 (marcinn2/debmatic-mcp@d33a0cb)
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-        res.setHeader(
-          "Access-Control-Allow-Headers",
-          "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID",
-        );
-        res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-        res.setHeader("Access-Control-Max-Age", "86400");
+        // directly. Opt-in only: a cross-origin browser is allowed solely when
+        // MCP_CORS_ALLOW_ORIGIN is configured (`*` for dev, or one trusted
+        // origin). Default is no CORS header at all, so a random web page can't
+        // reach a local instance. DNS-rebinding protection on the transport
+        // (allowedHosts, below) is the matching Host-header defense. Auth is
+        // still enforced via the bearer token regardless.
+        // CORS first implemented by @marcinn2 (marcinn2/debmatic-mcp@d33a0cb).
+        const corsOrigin = config.mcp.corsAllowOrigin;
+        if (corsOrigin) {
+          res.setHeader("Access-Control-Allow-Origin", corsOrigin);
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+          res.setHeader(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID",
+          );
+          res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+          res.setHeader("Access-Control-Max-Age", "86400");
+          // A specific origin makes the response vary by Origin; mark it so
+          // shared caches don't serve it to a different origin.
+          if (corsOrigin !== "*") res.setHeader("Vary", "Origin");
+        }
 
         if (req.method === "OPTIONS") {
           res.writeHead(204);
@@ -130,6 +140,11 @@ async function main(): Promise<void> {
         // transport itself rejects non-initialize requests without a session.
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          // Defense-in-depth against DNS rebinding: reject requests whose Host
+          // header isn't an expected one (a browser tricked into hitting a
+          // local instance carries the attacker's host, not localhost:port).
+          enableDnsRebindingProtection: true,
+          allowedHosts: config.mcp.allowedHosts,
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport });
             logger.info("mcp_session_started", { sessions: sessions.size });

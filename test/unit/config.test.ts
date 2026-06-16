@@ -17,6 +17,8 @@ describe("loadConfig", () => {
     delete process.env.MCP_TRANSPORT;
     delete process.env.MCP_PORT;
     delete process.env.MCP_AUTH_TOKEN;
+    delete process.env.MCP_CORS_ALLOW_ORIGIN;
+    delete process.env.MCP_ALLOWED_HOSTS;
     delete process.env.CACHE_DIR;
     delete process.env.CACHE_TTL;
     delete process.env.CCU_RATE_LIMIT_BURST;
@@ -148,6 +150,39 @@ describe("loadConfig", () => {
 
     process.env.RESOURCE_POLL_INTERVAL = "-60";
     expect(() => loadConfig()).toThrow(/RESOURCE_POLL_INTERVAL must be a positive number/);
+  });
+
+  // Issue #28: HTTP transport hardening
+  it("CORS is default-deny: corsAllowOrigin is undefined unless configured", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    expect(loadConfig().mcp.corsAllowOrigin).toBeUndefined();
+
+    process.env.MCP_CORS_ALLOW_ORIGIN = "*";
+    expect(loadConfig().mcp.corsAllowOrigin).toBe("*");
+
+    process.env.MCP_CORS_ALLOW_ORIGIN = "https://app.example";
+    expect(loadConfig().mcp.corsAllowOrigin).toBe("https://app.example");
+  });
+
+  it("allowedHosts defaults to localhost/127.0.0.1 on the MCP port", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_PORT = "4567";
+    expect(loadConfig().mcp.allowedHosts).toEqual(["127.0.0.1:4567", "localhost:4567"]);
+  });
+
+  it("MCP_ALLOWED_HOSTS extends the default host allowlist (trimmed, no blanks)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_PORT = "3000";
+    process.env.MCP_ALLOWED_HOSTS = "mcp.lan:3000, , proxy.example ";
+    expect(loadConfig().mcp.allowedHosts).toEqual([
+      "127.0.0.1:3000",
+      "localhost:3000",
+      "mcp.lan:3000",
+      "proxy.example",
+    ]);
   });
 
   it("parses CCU_TLS_VERIFY (default off)", () => {

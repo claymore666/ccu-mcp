@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer, type Server } from "node:http";
+import { createServer, request, type Server, type IncomingHttpHeaders } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -166,6 +166,10 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
         MCP_TRANSPORT: "http",
         MCP_PORT: String(mcpPort),
         MCP_AUTH_TOKEN: AUTH_TOKEN,
+        // This block exercises the dev/MCP-Inspector configuration: wildcard
+        // CORS is opt-in (issue #28). The secure-defaults block below covers
+        // the unset (default-deny) behavior.
+        MCP_CORS_ALLOW_ORIGIN: "*",
         CACHE_DIR: cacheDir,
         RESOURCE_POLL_INTERVAL: "3600",
         LOG_LEVEL: "error",
@@ -274,6 +278,128 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
   });
 
   // Must be last: terminates the server and asserts a clean exit
+  it("shuts down gracefully on SIGTERM with exit code 0", async () => {
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    child.kill("SIGTERM");
+    const code = await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("shutdown timed out")), 12_000)),
+    ]);
+    expect(code).toBe(0);
+  }, 15_000);
+});
+
+// Issue #28: secure HTTP defaults — no CORS env set, DNS-rebinding protection on.
+// `request` is used (not fetch) because undici forbids overriding the Host header,
+// and a forged Host is exactly the DNS-rebinding vector we need to exercise.
+function rawPost(
+  port: number,
+  body: unknown,
+  opts: { host?: string; token?: string } = {},
+): Promise<{ status: number; headers: IncomingHttpHeaders }> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: "/",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+          ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+          ...(opts.host ? { Host: opts.host } : {}),
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        res.on("data", () => {}); // drain
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers }));
+      },
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+const INIT_BODY = {
+  jsonrpc: "2.0", id: 0, method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "secure", version: "1" } },
+};
+
+describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebinding on)", () => {
+  let ccu: { server: Server; port: number };
+  let child: ChildProcess;
+  let mcpPort: number;
+  let cacheDir: string;
+
+  beforeAll(async () => {
+    ccu = await startCcuMock();
+    cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-secure-"));
+    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+
+    child = spawn("node", [DIST], {
+      env: {
+        ...process.env,
+        CCU_HOST: "127.0.0.1",
+        CCU_PORT: String(ccu.port),
+        CCU_HTTPS: "false",
+        CCU_PASSWORD: "mock",
+        MCP_TRANSPORT: "http",
+        MCP_PORT: String(mcpPort),
+        MCP_AUTH_TOKEN: AUTH_TOKEN,
+        // MCP_CORS_ALLOW_ORIGIN deliberately unset → default-deny CORS.
+        CACHE_DIR: cacheDir,
+        RESOURCE_POLL_INTERVAL: "3600",
+        LOG_LEVEL: "error",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+        if (r.status === 200 || r.status === 503) break;
+      } catch { /* not up yet */ }
+      if (Date.now() > deadline) throw new Error("server did not start");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }, 20_000);
+
+  afterAll(async () => {
+    child?.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 300));
+    child?.kill("SIGKILL");
+    ccu?.server.close();
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it("does not emit Access-Control-Allow-Origin when CORS is unconfigured (default-deny)", async () => {
+    const preflight = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "OPTIONS",
+      headers: { "Origin": "http://evil.example", "Access-Control-Request-Method": "POST" },
+    });
+    expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+
+    const init = await initialize(mcpPort);
+    expect(init).toBeTruthy(); // a non-browser client still works fine
+  });
+
+  it("accepts a request whose Host header is on the allowlist", async () => {
+    const res = await rawPost(mcpPort, INIT_BODY, { token: AUTH_TOKEN, host: `127.0.0.1:${mcpPort}` });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a forged Host header with 403 (DNS-rebinding protection)", async () => {
+    const res = await rawPost(mcpPort, INIT_BODY, { token: AUTH_TOKEN, host: "evil.example" });
+    expect(res.status).toBe(403);
+  });
+
+  // Must be last: clean shutdown
   it("shuts down gracefully on SIGTERM with exit code 0", async () => {
     const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
     child.kill("SIGTERM");
