@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { CcuConfig } from "./ccu/types.js";
 
 export interface AppConfig {
@@ -110,12 +111,32 @@ export function loadConfig(): AppConfig {
     throw new Error("MCP_TLS_CERT and MCP_TLS_KEY must both be set (or both unset)");
   }
 
+  // CCU TLS verification (issue #51). A CCU ships a self-signed cert, so verify
+  // it either by pinning the leaf fingerprint (CCU_TLS_FINGERPRINT) or by
+  // trusting a CA/self-signed PEM (CCU_CA_CERT). Fingerprint takes precedence.
+  const tlsFingerprint = process.env.CCU_TLS_FINGERPRINT?.trim() || undefined;
+  const caCertPath = process.env.CCU_CA_CERT?.trim() || undefined;
+  let caCert: string | undefined;
+  if (caCertPath) {
+    try {
+      caCert = readFileSync(caCertPath, "utf-8");
+    } catch (err) {
+      // Don't interpolate the env-derived path here: a fatal config error is
+      // logged at the top level, and echoing raw env values into logs is a
+      // leak vector (js/clear-text-logging). The fs error already names the
+      // path for the operator.
+      throw new Error(`CCU_CA_CERT could not be read: ${(err as Error).message}`);
+    }
+  }
+
   return {
     ccu: {
       host,
       port: parseIntEnv("CCU_PORT", process.env.CCU_HTTPS === "true" ? "443" : "80"),
       https: process.env.CCU_HTTPS === "true",
       tlsVerify: process.env.CCU_TLS_VERIFY === "true",
+      tlsFingerprint,
+      caCert,
       user: process.env.CCU_USER || "Admin",
       password,
       timeout: parseIntEnv("CCU_TIMEOUT", "10000"),

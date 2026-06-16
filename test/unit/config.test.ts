@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/config.js";
 
 describe("loadConfig", () => {
@@ -27,6 +30,8 @@ describe("loadConfig", () => {
     delete process.env.CCU_TIMEOUT;
     delete process.env.CCU_SCRIPT_TIMEOUT;
     delete process.env.CCU_TLS_VERIFY;
+    delete process.env.CCU_TLS_FINGERPRINT;
+    delete process.env.CCU_CA_CERT;
     delete process.env.MCP_HOST;
     delete process.env.MCP_TLS_CERT;
     delete process.env.MCP_TLS_KEY;
@@ -200,6 +205,43 @@ describe("loadConfig", () => {
 
     process.env.CCU_TLS_VERIFY = "true";
     expect(loadConfig().ccu.tlsVerify).toBe(true);
+  });
+
+  // Issue #51: CCU TLS verification via fingerprint pin or CA cert
+  it("CCU TLS pinning is off by default", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.ccu.tlsFingerprint).toBeUndefined();
+    expect(config.ccu.caCert).toBeUndefined();
+  });
+
+  it("parses CCU_TLS_FINGERPRINT", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_TLS_FINGERPRINT = "AB:CD:EF:01";
+    expect(loadConfig().ccu.tlsFingerprint).toBe("AB:CD:EF:01");
+  });
+
+  it("reads CCU_CA_CERT file contents", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccu-ca-"));
+    const caPath = join(dir, "ca.pem");
+    writeFileSync(caPath, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
+    try {
+      process.env.CCU_HOST = "test";
+      process.env.CCU_PASSWORD = "pw";
+      process.env.CCU_CA_CERT = caPath;
+      expect(loadConfig().ccu.caCert).toContain("BEGIN CERTIFICATE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws if CCU_CA_CERT points at a missing file", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_CA_CERT = "/no/such/ca.pem";
+    expect(() => loadConfig()).toThrow(/CCU_CA_CERT could not be read/);
   });
 
   // Issue #50: native TLS for the HTTP transport (opt-in), bind host, plaintext ack

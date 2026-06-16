@@ -149,6 +149,19 @@ export interface CcuConfig {
   https: boolean;
   /** Verify the CCU's TLS certificate. Off by default: CCUs ship self-signed certs. */
   tlsVerify: boolean;
+  /**
+   * Pin the CCU's self-signed leaf certificate by its SHA-256 fingerprint
+   * (`CCU_TLS_FINGERPRINT`, hex, with or without colons). When set, the
+   * connection is rejected unless the presented cert matches — the simplest way
+   * to verify a self-signed appliance cert. Takes precedence over `caCert`.
+   */
+  tlsFingerprint?: string;
+  /**
+   * PEM contents of the CCU's CA / self-signed certificate (`CCU_CA_CERT`
+   * points at the file). When set, the connection is validated against this CA
+   * with standard chain verification.
+   */
+  caCert?: string;
   user: string;
   password: string;
   timeout: number;

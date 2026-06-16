@@ -1,7 +1,13 @@
-import { Agent, fetch as undiciFetch } from "undici";
+import { Agent, buildConnector, fetch as undiciFetch } from "undici";
+import type { TLSSocket } from "node:tls";
 import type { CcuConfig, CcuRpcRequest, CcuRpcResponse } from "./types.js";
 import { CcuError, mapCcuError, mapNetworkError } from "../middleware/error-mapper.js";
 import type { Logger } from "../logger.js";
+
+/** Normalize a SHA-256 fingerprint for comparison: drop colons, lowercase. */
+function normalizeFingerprint(fp: string): string {
+  return fp.replace(/:/g, "").toLowerCase();
+}
 
 export class CcuClient {
   private readonly baseUrl: string;
@@ -18,11 +24,64 @@ export class CcuClient {
 
     if (config.https) {
       this.dispatcher = new Agent({
-        connect: { rejectUnauthorized: config.tlsVerify },
+        connect: this.buildConnect(config, logger),
         pipelining: 0,
         keepAliveTimeout: 1000,
       });
     }
+  }
+
+  /**
+   * Decide how the CCU's TLS certificate is verified (issue #51), most specific
+   * first:
+   *  1. CCU_TLS_FINGERPRINT — pin the exact self-signed leaf cert. Strongest
+   *     for an appliance; we complete the handshake without chain validation
+   *     (a self-signed cert has no chain) and reject unless the presented
+   *     cert's SHA-256 matches.
+   *  2. CCU_CA_CERT — trust a provided CA/self-signed PEM and do standard
+   *     chain validation.
+   *  3. CCU_TLS_VERIFY — verify against the system trust store (public CA).
+   *  4. Default — unverified, with a loud warning (a CCU ships a self-signed
+   *     cert, so this is the zero-config fallback, but it's MITM-exposed).
+   */
+  private buildConnect(config: CcuConfig, logger: Logger) {
+    if (config.tlsFingerprint) {
+      const expected = normalizeFingerprint(config.tlsFingerprint);
+      // rejectUnauthorized:false lets the self-signed handshake complete; the
+      // fingerprint check below is what actually authenticates the peer.
+      const connector = buildConnector({ rejectUnauthorized: false });
+      return (opts: buildConnector.Options, cb: buildConnector.Callback): void => {
+        connector(opts, (err, socket) => {
+          if (err || !socket) return cb(err ?? new Error("CCU TLS connect failed"), null);
+          const cert = (socket as TLSSocket).getPeerCertificate?.();
+          const actual = cert?.fingerprint256 ? normalizeFingerprint(cert.fingerprint256) : "";
+          if (!actual || actual !== expected) {
+            socket.destroy();
+            return cb(
+              new Error(
+                `CCU TLS certificate fingerprint mismatch (expected ${expected}, got ${actual || "none"})`,
+              ),
+              null,
+            );
+          }
+          cb(null, socket);
+        });
+      };
+    }
+
+    if (config.caCert) {
+      return { ca: config.caCert, rejectUnauthorized: true };
+    }
+
+    if (!config.tlsVerify) {
+      logger.warn("ccu_tls_unverified", {
+        hint:
+          "CCU TLS certificate is NOT verified (MITM-exposed). Pin it with " +
+          "CCU_TLS_FINGERPRINT, trust it with CCU_CA_CERT, or set CCU_TLS_VERIFY=true " +
+          "if the CCU presents a publicly-trusted certificate.",
+      });
+    }
+    return { rejectUnauthorized: config.tlsVerify };
   }
 
   async call(method: string, params: Record<string, unknown>, timeout?: number): Promise<unknown> {
