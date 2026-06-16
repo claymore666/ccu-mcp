@@ -49,7 +49,12 @@ export class CcuClient {
       const expected = normalizeFingerprint(config.tlsFingerprint);
       // rejectUnauthorized:false lets the self-signed handshake complete; the
       // fingerprint check below is what actually authenticates the peer.
-      const connector = buildConnector({ rejectUnauthorized: false });
+      // maxCachedSessions:0 disables TLS session resumption: on a resumed
+      // session the server does NOT re-send its certificate, so
+      // getPeerCertificate() comes back empty and the fingerprint check would
+      // wrongly reject every connection after the first. Forcing a full
+      // handshake per connection guarantees the cert is always present to pin.
+      const connector = buildConnector({ rejectUnauthorized: false, maxCachedSessions: 0 });
       return (opts: buildConnector.Options, cb: buildConnector.Callback): void => {
         connector(opts, (err, socket) => {
           if (err || !socket) return cb(err ?? new Error("CCU TLS connect failed"), null);
