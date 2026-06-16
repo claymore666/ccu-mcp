@@ -17,6 +17,21 @@ export function escapeHmScript(input: string): string {
     .replace(/\r/g, "\\r");
 }
 
+/**
+ * Extract the token from an `Authorization: Bearer <token>` header (scheme is
+ * case-insensitive per RFC 7235). Returns "" when absent or not a well-formed
+ * bearer header.
+ *
+ * The capture is anchored to a non-space first char (`\S.*`) so the whitespace
+ * and token patterns can't overlap — `\s+(.+)` overlapped on whitespace and
+ * backtracked polynomially on a caller-controlled header, which is reachable
+ * pre-auth (CodeQL js/polynomial-redos). Bearer tokens contain no spaces, so
+ * anchoring is behaviour-preserving for valid input.
+ */
+export function extractBearerToken(authHeader: string): string {
+  return authHeader.match(/^Bearer\s+(\S.*)$/i)?.[1] ?? "";
+}
+
 /** Format a tool result as MCP text content. */
 export function toolResult(data: unknown) {
   return { content: [{ type: "text" as const, text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };

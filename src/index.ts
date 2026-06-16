@@ -15,6 +15,7 @@ import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthToken } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
 import { createMcpServer } from "./server.js";
+import { extractBearerToken } from "./utils.js";
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -105,11 +106,10 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Auth check for MCP endpoints. The scheme is case-insensitive per
-        // RFC 7235; the token comparison is timing-safe (hash both sides so
-        // length differences don't create a timing side-channel).
-        const authHeader = req.headers.authorization ?? "";
-        const presented = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+        // Auth check for MCP endpoints. Token parsing tolerates the
+        // case-insensitive scheme (RFC 7235); the comparison is timing-safe
+        // (hash both sides so length differences don't leak via timing).
+        const presented = extractBearerToken(req.headers.authorization ?? "");
         const ha = createHash("sha256").update(presented).digest();
         const hb = createHash("sha256").update(authToken).digest();
         const headerValid = timingSafeEqual(ha, hb);
