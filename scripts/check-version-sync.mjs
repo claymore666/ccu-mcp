@@ -14,7 +14,7 @@
 //
 // Test seam: PKG_FILE / SERVER_FILE env vars point the check at synthetic
 // fixtures, so scripts gate logic is exercisable offline
-// (see test/check-version-sync.test.ts).
+// (see test/unit/version-sync.test.ts).
 import { readFileSync } from "node:fs";
 
 const PKG = process.env.PKG_FILE ?? "package.json";
