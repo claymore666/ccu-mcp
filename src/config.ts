@@ -22,6 +22,26 @@ export interface AppConfig {
      * `MCP_ALLOWED_HOSTS` when the server is reached under another hostname.
      */
     allowedHosts: string[];
+    /**
+     * Optional bind address for the HTTP listener (`MCP_HOST`). Unset ⇒ bind
+     * all interfaces (the unchanged default). Set to `127.0.0.1`/`::1` to
+     * restrict the server to loopback (e.g. when a reverse proxy terminates TLS
+     * in front), which also suppresses the plaintext warning.
+     */
+    host?: string;
+    /**
+     * Optional TLS cert/key paths (`MCP_TLS_CERT` / `MCP_TLS_KEY`). When BOTH
+     * are set the server listens over HTTPS natively; otherwise it serves plain
+     * HTTP (the zero-config default). Setting only one is a configuration error.
+     */
+    tlsCertPath?: string;
+    tlsKeyPath?: string;
+    /**
+     * Acknowledge that serving over plain HTTP is intended
+     * (`MCP_ALLOW_PLAINTEXT=true`). Silences the non-loopback plaintext warning
+     * for operators who deliberately run without TLS (e.g. a trusted LAN).
+     */
+    allowPlaintext: boolean;
   };
   cache: {
     dir: string;
@@ -81,6 +101,15 @@ export function loadConfig(): AppConfig {
     .map((o) => o.trim())
     .filter(Boolean);
 
+  // Native TLS for the HTTP transport is opt-in: set BOTH cert and key. Plain
+  // HTTP stays the zero-config default (issue #50). Setting only one is almost
+  // certainly a mistake, so fail loudly rather than silently serving plaintext.
+  const tlsCertPath = process.env.MCP_TLS_CERT?.trim() || undefined;
+  const tlsKeyPath = process.env.MCP_TLS_KEY?.trim() || undefined;
+  if (Boolean(tlsCertPath) !== Boolean(tlsKeyPath)) {
+    throw new Error("MCP_TLS_CERT and MCP_TLS_KEY must both be set (or both unset)");
+  }
+
   return {
     ccu: {
       host,
@@ -98,6 +127,10 @@ export function loadConfig(): AppConfig {
       authToken: process.env.MCP_AUTH_TOKEN,
       allowedOrigins,
       allowedHosts,
+      host: process.env.MCP_HOST?.trim() || undefined,
+      tlsCertPath,
+      tlsKeyPath,
+      allowPlaintext: process.env.MCP_ALLOW_PLAINTEXT === "true",
     },
     cache: {
       dir: process.env.CACHE_DIR || "/data",

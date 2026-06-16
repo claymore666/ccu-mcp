@@ -137,6 +137,8 @@ By default the HTTP server sends **no** CORS headers, so a random web page can't
 
 The HTTP transport also has **DNS-rebinding protection** on by default: it rejects requests whose `Host` header isn't `localhost`/`127.0.0.1` on the configured port. If you reach the server under another hostname (reverse proxy, container DNS name), list those hosts in `MCP_ALLOWED_HOSTS` or legitimate requests get a `403`.
 
+**TLS.** The bearer token travels in the request, so anything beyond loopback should be encrypted. You have two options: terminate TLS at a reverse proxy (Caddy/nginx) in front and bind the server to loopback (`MCP_HOST=127.0.0.1`), or let the server serve HTTPS itself by setting `MCP_TLS_CERT` and `MCP_TLS_KEY` to a PEM cert/key pair. Plain HTTP is still fully supported — it stays the zero-config default — but the server logs a warning at startup when it's serving the token over unencrypted HTTP on a non-loopback bind; set `MCP_ALLOW_PLAINTEXT=true` to acknowledge that and silence it.
+
 CORS support was first implemented by [@marcinn2](https://github.com/marcinn2) in his fork [marcinn2/debmatic-mcp](https://github.com/marcinn2/debmatic-mcp) — thanks!
 
 ### HTTPS
@@ -172,6 +174,9 @@ All configuration is via environment variables:
 | `MCP_AUTH_TOKEN` | auto-generated | Bearer token for HTTP mode; generated and saved to `$CACHE_DIR/.env` on first start |
 | `MCP_ALLOWED_ORIGINS` | unset | Comma-separated allowlist of browser origins. Unset = no cross-origin browser access (default-deny). An allowlisted origin is reflected exactly in `Access-Control-Allow-Origin` (never `*`); the list also drives DNS-rebinding origin checks |
 | `MCP_ALLOWED_HOSTS` | `localhost`/`127.0.0.1` | Extra `Host` values accepted by DNS-rebinding protection (comma-separated `host:port`); add your hostname when behind a proxy or container DNS name |
+| `MCP_HOST` | unset (all interfaces) | Bind address for the HTTP listener; set `127.0.0.1` to restrict to loopback (e.g. behind a TLS-terminating proxy), which also silences the plaintext warning |
+| `MCP_TLS_CERT` / `MCP_TLS_KEY` | unset | PEM cert/key paths. Set **both** to serve MCP over HTTPS natively; leave unset for plain HTTP. Setting only one is a configuration error |
+| `MCP_ALLOW_PLAINTEXT` | `false` | Set `true` to acknowledge serving the bearer token over plain HTTP and silence the non-loopback plaintext warning |
 | `CCU_RATE_LIMIT_BURST` | `20` | Max burst of requests sent to the CCU |
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |

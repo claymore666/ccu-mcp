@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 
-import { createServer, type Server as HttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import { readFile } from "node:fs/promises";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -58,7 +65,7 @@ async function main(): Promise<void> {
 
   let poller: ResourcePoller;
   let closeTransports: () => Promise<void>;
-  let httpServer: HttpServer | null = null;
+  let httpServer: HttpServer | HttpsServer | null = null;
 
   if (config.mcp.transport === "stdio") {
     const mcpServer = createMcpServer(deps);
@@ -79,7 +86,7 @@ async function main(): Promise<void> {
     const authToken = await resolveAuthToken(config.mcp.authToken, config.cache.dir, logger);
     const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
-    httpServer = createServer(async (req, res) => {
+    const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
         // CORS so browser-based MCP clients (e.g. MCP Inspector) can connect
         // directly. Default-deny against a configurable origin allowlist
@@ -190,7 +197,37 @@ async function main(): Promise<void> {
         }
         res.end(JSON.stringify({ error: "Internal error" }));
       }
-    });
+    };
+
+    // Native TLS is opt-in (issue #50): with both cert and key set we serve
+    // HTTPS so the bearer token isn't exposed in transit; otherwise we keep
+    // plain HTTP (the zero-config default). config validates that cert/key are
+    // set together.
+    const useTls = Boolean(config.mcp.tlsCertPath && config.mcp.tlsKeyPath);
+    if (useTls) {
+      const [cert, key] = await Promise.all([
+        readFile(config.mcp.tlsCertPath!),
+        readFile(config.mcp.tlsKeyPath!),
+      ]);
+      httpServer = createHttpsServer({ cert, key }, handleRequest);
+    } else {
+      httpServer = createHttpServer(handleRequest);
+      // Plain HTTP is allowed (some run behind a TLS-terminating proxy, or on a
+      // trusted LAN), but the bearer token then travels in the clear. Warn once
+      // at startup unless the listener is loopback-only or the operator has
+      // acknowledged it via MCP_ALLOW_PLAINTEXT.
+      const host = config.mcp.host;
+      const loopbackOnly = host === "127.0.0.1" || host === "::1" || host === "localhost";
+      if (!loopbackOnly && !config.mcp.allowPlaintext) {
+        logger.warn("plaintext_http", {
+          hint:
+            "MCP is serving the bearer token over unencrypted HTTP on a non-loopback " +
+            "address. Set MCP_TLS_CERT/MCP_TLS_KEY for native TLS, put a TLS-terminating " +
+            "reverse proxy in front, bind loopback with MCP_HOST=127.0.0.1, or set " +
+            "MCP_ALLOW_PLAINTEXT=true to silence this warning.",
+        });
+      }
+    }
 
     poller = new ResourcePoller(
       async () => {
@@ -206,8 +243,13 @@ async function main(): Promise<void> {
       sessions.clear();
     };
 
-    httpServer.listen(config.mcp.port, () => {
-      logger.info("server_ready", { transport: "http", port: config.mcp.port });
+    httpServer.listen(config.mcp.port, config.mcp.host, () => {
+      logger.info("server_ready", {
+        transport: useTls ? "https" : "http",
+        port: config.mcp.port,
+        host: config.mcp.host ?? "0.0.0.0",
+        tls: useTls,
+      });
     });
   }
 

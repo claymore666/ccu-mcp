@@ -27,6 +27,10 @@ describe("loadConfig", () => {
     delete process.env.CCU_TIMEOUT;
     delete process.env.CCU_SCRIPT_TIMEOUT;
     delete process.env.CCU_TLS_VERIFY;
+    delete process.env.MCP_HOST;
+    delete process.env.MCP_TLS_CERT;
+    delete process.env.MCP_TLS_KEY;
+    delete process.env.MCP_ALLOW_PLAINTEXT;
     delete process.env.LOG_LEVEL;
   });
 
@@ -196,5 +200,48 @@ describe("loadConfig", () => {
 
     process.env.CCU_TLS_VERIFY = "true";
     expect(loadConfig().ccu.tlsVerify).toBe(true);
+  });
+
+  // Issue #50: native TLS for the HTTP transport (opt-in), bind host, plaintext ack
+  it("TLS is off by default: no cert/key paths, plain HTTP", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.mcp.tlsCertPath).toBeUndefined();
+    expect(config.mcp.tlsKeyPath).toBeUndefined();
+    expect(config.mcp.host).toBeUndefined();
+    expect(config.mcp.allowPlaintext).toBe(false);
+  });
+
+  it("reads MCP_TLS_CERT/MCP_TLS_KEY when both are set", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_TLS_CERT = "/data/cert.pem";
+    process.env.MCP_TLS_KEY = "/data/key.pem";
+    const config = loadConfig();
+    expect(config.mcp.tlsCertPath).toBe("/data/cert.pem");
+    expect(config.mcp.tlsKeyPath).toBe("/data/key.pem");
+  });
+
+  it("throws if only one of MCP_TLS_CERT / MCP_TLS_KEY is set", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+
+    process.env.MCP_TLS_CERT = "/data/cert.pem";
+    expect(() => loadConfig()).toThrow(/MCP_TLS_CERT and MCP_TLS_KEY must both be set/);
+
+    delete process.env.MCP_TLS_CERT;
+    process.env.MCP_TLS_KEY = "/data/key.pem";
+    expect(() => loadConfig()).toThrow(/MCP_TLS_CERT and MCP_TLS_KEY must both be set/);
+  });
+
+  it("reads MCP_HOST and MCP_ALLOW_PLAINTEXT", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_HOST = "127.0.0.1";
+    process.env.MCP_ALLOW_PLAINTEXT = "true";
+    const config = loadConfig();
+    expect(config.mcp.host).toBe("127.0.0.1");
+    expect(config.mcp.allowPlaintext).toBe(true);
   });
 });

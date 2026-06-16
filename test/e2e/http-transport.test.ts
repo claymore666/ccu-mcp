@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, request, type Server, type IncomingHttpHeaders } from "node:http";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { request as httpsRequest } from "node:https";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
@@ -484,6 +485,162 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
   it("rejects a forged Host header with 403 (DNS-rebinding protection)", async () => {
     const res = await rawPost(mcpPort, INIT_BODY, { token: AUTH_TOKEN, host: "evil.example" });
     expect(res.status).toBe(403);
+  });
+
+  // Must be last: clean shutdown
+  it("shuts down gracefully on SIGTERM with exit code 0", async () => {
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    child.kill("SIGTERM");
+    const code = await Promise.race([
+      exited,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("shutdown timed out")), 12_000)),
+    ]);
+    expect(code).toBe(0);
+  }, 15_000);
+});
+
+// Issue #50: native TLS for the HTTP transport. When MCP_TLS_CERT/MCP_TLS_KEY
+// are set the server must listen over HTTPS so the bearer token isn't sent in
+// the clear. Skipped if openssl isn't available to mint a throwaway cert.
+const HAVE_OPENSSL = spawnSync("openssl", ["version"]).status === 0;
+
+// Minimal HTTPS client. TLS validation stays ENABLED — we trust the specific
+// throwaway cert by passing it as the CA (the cert carries an IP:127.0.0.1 SAN
+// so identity verification against the loopback host succeeds), rather than
+// disabling certificate validation.
+function httpsJson(
+  port: number,
+  opts: { method?: string; path?: string; headers?: Record<string, string>; body?: unknown; ca?: Buffer } = {},
+): Promise<{ status: number; headers: IncomingHttpHeaders; text: string }> {
+  return new Promise((resolve, reject) => {
+    const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+    const req = httpsRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        path: opts.path ?? "/",
+        method: opts.method ?? "GET",
+        ca: opts.ca,
+        headers: {
+          ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
+          ...opts.headers,
+        },
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (c) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, text }));
+      },
+    );
+    req.on("error", reject);
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native TLS, mocked CCU)", () => {
+  let ccu: { server: Server; port: number };
+  let child: ChildProcess;
+  let mcpPort: number;
+  let cacheDir: string;
+  let caCert: Buffer;
+
+  beforeAll(async () => {
+    ccu = await startCcuMock();
+    cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-tls-"));
+    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+
+    // Mint a throwaway self-signed cert. The SAN must include IP:127.0.0.1 —
+    // Node (>=17) no longer falls back to the subject CN for identity checks,
+    // so a CN-only cert would fail verification against the loopback host.
+    const certPath = join(cacheDir, "cert.pem");
+    const keyPath = join(cacheDir, "key.pem");
+    const gen = spawnSync("openssl", [
+      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", keyPath, "-out", certPath,
+      "-days", "1", "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ], { stdio: "ignore" });
+    if (gen.status !== 0) throw new Error("openssl failed to generate test cert");
+    caCert = readFileSync(certPath);
+
+    child = spawn("node", [DIST], {
+      env: {
+        ...process.env,
+        CCU_HOST: "127.0.0.1",
+        CCU_PORT: String(ccu.port),
+        CCU_HTTPS: "false",
+        CCU_PASSWORD: "mock",
+        MCP_TRANSPORT: "http",
+        MCP_PORT: String(mcpPort),
+        MCP_AUTH_TOKEN: AUTH_TOKEN,
+        MCP_TLS_CERT: certPath,
+        MCP_TLS_KEY: keyPath,
+        CACHE_DIR: cacheDir,
+        RESOURCE_POLL_INTERVAL: "3600",
+        LOG_LEVEL: "error",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      try {
+        const r = await httpsJson(mcpPort, { path: "/health", ca: caCert });
+        if (r.status === 200 || r.status === 503) break;
+      } catch { /* not up yet */ }
+      if (Date.now() > deadline) throw new Error("HTTPS server did not start");
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }, 20_000);
+
+  afterAll(async () => {
+    child?.kill("SIGTERM");
+    await new Promise((r) => setTimeout(r, 300));
+    child?.kill("SIGKILL");
+    ccu?.server.close();
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it("serves the health endpoint over HTTPS", async () => {
+    const res = await httpsJson(mcpPort, { path: "/health", ca: caCert });
+    expect(res.status).toBe(200);
+    expect((JSON.parse(res.text) as { status: string }).status).toBe("healthy");
+  });
+
+  it("rejects a plaintext HTTP request to the TLS port (TLS is actually on)", async () => {
+    // A plain-HTTP GET to an HTTPS listener does not complete a normal response.
+    await expect(
+      fetch(`http://127.0.0.1:${mcpPort}/health`, { signal: AbortSignal.timeout(2000) }),
+    ).rejects.toThrow();
+  });
+
+  it("completes the MCP initialize handshake over TLS", async () => {
+    const res = await httpsJson(mcpPort, {
+      method: "POST",
+      ca: caCert,
+      headers: {
+        "Authorization": `Bearer ${AUTH_TOKEN}`,
+        "Accept": "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: {
+        jsonrpc: "2.0", id: 0, method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "tls", version: "1" } },
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["mcp-session-id"]).toBeTruthy();
+  });
+
+  it("still enforces the bearer token over TLS", async () => {
+    const res = await httpsJson(mcpPort, {
+      method: "POST",
+      ca: caCert,
+      headers: { "Accept": "application/json, text/event-stream" },
+      body: { jsonrpc: "2.0", id: 1, method: "ping" },
+    });
+    expect(res.status).toBe(401);
   });
 
   // Must be last: clean shutdown
