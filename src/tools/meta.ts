@@ -47,7 +47,7 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 ## Available Tools
 **Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, list_links, describe_device_type
 **Read:** get_value, get_values, get_paramset
-**Control:** set_value, put_paramset, set_system_variable, execute_program
+**Control:** set_value, put_paramset, set_system_variable, create_system_variable, delete_system_variable, execute_program
 **Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
 **Meta:** help, run_script
 `;
@@ -118,6 +118,17 @@ Idempotent: yes`,
 Args: name (string), value (string|number|boolean)
 Returns: {name, value, method}
 Idempotent: yes`,
+
+  create_system_variable: `Create a new system variable.
+Args: name (string), type ("bool"|"float"|"enum"|"string"), description? (string),
+  unit?/min?/max? (float only), values? (string[], required for enum)
+Returns: {name, type, created: true}
+INVALID_INPUT if the name already exists (or enum without values). Use set_system_variable to write it.`,
+
+  delete_system_variable: `Delete a system variable by name.
+Args: name (string, exact match)
+Returns: {name, deleted: true}
+NOT_FOUND if the name doesn't exist.`,
 
   execute_program: `Trigger an automation program. NOT idempotent — never auto-retried.
 Args: id (string)

@@ -5,10 +5,19 @@ import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { toolResult, parseValue, escapeHmScript } from "../utils.js";
 
+// Short-lived name→type cache (#9), shared so create/delete can invalidate it
+// and a freshly created/removed variable is reflected on the next set.
+interface SysVarTypeCacheHolder {
+  entry: { ts: number; types: Map<string, string> } | null;
+}
+
 export function registerControlTools(server: McpServer, deps: ServerDeps): void {
+  const sysVarTypeCache: SysVarTypeCacheHolder = { entry: null };
   registerSetValue(server, deps);
   registerPutParamset(server, deps);
-  registerSetSystemVariable(server, deps);
+  registerSetSystemVariable(server, deps, sysVarTypeCache);
+  registerCreateSystemVariable(server, deps, sysVarTypeCache);
+  registerDeleteSystemVariable(server, deps, sysVarTypeCache);
   registerExecuteProgram(server, deps);
 }
 
@@ -148,11 +157,10 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
 
 const SYSVAR_TYPE_TTL_MS = 30_000;
 
-function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
-  // Short-lived name→type cache: avoids fetching the full sysvar list on every
-  // write. Types virtually never change; a fresh-cache miss still refetches,
-  // so newly created variables are picked up immediately.
-  let typeCache: { ts: number; types: Map<string, string> } | null = null;
+function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
+  // Short-lived name→type cache (shared via the holder): avoids fetching the
+  // full sysvar list on every write. create/delete clear it so new/removed
+  // variables are reflected immediately.
 
   server.registerTool(
     "set_system_variable",
@@ -178,8 +186,8 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         // Look up variable type (cached) to choose correct setter
         let method: string;
         let sysVarType: string | undefined;
-        if (typeCache && Date.now() - typeCache.ts < SYSVAR_TYPE_TTL_MS) {
-          sysVarType = typeCache.types.get(args.name);
+        if (typeCacheHolder.entry && Date.now() - typeCacheHolder.entry.ts < SYSVAR_TYPE_TTL_MS) {
+          sysVarType = typeCacheHolder.entry.types.get(args.name);
         }
         if (sysVarType === undefined) {
           await rateLimiter.acquire();
@@ -188,8 +196,8 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
             "SysVar.getAll",
             logger,
           ) as Array<{ name: string; type: string }>;
-          typeCache = { ts: Date.now(), types: new Map(allVars.map((v) => [v.name, v.type])) };
-          sysVarType = typeCache.types.get(args.name);
+          typeCacheHolder.entry = { ts: Date.now(), types: new Map(allVars.map((v) => [v.name, v.type])) };
+          sysVarType = typeCacheHolder.entry.types.get(args.name);
         }
 
         if (sysVarType !== undefined) {
@@ -244,6 +252,190 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         return toolResult({ name: args.name, value: args.value, method });
       } catch (err) {
         logger.info("tool_call", { tool: "set_system_variable", duration_ms: Date.now() - start, status: "error" });
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+    },
+  );
+}
+
+function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
+  server.registerTool(
+    "create_system_variable",
+    {
+      title: "Create System Variable",
+      description:
+        "Create a new system variable. Types: 'bool', 'float' (optional min/max/unit), " +
+        "'enum' (requires values list), 'string'. Use set_system_variable to write it afterwards, " +
+        "list_system_variables to see existing ones.",
+      inputSchema: {
+        name: z.string().describe("New variable name (must not already exist)"),
+        type: z.enum(["bool", "float", "enum", "string"]).describe("Variable type"),
+        description: z.string().optional().describe("Human-readable description shown in the WebUI"),
+        unit: z.string().optional().describe("Unit label (float only, e.g. '°C')"),
+        min: z.number().optional().describe("Minimum value (float only)"),
+        max: z.number().optional().describe("Maximum value (float only)"),
+        values: z.array(z.string()).optional().describe("Enum value labels in order (enum only, e.g. ['off','low','high'])"),
+      },
+      annotations: {
+        destructiveHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const { session, rateLimiter, logger } = deps;
+      const start = Date.now();
+
+      try {
+        if (args.type === "enum" && (!args.values || args.values.length === 0)) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: "An enum system variable requires a non-empty 'values' list.",
+            hint: "Pass values, e.g. [\"off\", \"low\", \"high\"].",
+          });
+        }
+
+        // Reject duplicates up front (creating over an existing name corrupts it).
+        await rateLimiter.acquire();
+        const existing = await withRetry(
+          () => session.call("SysVar.getAll"),
+          "SysVar.getAll",
+          logger,
+        ) as Array<{ name: string }>;
+        if (existing.some((v) => v.name === args.name)) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `System variable already exists: ${args.name}`,
+            hint: "Pick a unique name, or use set_system_variable to change the existing one.",
+          });
+        }
+
+        // Create via ReGa (no SysVar.createString exists, and this keeps all four
+        // types on one code path). Modeled exactly on the CCU's own JSON-RPC
+        // method scripts (occu WebUI/www/api/methods/sysvar/create*.tcl): set
+        // ValueType + type-specifics, then oSysVars.Add(sv.ID()) LAST. We add
+        // ValueUnit (float) and DPInfo (description), which those methods don't
+        // expose as parameters. There is no createString method, hence ReGa.
+        const name = escapeHmScript(args.name);
+        const info = escapeHmScript(args.description ?? "");
+        let typeSetup: string;
+        switch (args.type) {
+          case "bool":
+            typeSetup =
+              'sv.ValueType(ivtBinary);\n' +
+              'sv.ValueSubType(istBool);\n' +
+              'sv.ValueName0("false");\n' +
+              'sv.ValueName1("true");\n' +
+              'sv.State(false);';
+            break;
+          case "float": {
+            const unit = escapeHmScript(args.unit ?? "");
+            const min = Number.isFinite(args.min) ? args.min : 0;
+            const max = Number.isFinite(args.max) ? args.max : 100;
+            typeSetup =
+              'sv.ValueType(ivtFloat);\n' +
+              `sv.ValueMin(${min});\n` +
+              `sv.ValueMax(${max});\n` +
+              `sv.ValueUnit("${unit}");\n` +
+              'sv.State(0);';
+            break;
+          }
+          case "enum": {
+            const list = escapeHmScript((args.values ?? []).join(";"));
+            typeSetup =
+              'sv.ValueType(ivtInteger);\n' +
+              'sv.ValueSubType(istEnum);\n' +
+              `sv.ValueList("${list}");\n` +
+              'sv.State(0);';
+            break;
+          }
+          case "string":
+          default:
+            typeSetup =
+              'sv.ValueType(ivtString);\n' +
+              'sv.State("");';
+            break;
+        }
+
+        const script =
+          `object oSysVars = dom.GetObject(ID_SYSTEM_VARIABLES);\n` +
+          `object sv = dom.CreateObject(OT_VARDP);\n` +
+          `sv.Name("${name}");\n` +
+          `${typeSetup}\n` +
+          `sv.DPInfo("${info}");\n` +
+          `sv.Internal(false);\n` +
+          `oSysVars.Add(sv.ID());`;
+
+        await rateLimiter.acquire();
+        await withRetry(
+          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          "ReGa.runScript",
+          logger,
+        );
+
+        typeCacheHolder.entry = null; // new variable must be visible to the next set
+        logger.info("tool_call", { tool: "create_system_variable", duration_ms: Date.now() - start, status: "ok", type: args.type });
+        return toolResult({ name: args.name, type: args.type, created: true });
+      } catch (err) {
+        logger.info("tool_call", { tool: "create_system_variable", duration_ms: Date.now() - start, status: "error" });
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+    },
+  );
+}
+
+function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
+  server.registerTool(
+    "delete_system_variable",
+    {
+      title: "Delete System Variable",
+      description: "Delete a system variable by name. Use list_system_variables to see existing names.",
+      inputSchema: {
+        name: z.string().describe("Variable name (exact match)"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const { session, rateLimiter, logger } = deps;
+      const start = Date.now();
+
+      try {
+        // Validate existence so an unknown name is a clean NOT_FOUND rather than
+        // a silent no-op (deleteSysVarByName doesn't report a missing name).
+        await rateLimiter.acquire();
+        const existing = await withRetry(
+          () => session.call("SysVar.getAll"),
+          "SysVar.getAll",
+          logger,
+        ) as Array<{ name: string }>;
+        if (!existing.some((v) => v.name === args.name)) {
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: `System variable not found: ${args.name}`,
+            hint: "Call list_system_variables to see available variables (name must match exactly).",
+          });
+        }
+
+        await rateLimiter.acquire();
+        await withRetry(
+          () => session.call("SysVar.deleteSysVarByName", { name: args.name }),
+          "SysVar.deleteSysVarByName",
+          logger,
+        );
+
+        typeCacheHolder.entry = null; // removed variable must not linger in the cache
+        logger.info("tool_call", { tool: "delete_system_variable", duration_ms: Date.now() - start, status: "ok" });
+        return toolResult({ name: args.name, deleted: true });
+      } catch (err) {
+        logger.info("tool_call", { tool: "delete_system_variable", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
         throw err;
       }

@@ -168,4 +168,34 @@ describeIf("MCP tools against live CCU", () => {
       }
     }
   }, 60_000);
+
+  // Full lifecycle against real ReGa: create → set → read back → delete. Uses a
+  // throwaway name and always deletes, so the CCU is left as it was found.
+  it("system variable lifecycle: create → set → read → delete (live)", async () => {
+    const name = "debmatic_mcp_test_var";
+    try {
+      const created = parseToolResult(await callTool(server, "create_system_variable", { name, type: "float", unit: "°C", min: 0, max: 50 })) as any;
+      expect(created.created).toBe(true);
+
+      // Duplicate create is rejected.
+      const dup: any = await callTool(server, "create_system_variable", { name, type: "float" });
+      expect(dup.isError).toBe(true);
+      expect(JSON.parse(dup.content[0].text).error).toBe("INVALID_INPUT");
+
+      // Set and read back through the normal tools (cache must see the new var).
+      await callTool(server, "set_system_variable", { name, value: 21.5 });
+      const vars = parseToolResult(await callTool(server, "list_system_variables", { name })) as Array<{ name: string; value: unknown }>;
+      const mine = vars.find((v) => v.name === name);
+      expect(mine).toBeDefined();
+      expect(Number(mine!.value)).toBeCloseTo(21.5, 1);
+    } finally {
+      const del = parseToolResult(await callTool(server, "delete_system_variable", { name })) as any;
+      expect(del?.deleted ?? del?.isError === undefined).toBeTruthy();
+    }
+
+    // After deletion it's gone → NOT_FOUND on a second delete.
+    const second: any = await callTool(server, "delete_system_variable", { name });
+    expect(second.isError).toBe(true);
+    expect(JSON.parse(second.content[0].text).error).toBe("NOT_FOUND");
+  }, 90_000);
 });
