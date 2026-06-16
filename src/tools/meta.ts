@@ -47,7 +47,7 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 ## Available Tools
 **Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, list_links, describe_device_type
 **Read:** get_value, get_values, get_paramset
-**Control:** set_value, put_paramset, set_system_variable, create_system_variable, delete_system_variable, execute_program
+**Control:** set_value, put_paramset, set_system_variable, create_system_variable, delete_system_variable, assign_channel, unassign_channel, execute_program
 **Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
 **Meta:** help, run_script
 `;
@@ -129,6 +129,16 @@ INVALID_INPUT if the name already exists (or enum without values). Use set_syste
 Args: name (string, exact match)
 Returns: {name, deleted: true}
 NOT_FOUND if the name doesn't exist.`,
+
+  assign_channel: `Assign a channel to a room and/or function group.
+Args: channel (address), room? (name), function? (name) — at least one of room/function
+Returns: {channel, assignedTo: [{kind, name}]}
+NOT_FOUND (with valid names) for unknown channel/room/function.`,
+
+  unassign_channel: `Remove a channel from a room and/or function group.
+Args: channel (address), room? (name), function? (name) — at least one of room/function
+Returns: {channel, removedFrom: [{kind, name}]}
+NOT_FOUND (with valid names) for unknown channel/room/function.`,
 
   execute_program: `Trigger an automation program. NOT idempotent — never auto-retried.
 Args: id (string)

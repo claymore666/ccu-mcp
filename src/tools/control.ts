@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
+import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { toolResult, parseValue, escapeHmScript } from "../utils.js";
@@ -19,6 +20,8 @@ export function registerControlTools(server: McpServer, deps: ServerDeps): void 
   registerCreateSystemVariable(server, deps, sysVarTypeCache);
   registerDeleteSystemVariable(server, deps, sysVarTypeCache);
   registerExecuteProgram(server, deps);
+  registerAssignChannel(server, deps, "add");
+  registerAssignChannel(server, deps, "remove");
 }
 
 function registerSetValue(server: McpServer, deps: ServerDeps): void {
@@ -436,6 +439,132 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps, typeC
         return toolResult({ name: args.name, deleted: true });
       } catch (err) {
         logger.info("tool_call", { tool: "delete_system_variable", duration_ms: Date.now() - start, status: "error" });
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+    },
+  );
+}
+
+function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" | "remove"): void {
+  const toolName = mode === "add" ? "assign_channel" : "unassign_channel";
+  const verb = mode === "add" ? "Assign" : "Remove";
+  const prep = mode === "add" ? "to" : "from";
+
+  server.registerTool(
+    toolName,
+    {
+      title: `${verb} Channel ${mode === "add" ? "to" : "from"} Room/Function`,
+      description:
+        `${verb} a channel ${prep} a room and/or a function group. Identify the channel by address ` +
+        "and the room/function by name (use list_rooms / list_functions to see names). " +
+        "At least one of room or function is required.",
+      inputSchema: {
+        channel: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
+        room: z.string().optional().describe("Room name (exact match)"),
+        function: z.string().optional().describe("Function group name (exact match)"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const { session, rateLimiter, logger } = deps;
+      const start = Date.now();
+
+      try {
+        if (!args.room && !args.function) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: "Provide a room and/or a function to assign the channel to.",
+            hint: "Pass room and/or function by name (see list_rooms / list_functions).",
+          });
+        }
+
+        // Resolve the channel address → channel ID (the membership APIs take IDs).
+        await rateLimiter.acquire();
+        const devices = await withRetry(
+          () => session.call("Device.listAllDetail"),
+          "Device.listAllDetail",
+          logger,
+        ) as CcuDevice[];
+        deps.resolver.updateDeviceList(devices);
+        let channelId: string | undefined;
+        for (const d of devices) {
+          const ch = d.channels.find((c) => c.address === args.channel);
+          if (ch) { channelId = ch.id; break; }
+        }
+        if (!channelId) {
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: `Channel not found: ${args.channel}`,
+            hint: "Call list_devices to find valid channel addresses.",
+          });
+        }
+
+        const applied: Array<{ kind: "room" | "function"; name: string }> = [];
+
+        if (args.room) {
+          await rateLimiter.acquire();
+          const rooms = await withRetry(
+            () => session.call("Room.getAll"),
+            "Room.getAll",
+            logger,
+          ) as Array<{ id: string; name: string }>;
+          const room = rooms.find((r) => r.name === args.room);
+          if (!room) {
+            throw new CcuError({
+              error: "NOT_FOUND",
+              code: 0,
+              message: `Room not found: ${args.room}`,
+              hint: `Valid rooms: ${rooms.map((r) => r.name).join(", ")}`,
+            });
+          }
+          await rateLimiter.acquire();
+          await withRetry(
+            () => session.call(mode === "add" ? "Room.addChannel" : "Room.removeChannel", { id: room.id, channelId }),
+            "Room.modifyChannel",
+            logger,
+          );
+          applied.push({ kind: "room", name: room.name });
+        }
+
+        if (args.function) {
+          await rateLimiter.acquire();
+          const functions = await withRetry(
+            () => session.call("Subsection.getAll"),
+            "Subsection.getAll",
+            logger,
+          ) as Array<{ id: string; name: string }>;
+          const fn = functions.find((f) => f.name === args.function);
+          if (!fn) {
+            throw new CcuError({
+              error: "NOT_FOUND",
+              code: 0,
+              message: `Function not found: ${args.function}`,
+              hint: `Valid functions: ${functions.map((f) => f.name).join(", ")}`,
+            });
+          }
+          await rateLimiter.acquire();
+          await withRetry(
+            () => session.call(mode === "add" ? "Subsection.addChannel" : "Subsection.removeChannel", { id: fn.id, channelId }),
+            "Subsection.modifyChannel",
+            logger,
+          );
+          applied.push({ kind: "function", name: fn.name });
+        }
+
+        logger.info("tool_call", { tool: toolName, duration_ms: Date.now() - start, status: "ok" });
+        return toolResult({
+          channel: args.channel,
+          [mode === "add" ? "assignedTo" : "removedFrom"]: applied,
+        });
+      } catch (err) {
+        logger.info("tool_call", { tool: toolName, duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
         throw err;
       }

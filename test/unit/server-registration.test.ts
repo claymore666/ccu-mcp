@@ -48,6 +48,7 @@ describe("MCP Server Registration", () => {
 
     expect(toolNames).toEqual([
       "acknowledge_service_messages",
+      "assign_channel",
       "create_system_variable",
       "delete_system_variable",
       "describe_device_type",
@@ -70,9 +71,10 @@ describe("MCP Server Registration", () => {
       "run_script",
       "set_system_variable",
       "set_value",
+      "unassign_channel",
     ]);
 
-    expect(Object.keys(tools).length).toBe(23);
+    expect(Object.keys(tools).length).toBe(25);
     deps.rateLimiter.destroy();
   });
 
@@ -127,8 +129,8 @@ describe("Tool annotations", () => {
     "get_rssi", "get_value", "get_values", "help", "list_devices", "list_functions",
     "list_interfaces", "list_links", "list_programs", "list_rooms", "list_system_variables",
   ];
-  const WRITE_TOOLS = ["acknowledge_service_messages", "create_system_variable", "delete_system_variable", "execute_program", "put_paramset", "run_script", "set_system_variable", "set_value"];
-  const IDEMPOTENT_WRITES = ["acknowledge_service_messages", "delete_system_variable", "put_paramset", "set_system_variable", "set_value"];
+  const WRITE_TOOLS = ["acknowledge_service_messages", "assign_channel", "create_system_variable", "delete_system_variable", "execute_program", "put_paramset", "run_script", "set_system_variable", "set_value", "unassign_channel"];
+  const IDEMPOTENT_WRITES = ["acknowledge_service_messages", "assign_channel", "delete_system_variable", "put_paramset", "set_system_variable", "set_value", "unassign_channel"];
   const LOCAL_TOOLS = ["help"]; // everything else reaches the external CCU
 
   type Ann = {

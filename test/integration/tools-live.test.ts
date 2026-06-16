@@ -198,4 +198,32 @@ describeIf("MCP tools against live CCU", () => {
     expect(second.isError).toBe(true);
     expect(JSON.parse(second.content[0].text).error).toBe("NOT_FOUND");
   }, 90_000);
+
+  // Assign a channel to a room, verify via list_rooms, then revert — leaving the
+  // CCU as found. Skips gracefully if the CCU has no rooms/channels to work with.
+  it("assign_channel → verify via list_rooms → unassign (live)", async () => {
+    const rooms = parseToolResult(await callTool(server, "list_rooms")) as Array<{ id: string; name: string; channelIds: string[] }>;
+    const devices = parseToolResult(await callTool(server, "list_devices")) as Array<{ channels: Array<{ id: string; address: string }> }>;
+    const channel = devices.flatMap((d) => d.channels)[0];
+    expect(rooms.length).toBeGreaterThan(0);
+    expect(channel).toBeDefined();
+
+    // Pick a room the channel is NOT already in, so the revert is a true revert.
+    const target = rooms.find((r) => !r.channelIds.includes(channel!.id)) ?? rooms[0]!;
+    const wasMember = target.channelIds.includes(channel!.id);
+
+    try {
+      const res = parseToolResult(await callTool(server, "assign_channel", { channel: channel!.address, room: target.name })) as any;
+      expect(res.assignedTo).toContainEqual({ kind: "room", name: target.name });
+
+      const after = parseToolResult(await callTool(server, "list_rooms")) as Array<{ name: string; channelIds: string[] }>;
+      const updated = after.find((r) => r.name === target.name)!;
+      expect(updated.channelIds).toContain(channel!.id);
+    } finally {
+      // Revert only if we added it (don't strip a pre-existing membership).
+      if (!wasMember) {
+        await callTool(server, "unassign_channel", { channel: channel!.address, room: target.name });
+      }
+    }
+  }, 90_000);
 });

@@ -130,7 +130,7 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
     const res = await mcpPost(mcpPort, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, sid);
     expect(res.status).toBe(200);
     const msg = await parseSse(res);
-    expect(msg.result.tools.length).toBe(23);
+    expect(msg.result.tools.length).toBe(25);
   });
 
   it("returns a structured tool error (not a crash) when a tool needs the CCU", async () => {
@@ -248,7 +248,7 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
       const res = await mcpPost(mcpPort, { jsonrpc: "2.0", id: i, method: "tools/list", params: {} }, sid);
       expect(res.status).toBe(200);
       const msg = await parseSse(res);
-      expect(msg.result.tools.length).toBe(23);
+      expect(msg.result.tools.length).toBe(25);
     }
   });
 
