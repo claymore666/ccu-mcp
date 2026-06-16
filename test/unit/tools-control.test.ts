@@ -199,6 +199,27 @@ describe("create_system_variable handler", () => {
     expect(script).toContain("ivtBinary");
     expect(script).toContain("istBool");
     expect(script).toContain('sv.Name("Urlaub")');
+    // ValueUnit/DPInfo (and the verifying WriteLine) come AFTER oSysVars.Add — a
+    // CCU naming quirk renames the variable if they're set before Add.
+    expect(script.indexOf("oSysVars.Add")).toBeLessThan(script.indexOf("WriteLine(sv.Name())"));
+    cleanupDeps(deps);
+  });
+
+  it("rejects a CCU name-dedup (script echoes a suffixed name) and cleans it up", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [];        // exact name looks free…
+      if (method === "ReGa.runScript") return "Urlaub 1"; // …but the CCU deduped it
+      return null;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result: any = await callTool(server, "create_system_variable", { name: "Urlaub", type: "bool" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    // the unintended, dedup'd variable is removed
+    expect(sessionCall.mock.calls.some(
+      (c: unknown[]) => c[0] === "SysVar.deleteSysVarByName" && (c[1] as any)?.name === "Urlaub 1",
+    )).toBe(true);
     cleanupDeps(deps);
   });
 

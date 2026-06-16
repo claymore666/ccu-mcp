@@ -172,10 +172,14 @@ describeIf("MCP tools against live CCU", () => {
   // Full lifecycle against real ReGa: create → set → read back → delete. Uses a
   // throwaway name and always deletes, so the CCU is left as it was found.
   it("system variable lifecycle: create → set → read → delete (live)", async () => {
-    const name = "debmatic_mcp_test_var";
+    // Unique per run: the CCU keeps hidden VARDP objects for a name even after
+    // deletion, so reusing a fixed name eventually makes create dedup it to
+    // "<name> N". A fresh name each run sidesteps that and keeps the test clean.
+    const name = `debmatic_mcp_test_${Date.now()}`;
     try {
       const created = parseToolResult(await callTool(server, "create_system_variable", { name, type: "float", unit: "°C", min: 0, max: 50 })) as any;
       expect(created.created).toBe(true);
+      expect(created.name).toBe(name); // got the exact requested name, not a deduped one
 
       // Duplicate create is rejected.
       const dup: any = await callTool(server, "create_system_variable", { name, type: "float" });
@@ -203,9 +207,12 @@ describeIf("MCP tools against live CCU", () => {
   // CCU as found. Skips gracefully if the CCU has no rooms/channels to work with.
   it("assign_channel → verify via list_rooms → unassign (live)", async () => {
     const rooms = parseToolResult(await callTool(server, "list_rooms")) as Array<{ id: string; name: string; channelIds: string[] }>;
-    const devices = parseToolResult(await callTool(server, "list_devices")) as Array<{ channels: Array<{ id: string; address: string }> }>;
-    const channel = devices.flatMap((d) => d.channels)[0];
     expect(rooms.length).toBeGreaterThan(0);
+    // Filtered list_devices returns FULL channel objects (with `id`); the
+    // unfiltered/compact form omits `id`, which we need to check room membership.
+    const populated = rooms.find((r) => r.channelIds.length > 0) ?? rooms[0]!;
+    const devices = parseToolResult(await callTool(server, "list_devices", { room: populated.name })) as Array<{ channels: Array<{ id: string; address: string }> }>;
+    const channel = devices.flatMap((d) => d.channels).find((c) => c.id && c.address);
     expect(channel).toBeDefined();
 
     // Pick a room the channel is NOT already in, so the revert is a true revert.

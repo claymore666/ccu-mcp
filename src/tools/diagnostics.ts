@@ -288,9 +288,10 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get RSSI / Radio Quality",
       description:
-        "Report radio link quality (RSSI, in dBm) for every device, resolved to device names, " +
-        "plus BidCos interface health (duty cycle, connected state). Use to answer 'why is this " +
-        "sensor flaky?'. Higher (closer to 0) dBm is better; null means no measurement available.",
+        "Report radio link quality (RSSI, in dBm) for every device, resolved to device names, plus " +
+        "BidCos interface health (duty cycle, connected state). Covers both transports: BidCos-RF via " +
+        "Interface.rssiInfo, and HmIP-RF via each device's RSSI_DEVICE/RSSI_PEER maintenance datapoints. " +
+        "Use to answer 'why is this sensor flaky?'. Higher (closer to 0) dBm is better; null = no measurement.",
       inputSchema: {
         name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
       },
@@ -317,8 +318,12 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           ifaceByAddress.set(d.address, d.interface);
         }
 
-        // Enumerate interfaces and pull rssiInfo per interface. rssiInfo maps
-        // device1 → device2 → [rssiAtDevice1, rssiAtDevice2] (dBm; 65536 = none).
+        // Enumerate interfaces and pull rssiInfo per interface. The JSON-RPC
+        // Interface.rssiInfo returns an ARRAY (see occu .../interface/rssiinfo.tcl):
+        //   [{ name: <deviceAddress>, partner: [{ name: <peerAddress>, rssiData: [a, b] }] }]
+        // The `name` fields are device/peer addresses; rssiData values are dBm
+        // (65536 = no measurement). atDevice = received by this device from peer,
+        // atPeer = received by the peer from this device.
         await rateLimiter.acquire();
         const interfaces = await withRetry(
           () => session.call("Interface.listInterfaces"),
@@ -329,30 +334,32 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
         const needle = args.name?.toLowerCase();
         const deviceEntries: Array<Record<string, unknown>> = [];
 
+        type RssiEntry = { name: string; partner?: Array<{ name: string; rssiData?: unknown }> };
         for (const iface of interfaces) {
-          let info: Record<string, Record<string, unknown>> | null = null;
+          let info: RssiEntry[] | null = null;
           try {
             await rateLimiter.acquire();
             info = await withRetry(
               () => session.call("Interface.rssiInfo", { interface: iface.name }),
               "Interface.rssiInfo",
               logger,
-            ) as Record<string, Record<string, unknown>>;
+            ) as RssiEntry[];
           } catch {
             // Interfaces without RF (e.g. VirtualDevices) don't support rssiInfo.
             continue;
           }
-          if (!info || typeof info !== "object") continue;
+          if (!Array.isArray(info)) continue;
 
-          for (const [address, peers] of Object.entries(info)) {
-            if (!peers || typeof peers !== "object") continue;
-            const links = Object.entries(peers).map(([peer, pair]) => {
-              const [atDevice, atPeer] = Array.isArray(pair) ? pair : [];
+          for (const dev of info) {
+            const address = dev?.name ?? "";
+            if (!address) continue;
+            const links = (Array.isArray(dev.partner) ? dev.partner : []).map((p) => {
+              const pair = Array.isArray(p?.rssiData) ? p.rssiData : [];
               return {
-                peer,
-                peerName: nameByAddress.get(peer) ?? "",
-                rssiDevice: normalizeRssi(atDevice), // dBm received by this device from peer
-                rssiPeer: normalizeRssi(atPeer),     // dBm received by the peer from this device
+                peer: p?.name ?? "",
+                peerName: nameByAddress.get(p?.name ?? "") ?? "",
+                rssiDevice: normalizeRssi(pair[0]), // dBm received by this device from peer
+                rssiPeer: normalizeRssi(pair[1]),   // dBm received by the peer from this device
               };
             });
             const entry = {
@@ -363,6 +370,45 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
             };
             if (needle && !`${entry.address} ${entry.name}`.toLowerCase().includes(needle)) continue;
             deviceEntries.push(entry);
+          }
+        }
+
+        // HmIP devices don't expose rssiInfo; their RSSI lives in the :0
+        // maintenance channel's RSSI_DEVICE / RSSI_PEER datapoints (dBm, negative).
+        // Read the :0 VALUES paramset per HmIP device (one call each — there's no
+        // bulk equivalent) and merge into the same output shape: rssiDevice =
+        // measured by the device, rssiPeer = measured by the peer (AP/CCU), where
+        // present. Values are already dBm; a non-negative reading means "no value".
+        // Interface.getParamset returns raw string values; coerce, and treat
+        // only a negative dBm as a real reading (0/positive/non-numeric = none).
+        const dbm = (v: unknown): number | null => {
+          const n = typeof v === "string" ? Number(v) : v;
+          return typeof n === "number" && Number.isFinite(n) && n < 0 ? n : null;
+        };
+        for (const d of devices) {
+          if (!/hmip/i.test(d.interface)) continue;
+          const maint = d.channels.find((c) => c.address.endsWith(":0"));
+          if (!maint) continue;
+          if (needle && !`${d.address} ${d.name}`.toLowerCase().includes(needle)) continue;
+          try {
+            await rateLimiter.acquire();
+            const vals = await withRetry(
+              () => session.call("Interface.getParamset", { interface: d.interface, address: maint.address, paramsetKey: "VALUES" }),
+              "Interface.getParamset",
+              logger,
+            ) as Record<string, unknown>;
+            const rssiDevice = dbm(vals?.RSSI_DEVICE);
+            const rssiPeer = dbm(vals?.RSSI_PEER);
+            if (rssiDevice === null && rssiPeer === null) continue; // no usable RSSI
+            deviceEntries.push({
+              address: d.address,
+              name: d.name,
+              interface: d.interface,
+              links: [{ peer: d.interface, peerName: "", rssiDevice, rssiPeer }],
+            });
+          } catch {
+            // device unreachable / paramset unreadable — skip, don't fail the call
+            continue;
           }
         }
 
