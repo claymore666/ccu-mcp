@@ -121,7 +121,11 @@ export function loadConfig(): AppConfig {
     try {
       caCert = readFileSync(caCertPath, "utf-8");
     } catch (err) {
-      throw new Error(`CCU_CA_CERT could not be read at "${caCertPath}": ${(err as Error).message}`);
+      // Don't interpolate the env-derived path here: a fatal config error is
+      // logged at the top level, and echoing raw env values into logs is a
+      // leak vector (js/clear-text-logging). The fs error already names the
+      // path for the operator.
+      throw new Error(`CCU_CA_CERT could not be read: ${(err as Error).message}`);
     }
   }
 
