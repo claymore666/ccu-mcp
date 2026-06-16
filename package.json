@@ -23,7 +23,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "prepublishOnly": "npm run lint && npm test"
+    "check:versions": "node scripts/check-version-sync.mjs",
+    "version": "node scripts/sync-server-version.mjs && git add server.json",
+    "prepublishOnly": "npm run check:versions && npm run lint && npm test"
   },
   "engines": {
     "node": ">=22"
