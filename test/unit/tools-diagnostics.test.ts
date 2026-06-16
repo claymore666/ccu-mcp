@@ -58,6 +58,68 @@ describe("get_service_messages handler", () => {
   });
 });
 
+describe("acknowledge_service_messages handler", () => {
+  it("confirms a single alarm by id and reports what was confirmed", async () => {
+    const mock = JSON.stringify({ confirmed: [{ id: "4711", type: "LOWBAT", address: "ABC:0" }] });
+    const sessionCall = vi.fn().mockResolvedValue(mock);
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "acknowledge_service_messages", { id: "4711" })) as any;
+    expect(result.count).toBe(1);
+    expect(result.confirmed[0].id).toBe("4711");
+    cleanupDeps(deps);
+  });
+
+  it("confirms all active messages on a channel address", async () => {
+    const mock = JSON.stringify({
+      confirmed: [
+        { id: "1", type: "LOWBAT", address: "ABC:0" },
+        { id: "2", type: "UNREACH", address: "ABC:0" },
+      ],
+    });
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(mock) });
+
+    const result = parseToolResult(await callTool(server, "acknowledge_service_messages", { address: "ABC:0" })) as any;
+    expect(result.count).toBe(2);
+    cleanupDeps(deps);
+  });
+
+  it("returns INVALID_INPUT when neither id nor address is given", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result: any = await callTool(server, "acknowledge_service_messages", {});
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    expect(sessionCall).not.toHaveBeenCalled(); // validated before touching the CCU
+    cleanupDeps(deps);
+  });
+
+  it("returns NOT_FOUND when nothing matched (no active alarm for that id/address)", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [] })),
+    });
+
+    const result: any = await callTool(server, "acknowledge_service_messages", { id: "9999" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    cleanupDeps(deps);
+  });
+
+  it("generates a script that confirms (AlConfirm) and escapes the requested id/address", async () => {
+    const sessionCall = vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [{ id: "1", type: "x", address: 'A":0' }] }));
+    const { server, deps } = createTestServer({ sessionCall });
+
+    await callTool(server, "acknowledge_service_messages", { address: 'A":0' });
+    const script = sessionCall.mock.calls[0][1].script as string;
+    expect(script).toContain("AlConfirm()");
+    expect(script).toContain("OT_ALARMDP");
+    // the embedded address literal is escaped (quote -> \")
+    expect(script).toContain('string wantAddr = "A\\":0";');
+    cleanupDeps(deps);
+  });
+});
+
 describe("get_system_info handler", () => {
   it("returns all system info fields", async () => {
     const { server, deps } = createTestServer({

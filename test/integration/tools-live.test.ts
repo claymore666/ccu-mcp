@@ -109,4 +109,20 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
+
+  // Exercises the real ReGa enumeration + AlConfirm path without mutating the
+  // user's CCU: a bogus id matches no active alarm → empty confirmed → NOT_FOUND.
+  // We deliberately do NOT auto-confirm a real active alarm (it would silently
+  // dismiss the user's warnings during a test run).
+  it("acknowledge_service_messages returns NOT_FOUND for an unknown id (live ReGa)", async () => {
+    const result: any = await callTool(server, "acknowledge_service_messages", { id: "999999999" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+  }, 30_000);
+
+  it("acknowledge_service_messages rejects an empty request with INVALID_INPUT", async () => {
+    const result: any = await callTool(server, "acknowledge_service_messages", {});
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+  }, 30_000);
 });

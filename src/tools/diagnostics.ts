@@ -1,11 +1,13 @@
+import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
-import { toolResult, tryParseJson, VERSION } from "../utils.js";
+import { toolResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
+  registerAcknowledgeServiceMessages(server, deps);
   registerGetSystemInfo(server, deps);
 }
 
@@ -106,6 +108,120 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
         return toolResult(messages);
       } catch (err) {
         logger.info("tool_call", { tool: "get_service_messages", duration_ms: Date.now() - start, status: "error" });
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+    },
+  );
+}
+
+function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps): void {
+  server.registerTool(
+    "acknowledge_service_messages",
+    {
+      title: "Acknowledge Service Messages",
+      description:
+        "Confirm/dismiss active service messages (e.g. clear a low-battery or unreachable warning). " +
+        "Provide an alarm id (from get_service_messages) to confirm one message, or a channel address " +
+        "to confirm all active messages on that channel. A warning reappears if its condition persists.",
+      inputSchema: {
+        id: z.string().optional().describe("Alarm id from get_service_messages (confirm a single message)"),
+        address: z.string().optional().describe("Channel address — confirm all active messages on this channel (e.g. '000A1BE9A71F15:0')"),
+      },
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      const { session, rateLimiter, logger } = deps;
+      const start = Date.now();
+
+      try {
+        if (!args.id && !args.address) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: "Provide either an alarm id or a channel address to acknowledge.",
+            hint: "Call get_service_messages to see active alarms with their ids and addresses.",
+          });
+        }
+
+        // Enumerate active alarms (same OT_ALARMDP objects get_service_messages
+        // lists), AlConfirm() the ones matching the requested id/address, and
+        // report what was confirmed. Confirming in ReGa avoids a second round
+        // trip and means we only ever confirm currently-active alarms.
+        const wantId = escapeHmScript(args.id ?? "");
+        const wantAddr = escapeHmScript(args.address ?? "");
+        const script = `
+          string wantId = "${wantId}";
+          string wantAddr = "${wantAddr}";
+          object svcs = dom.GetObject(ID_SERVICES);
+          boolean first = true;
+          Write('{"confirmed":[');
+          if (svcs) {
+            string sId;
+            foreach(sId, svcs.EnumIDs()) {
+              object svc = dom.GetObject(sId);
+              if (svc && svc.IsTypeOf(OT_ALARMDP) && svc.AlState() == asOncoming) {
+                string alName = svc.Name();
+                string chAddr = "";
+                string dpName = "";
+                integer alPos = alName.Find("AL-");
+                if (alPos >= 0) {
+                  string rest = alName.Substr(3, alName.Length());
+                  integer dotPos = rest.Find(".");
+                  if (dotPos > 0) {
+                    chAddr = rest.Substr(0, dotPos);
+                    dpName = rest.Substr(dotPos + 1, rest.Length());
+                  }
+                }
+                boolean match = false;
+                if (wantId != "" && sId == wantId) { match = true; }
+                if (wantAddr != "" && chAddr == wantAddr) { match = true; }
+                if (match) {
+                  svc.AlConfirm();
+                  if (!first) { Write(","); } first = false;
+                  ! JSON-escape user-controlled names (backslash first, then quote)
+                  dpName = dpName.Replace("\\\\", "\\\\\\\\");
+                  dpName = dpName.Replace("\\"", "\\\\\\"");
+                  Write('{"id":"' # sId # '","type":"' # dpName # '","address":"' # chAddr # '"}');
+                }
+              }
+            }
+          }
+          Write(']}');
+        `;
+
+        await rateLimiter.acquire();
+        const result = await withRetry(
+          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          "ReGa.runScript",
+          logger,
+        );
+
+        const parsed = typeof result === "string" ? tryParseJson(result) : result;
+        const confirmed = (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          && Array.isArray((parsed as Record<string, unknown>).confirmed))
+          ? (parsed as Record<string, unknown>).confirmed as Array<Record<string, unknown>>
+          : [];
+
+        if (confirmed.length === 0) {
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: args.id
+              ? `No active service message with id: ${args.id}`
+              : `No active service messages on channel: ${args.address}`,
+            hint: "Call get_service_messages to see currently active alarms.",
+          });
+        }
+
+        logger.info("tool_call", { tool: "acknowledge_service_messages", duration_ms: Date.now() - start, status: "ok", count: confirmed.length });
+        return toolResult({ confirmed, count: confirmed.length });
+      } catch (err) {
+        logger.info("tool_call", { tool: "acknowledge_service_messages", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
         throw err;
       }
