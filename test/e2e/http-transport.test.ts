@@ -13,6 +13,8 @@ import { AddressInfo } from "node:net";
 
 const DIST = join(__dirname, "../../dist/index.js");
 const AUTH_TOKEN = "e2e-test-token";
+// Origin on the allowlist for the CORS-enabled describe block below.
+const ALLOWED_ORIGIN = "http://localhost:6274";
 
 function startCcuMock(): Promise<{ server: Server; port: number }> {
   const server = createServer((req, res) => {
@@ -166,10 +168,10 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
         MCP_TRANSPORT: "http",
         MCP_PORT: String(mcpPort),
         MCP_AUTH_TOKEN: AUTH_TOKEN,
-        // This block exercises the dev/MCP-Inspector configuration: wildcard
-        // CORS is opt-in (issue #28). The secure-defaults block below covers
-        // the unset (default-deny) behavior.
-        MCP_CORS_ALLOW_ORIGIN: "*",
+        // This block exercises the browser-client configuration (issue #37):
+        // a single trusted origin is allowlisted. The secure-defaults block
+        // below covers the unset (default-deny) behavior.
+        MCP_ALLOWED_ORIGINS: ALLOWED_ORIGIN,
         CACHE_DIR: cacheDir,
         RESOURCE_POLL_INTERVAL: "3600",
         LOG_LEVEL: "error",
@@ -268,41 +270,82 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 
-  // CORS (issue #19, credit @marcinn2): browser clients need preflight + exposed session header
-  it("answers OPTIONS preflight with 204 and CORS headers, without auth", async () => {
+  // CORS (issue #37, building on #19/@marcinn2): an allowlisted browser origin
+  // gets preflight + the exact origin reflected back — never `*`.
+  it("answers OPTIONS preflight from an allowed origin with 204 and reflects the exact origin", async () => {
     const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
       method: "OPTIONS",
       headers: {
-        "Origin": "http://localhost:6274",
+        "Origin": ALLOWED_ORIGIN,
         "Access-Control-Request-Method": "POST",
         "Access-Control-Request-Headers": "content-type, authorization, mcp-session-id",
       },
     });
     expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe(ALLOWED_ORIGIN);
+    expect(res.headers.get("vary")).toContain("Origin");
     expect(res.headers.get("access-control-allow-methods")).toContain("POST");
     expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("mcp-session-id");
   });
 
-  it("sets CORS headers on MCP responses and exposes Mcp-Session-Id", async () => {
-    const res = await mcpPost(mcpPort, {
-      jsonrpc: "2.0", id: 0, method: "initialize",
-      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cors", version: "1" } },
+  it("rejects an OPTIONS preflight from a disallowed origin (403, no CORS headers)", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "OPTIONS",
+      headers: {
+        "Origin": "http://evil.example",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("reflects the allowed origin on MCP responses and exposes Mcp-Session-Id", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "Authorization": `Bearer ${AUTH_TOKEN}`,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "mcp-protocol-version": "2025-06-18",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 0, method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cors", version: "1" } },
+      }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe(ALLOWED_ORIGIN);
     expect(res.headers.get("access-control-expose-headers")?.toLowerCase()).toContain("mcp-session-id");
     await res.text();
   });
 
-  it("sets CORS headers on 401 responses too", async () => {
+  it("omits CORS headers for a disallowed origin even when another is allowlisted", async () => {
     const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+      headers: {
+        "Origin": "http://evil.example",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("reflects the allowed origin on 401 responses too", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
     });
     expect(res.status).toBe(401);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe(ALLOWED_ORIGIN);
   });
 
   // Must be last: terminates the server and asserts a clean exit
@@ -379,7 +422,7 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
         MCP_TRANSPORT: "http",
         MCP_PORT: String(mcpPort),
         MCP_AUTH_TOKEN: AUTH_TOKEN,
-        // MCP_CORS_ALLOW_ORIGIN deliberately unset → default-deny CORS.
+        // MCP_ALLOWED_ORIGINS deliberately unset → default-deny CORS.
         CACHE_DIR: cacheDir,
         RESOURCE_POLL_INTERVAL: "3600",
         LOG_LEVEL: "error",

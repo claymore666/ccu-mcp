@@ -7,11 +7,15 @@ export interface AppConfig {
     port: number;
     authToken?: string;
     /**
-     * Value echoed in `Access-Control-Allow-Origin`. Unset ⇒ no CORS header is
-     * sent (browsers are blocked by default). Set `MCP_CORS_ALLOW_ORIGIN=*` for
-     * local dev / MCP Inspector, or a single trusted origin.
+     * Default-deny origin allowlist for browser-based MCP clients. Empty ⇒ no
+     * cross-origin browser access (the secure default). A request whose `Origin`
+     * is on this list gets that exact origin reflected in
+     * `Access-Control-Allow-Origin` (never `*`); the same list drives the
+     * transport's DNS-rebinding `allowedOrigins` so CORS and rebinding
+     * protection can't drift apart. Set via `MCP_ALLOWED_ORIGINS`
+     * (comma-separated, e.g. `https://app.example,http://localhost:6274`).
      */
-    corsAllowOrigin?: string;
+    allowedOrigins: string[];
     /**
      * Host-header allowlist for the StreamableHTTP transport's DNS-rebinding
      * protection. Defaults to localhost/127.0.0.1 on the MCP port; extend via
@@ -69,6 +73,14 @@ export function loadConfig(): AppConfig {
       .filter(Boolean),
   ];
 
+  // Default-deny browser origin allowlist. Empty unless MCP_ALLOWED_ORIGINS is
+  // set; it feeds both the reflective CORS headers and the transport's
+  // DNS-rebinding Origin check (single source of truth).
+  const allowedOrigins = (process.env.MCP_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   return {
     ccu: {
       host,
@@ -84,7 +96,7 @@ export function loadConfig(): AppConfig {
       transport,
       port: mcpPort,
       authToken: process.env.MCP_AUTH_TOKEN,
-      corsAllowOrigin: process.env.MCP_CORS_ALLOW_ORIGIN || undefined,
+      allowedOrigins,
       allowedHosts,
     },
     cache: {

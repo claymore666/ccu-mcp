@@ -133,7 +133,7 @@ curl http://localhost:3000/health
 
 #### Browser-based clients (CORS)
 
-By default the HTTP server sends **no** CORS headers, so a random web page can't drive a local instance. To let a browser-based MCP client like [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connect directly, set `MCP_CORS_ALLOW_ORIGIN` — `*` for local dev, or a single trusted origin (e.g. `https://inspector.example`). Authentication is always enforced regardless: every MCP request needs the bearer token.
+By default the HTTP server sends **no** CORS headers, so a random web page can't drive a local instance. To let browser-based MCP clients like [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connect directly, set `MCP_ALLOWED_ORIGINS` to a comma-separated allowlist of trusted origins (e.g. `https://app.example,http://localhost:6274`). A request whose `Origin` is on the list gets that **exact** origin reflected in `Access-Control-Allow-Origin` — never the wildcard `*`, which would let any site drive a local instance that controls real CCU hardware. A request from any other origin gets no CORS headers (the browser blocks it) and is rejected server-side by DNS-rebinding protection. Authentication is always enforced regardless: every MCP request needs the bearer token.
 
 The HTTP transport also has **DNS-rebinding protection** on by default: it rejects requests whose `Host` header isn't `localhost`/`127.0.0.1` on the configured port. If you reach the server under another hostname (reverse proxy, container DNS name), list those hosts in `MCP_ALLOWED_HOSTS` or legitimate requests get a `403`.
 
@@ -170,7 +170,7 @@ All configuration is via environment variables:
 | `MCP_TRANSPORT` | `http` | `http` or `stdio` (the `--stdio` CLI flag overrides this) |
 | `MCP_PORT` | `3000` | HTTP server port (HTTP mode only) |
 | `MCP_AUTH_TOKEN` | auto-generated | Bearer token for HTTP mode; generated and saved to `$CACHE_DIR/.env` on first start |
-| `MCP_CORS_ALLOW_ORIGIN` | unset | CORS `Access-Control-Allow-Origin` for browser clients. Unset = no CORS (default-deny). Use `*` for dev/MCP Inspector, or one trusted origin |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated allowlist of browser origins. Unset = no cross-origin browser access (default-deny). An allowlisted origin is reflected exactly in `Access-Control-Allow-Origin` (never `*`); the list also drives DNS-rebinding origin checks |
 | `MCP_ALLOWED_HOSTS` | `localhost`/`127.0.0.1` | Extra `Host` values accepted by DNS-rebinding protection (comma-separated `host:port`); add your hostname when behind a proxy or container DNS name |
 | `CCU_RATE_LIMIT_BURST` | `20` | Max burst of requests sent to the CCU |
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |

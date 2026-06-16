@@ -61,8 +61,8 @@
           "format": "string"
         },
         {
-          "name": "MCP_CORS_ALLOW_ORIGIN",
-          "description": "CORS Access-Control-Allow-Origin for browser clients. Unset = no CORS (default-deny); use '*' for dev/MCP Inspector or a single trusted origin",
+          "name": "MCP_ALLOWED_ORIGINS",
+          "description": "Comma-separated allowlist of browser origins. Unset = no cross-origin browser access (default-deny). An allowlisted origin is reflected exactly in Access-Control-Allow-Origin (never '*'); the list also drives DNS-rebinding origin checks",
           "format": "string"
         },
         {
