@@ -269,3 +269,18 @@ describe("list_links handler", () => {
     cleanupDeps(deps);
   });
 });
+
+// Issue #26: list tools wrap their array under a named structuredContent key,
+// while the text block stays the bare array (backwards-compatible).
+describe("structured output (discovery)", () => {
+  it("list_devices exposes structuredContent.devices and a bare-array text block", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockImplementation(async (method: string) => (method === "Device.listAllDetail" ? mockDevices : [])),
+    });
+    const res = await callTool(server, "list_devices") as any;
+    expect(Array.isArray(res.structuredContent.devices)).toBe(true);
+    expect(res.structuredContent.devices.length).toBeGreaterThan(0);
+    expect(Array.isArray(parseToolResult(res))).toBe(true); // text remains the bare array
+    cleanupDeps(deps);
+  });
+});

@@ -305,6 +305,22 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 
+  // Issue #26: a successful tool call returns structuredContent AND passes the
+  // SDK's server-side outputSchema validation (a schema mismatch would come back
+  // as a JSON-RPC error instead). This is the end-to-end check unit tests can't do.
+  it("returns structuredContent that passes outputSchema validation", async () => {
+    const sid = await initialize(mcpPort);
+    const res = await mcpPost(mcpPort, {
+      jsonrpc: "2.0", id: 1, method: "tools/call",
+      params: { name: "get_system_info", arguments: {} },
+    }, sid);
+    expect(res.status).toBe(200);
+    const msg = await parseSse(res);
+    expect(msg.error).toBeUndefined();            // validation passed
+    expect(msg.result.isError).toBeFalsy();
+    expect(msg.result.structuredContent).toBeTypeOf("object");
+  });
+
   // Must be last: terminates the server and asserts a clean exit
   it("shuts down gracefully on SIGTERM with exit code 0", async () => {
     const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));

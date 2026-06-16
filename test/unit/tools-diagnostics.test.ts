@@ -274,3 +274,25 @@ describe("merge fallbacks (coverage round)", () => {
     cleanupDeps(deps);
   });
 });
+
+// Issue #26: structuredContent on diagnostics tools.
+describe("structured output (diagnostics)", () => {
+  it("get_system_info returns structuredContent as an object", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockImplementation(async (method: string) => (method === "CCU.getVersion" ? "3.85.7" : null)),
+    });
+    const res = await callTool(server, "get_system_info") as any;
+    expect(res.structuredContent).toBeTypeOf("object");
+    expect(res.structuredContent.version).toBe("3.85.7");
+    cleanupDeps(deps);
+  });
+
+  it("get_service_messages wraps alarms under structuredContent.messages", async () => {
+    const mock = JSON.stringify({ alarms: [{ id: "1", type: "LOWBAT", address: "ABC:0", timestamp: "t" }], channelNames: {} });
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(mock) });
+    const res = await callTool(server, "get_service_messages") as any;
+    expect(Array.isArray(res.structuredContent.messages)).toBe(true);
+    expect(res.structuredContent.messages[0].type).toBe("LOWBAT");
+    cleanupDeps(deps);
+  });
+});
