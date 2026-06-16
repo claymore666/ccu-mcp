@@ -213,6 +213,34 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     expect(res.status).toBe(401);
   });
 
+  // Issue #29: 401 carries a WWW-Authenticate challenge (RFC 6750 / MCP auth spec)
+  it("challenges with WWW-Authenticate: Bearer and no error when no token is sent", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.status).toBe(401);
+    const challenge = res.headers.get("www-authenticate") ?? "";
+    expect(challenge).toContain("Bearer");
+    expect(challenge).toContain('realm="debmatic-mcp"');
+    expect(challenge).not.toContain("error="); // no credentials presented
+  });
+
+  it("adds error=invalid_token to the challenge when a bad token is sent", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer wrong-token",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate") ?? "").toContain('error="invalid_token"');
+  });
+
   // Regression #17: with a reused stateless transport, request 2+ returned 500
   it("handles many sequential requests on one session", async () => {
     const sid = await initialize(mcpPort);
