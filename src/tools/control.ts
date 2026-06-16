@@ -29,8 +29,9 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
         type: z.enum(["bool", "int", "double", "string"]).optional().describe("Value type override (auto-resolved if omitted)"),
       },
       annotations: {
-        title: "Set Value",
         destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {
@@ -102,8 +103,9 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
         interface: z.string().optional().describe("Interface name override"),
       },
       annotations: {
-        title: "Put Paramset",
         destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {
@@ -163,8 +165,9 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         value: z.union([z.string(), z.number(), z.boolean()]).describe("Value to set"),
       },
       annotations: {
-        title: "Set System Variable",
         destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {
@@ -260,8 +263,8 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
         id: z.string().describe("Program ID. Get from list_programs."),
       },
       annotations: {
-        title: "Execute Program",
         destructiveHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {

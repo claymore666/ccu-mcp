@@ -146,6 +146,8 @@ function registerHelp(server: McpServer, deps: ServerDeps): void {
       inputSchema: {
         topic: z.string().optional().describe("Tool name, device type, or omit for general guide"),
       },
+      // Local-only: serves the static guide and the device-type cache; never reaches the CCU.
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
       if (!args.topic) {
@@ -186,8 +188,8 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
         script: z.string().describe("HomeMatic Script to execute"),
       },
       annotations: {
-        title: "Run Script",
         destructiveHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {

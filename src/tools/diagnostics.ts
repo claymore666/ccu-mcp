@@ -16,6 +16,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
       title: "Get Service Messages",
       description:
         "Get all active service messages (low battery, unreachable, etc.) with device details and timestamps.",
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
       const { session, rateLimiter, logger } = deps;
@@ -118,6 +119,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get System Info",
       description: "Get CCU system information: firmware version, serial number, addresses.",
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () => {
       const { session, rateLimiter, logger, deviceTypeCache } = deps;
