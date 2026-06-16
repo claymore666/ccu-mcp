@@ -45,10 +45,10 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 - \`run_script\` executes arbitrary HomeMatic Script for anything tools don't cover
 
 ## Available Tools
-**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, describe_device_type
+**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, list_links, describe_device_type
 **Read:** get_value, get_values, get_paramset
 **Control:** set_value, put_paramset, set_system_variable, execute_program
-**Diagnostics:** get_service_messages, acknowledge_service_messages, get_system_info
+**Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
 **Meta:** help, run_script
 `;
 
@@ -82,6 +82,11 @@ Returns: Array of variables with id, name, value, type, min, max`,
   describe_device_type: `Get channel/datapoint schema for a device type (from cache).
 Args: deviceType (string, e.g. "HmIP-eTRV-2")
 Returns: Channels with paramsets, datapoint types, ranges, operations`,
+
+  list_links: `List direct device links (Direktverknüpfungen) — sender→receiver channel pairings that work without the CCU.
+Args: address? (device or channel address filter, e.g. "000A1BE9A71F15" or "000A1BE9A71F15:1")
+Returns: Array of {sender, senderName, receiver, receiverName, name, description, flags, interface}
+Read-only; answers "what directly controls this?". Link creation/removal is out of scope.`,
 
   get_value: `Read a single datapoint value.
 Args: address (string), valueKey (string), interface? (auto-resolved)
@@ -130,6 +135,11 @@ NOT_FOUND if no active message matches; the warning reappears if its condition p
   get_system_info: `Get CCU system info: firmware, serial, addresses, cache status.
 Args: none
 Returns: {version, serial, address, hmipAddress, cacheTypes, cacheWarming}`,
+
+  get_rssi: `Radio link quality (RSSI, dBm) per device, plus BidCos interface health.
+Args: name (optional substring filter on device name/address)
+Returns: {devices: [{address, name, interface, links: [{peer, peerName, rssiDevice, rssiPeer}]}], interfaces}
+rssiDevice/rssiPeer are dBm (higher = better); null means no measurement. Use to diagnose flaky devices.`,
 
   run_script: `Execute arbitrary HomeMatic Script. NOT idempotent — never auto-retried.
 Args: script (string)

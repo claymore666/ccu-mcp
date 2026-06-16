@@ -120,6 +120,79 @@ describe("acknowledge_service_messages handler", () => {
   });
 });
 
+describe("get_rssi handler", () => {
+  const rssiMock = () =>
+    vi.fn().mockImplementation(async (method: string, params?: any) => {
+      switch (method) {
+        case "Device.listAllDetail":
+          return [
+            { id: "1", name: "Thermostat Büro", address: "ABC123", interface: "HmIP-RF", type: "HmIP-eTRV", channels: [] },
+            { id: "2", name: "Fenster Küche", address: "DEF456", interface: "BidCos-RF", type: "HM-SWDO", channels: [] },
+          ];
+        case "Interface.listInterfaces":
+          return [{ name: "HmIP-RF" }, { name: "BidCos-RF" }, { name: "VirtualDevices" }];
+        case "Interface.rssiInfo":
+          if (params?.interface === "VirtualDevices") throw new Error("rssiInfo not supported");
+          if (params?.interface === "HmIP-RF") return { ABC123: { "HmIP-RF": [-65, -70] } };
+          if (params?.interface === "BidCos-RF") return { DEF456: { "BidCoS-RF": [65536, -80] } };
+          return {};
+        case "Interface.listBidcosInterfaces":
+          return [{ ADDRESS: "OEQ0123456", DUTY_CYCLE: 12, CONNECTED: true }];
+        default:
+          return null;
+      }
+    });
+
+  it("reports per-device RSSI (dBm) resolved to names, normalizing 65536 → null", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+
+    const byAddr = Object.fromEntries(result.devices.map((d: any) => [d.address, d]));
+    expect(byAddr.ABC123.name).toBe("Thermostat Büro");
+    expect(byAddr.ABC123.links[0].rssiDevice).toBe(-65);
+    expect(byAddr.ABC123.links[0].rssiPeer).toBe(-70);
+    // 65536 sentinel normalized to null; the other direction kept
+    expect(byAddr.DEF456.links[0].rssiDevice).toBeNull();
+    expect(byAddr.DEF456.links[0].rssiPeer).toBe(-80);
+    cleanupDeps(deps);
+  });
+
+  it("includes BidCos interface health (duty cycle, connected)", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.interfaces[0].DUTY_CYCLE).toBe(12);
+    expect(result.interfaces[0].CONNECTED).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("filters by device name/address substring", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi", { name: "küche" })) as any;
+    expect(result.devices).toHaveLength(1);
+    expect(result.devices[0].address).toBe("DEF456");
+    cleanupDeps(deps);
+  });
+
+  it("tolerates interfaces that don't support rssiInfo (e.g. VirtualDevices)", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.devices).toHaveLength(2); // both RF devices present despite VirtualDevices throwing
+    cleanupDeps(deps);
+  });
+
+  it("tolerates listBidcosInterfaces failure (returns empty interfaces)", async () => {
+    const base = rssiMock().getMockImplementation()!;
+    const sessionCall = vi.fn().mockImplementation(async (method: string, params?: any) => {
+      if (method === "Interface.listBidcosInterfaces") throw new Error("unsupported");
+      return base(method, params);
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.interfaces).toEqual([]);
+    cleanupDeps(deps);
+  });
+});
+
 describe("get_system_info handler", () => {
   it("returns all system info fields", async () => {
     const { server, deps } = createTestServer({

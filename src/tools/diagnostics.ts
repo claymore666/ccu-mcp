@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
+import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { toolResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
@@ -9,6 +10,13 @@ export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): v
   registerGetServiceMessages(server, deps);
   registerAcknowledgeServiceMessages(server, deps);
   registerGetSystemInfo(server, deps);
+  registerGetRssi(server, deps);
+}
+
+// rssiInfo reports 65536 (0x10000) when no measurement is available; real
+// values are already in dBm. Map the sentinel (and any non-number) to null.
+function normalizeRssi(v: unknown): number | null {
+  return typeof v === "number" && v !== 65536 ? v : null;
 }
 
 function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
@@ -267,6 +275,115 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         return toolResult(results);
       } catch (err) {
         logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "error" });
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+    },
+  );
+}
+
+function registerGetRssi(server: McpServer, deps: ServerDeps): void {
+  server.registerTool(
+    "get_rssi",
+    {
+      title: "Get RSSI / Radio Quality",
+      description:
+        "Report radio link quality (RSSI, in dBm) for every device, resolved to device names, " +
+        "plus BidCos interface health (duty cycle, connected state). Use to answer 'why is this " +
+        "sensor flaky?'. Higher (closer to 0) dBm is better; null means no measurement available.",
+      inputSchema: {
+        name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async (args) => {
+      const { session, rateLimiter, logger } = deps;
+      const start = Date.now();
+
+      try {
+        // Device list → address→{name,interface}. Same call list_devices uses;
+        // also refresh the resolver so later interface lookups are warm.
+        await rateLimiter.acquire();
+        const devices = await withRetry(
+          () => session.call("Device.listAllDetail"),
+          "Device.listAllDetail",
+          logger,
+        ) as CcuDevice[];
+        deps.resolver.updateDeviceList(devices);
+        const nameByAddress = new Map<string, string>();
+        const ifaceByAddress = new Map<string, string>();
+        for (const d of devices) {
+          nameByAddress.set(d.address, d.name);
+          ifaceByAddress.set(d.address, d.interface);
+        }
+
+        // Enumerate interfaces and pull rssiInfo per interface. rssiInfo maps
+        // device1 → device2 → [rssiAtDevice1, rssiAtDevice2] (dBm; 65536 = none).
+        await rateLimiter.acquire();
+        const interfaces = await withRetry(
+          () => session.call("Interface.listInterfaces"),
+          "Interface.listInterfaces",
+          logger,
+        ) as Array<{ name: string }>;
+
+        const needle = args.name?.toLowerCase();
+        const deviceEntries: Array<Record<string, unknown>> = [];
+
+        for (const iface of interfaces) {
+          let info: Record<string, Record<string, unknown>> | null = null;
+          try {
+            await rateLimiter.acquire();
+            info = await withRetry(
+              () => session.call("Interface.rssiInfo", { interface: iface.name }),
+              "Interface.rssiInfo",
+              logger,
+            ) as Record<string, Record<string, unknown>>;
+          } catch {
+            // Interfaces without RF (e.g. VirtualDevices) don't support rssiInfo.
+            continue;
+          }
+          if (!info || typeof info !== "object") continue;
+
+          for (const [address, peers] of Object.entries(info)) {
+            if (!peers || typeof peers !== "object") continue;
+            const links = Object.entries(peers).map(([peer, pair]) => {
+              const [atDevice, atPeer] = Array.isArray(pair) ? pair : [];
+              return {
+                peer,
+                peerName: nameByAddress.get(peer) ?? "",
+                rssiDevice: normalizeRssi(atDevice), // dBm received by this device from peer
+                rssiPeer: normalizeRssi(atPeer),     // dBm received by the peer from this device
+              };
+            });
+            const entry = {
+              address,
+              name: nameByAddress.get(address) ?? "",
+              interface: ifaceByAddress.get(address) ?? iface.name,
+              links,
+            };
+            if (needle && !`${entry.address} ${entry.name}`.toLowerCase().includes(needle)) continue;
+            deviceEntries.push(entry);
+          }
+        }
+
+        // BidCos interface health (duty cycle, connected). Optional — not all
+        // setups expose it; tolerate failure rather than failing the whole call.
+        let bidcosInterfaces: unknown = [];
+        try {
+          await rateLimiter.acquire();
+          bidcosInterfaces = await withRetry(
+            () => session.call("Interface.listBidcosInterfaces"),
+            "Interface.listBidcosInterfaces",
+            logger,
+          );
+        } catch {
+          bidcosInterfaces = [];
+        }
+
+        logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "ok", devices: deviceEntries.length });
+        return toolResult({ devices: deviceEntries, interfaces: bidcosInterfaces });
+      } catch (err) {
+        logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
         throw err;
       }

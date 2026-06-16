@@ -125,4 +125,47 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
   }, 30_000);
+
+  it("get_rssi returns devices with plausible dBm RSSI values (live)", async () => {
+    const result = parseToolResult(await callTool(server, "get_rssi")) as {
+      devices: Array<{ address: string; links: Array<{ rssiDevice: number | null; rssiPeer: number | null }> }>;
+      interfaces: unknown;
+    };
+    expect(Array.isArray(result.devices)).toBe(true);
+
+    for (const d of result.devices) {
+      expect(typeof d.address).toBe("string");
+      for (const link of d.links) {
+        for (const v of [link.rssiDevice, link.rssiPeer]) {
+          if (v !== null) {
+            // dBm: never the 65536 sentinel, within a physically plausible range
+            expect(v).not.toBe(65536);
+            expect(v).toBeGreaterThan(-130);
+            expect(v).toBeLessThan(0);
+          }
+        }
+      }
+    }
+  }, 60_000);
+
+  it("list_links returns well-formed links (live; production CCU has thermostat↔FALMOT links)", async () => {
+    const links = parseToolResult(await callTool(server, "list_links")) as Array<{
+      sender: string; receiver: string; senderName: string; receiverName: string; interface: string;
+    }>;
+    expect(Array.isArray(links)).toBe(true);
+    for (const l of links) {
+      expect(typeof l.sender).toBe("string");
+      expect(typeof l.receiver).toBe("string");
+      expect(l.sender).not.toBe("");
+      expect(l.receiver).not.toBe("");
+    }
+    // Filtering by a sender's device returns a subset that all involve that device.
+    if (links.length > 0) {
+      const dev = links[0]!.sender.split(":")[0]!;
+      const filtered = parseToolResult(await callTool(server, "list_links", { address: dev })) as Array<{ sender: string; receiver: string }>;
+      for (const l of filtered) {
+        expect(l.sender.split(":")[0] === dev || l.receiver.split(":")[0] === dev).toBe(true);
+      }
+    }
+  }, 60_000);
 });
