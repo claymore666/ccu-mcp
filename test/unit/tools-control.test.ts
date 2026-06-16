@@ -279,6 +279,84 @@ describe("sysvar type cache invalidation (issue #24)", () => {
   });
 });
 
+describe("assign_channel / unassign_channel handlers", () => {
+  const membershipMock = () =>
+    vi.fn().mockImplementation(async (method: string) => {
+      switch (method) {
+        case "Device.listAllDetail":
+          return [{
+            id: "1", name: "Sensor", address: "AAA", interface: "HmIP-RF", type: "x",
+            operateGroupOnly: "false", isReady: "true",
+            channels: [{ id: "ch10", name: "Kanal", address: "AAA:1", deviceId: "1", index: 1 }],
+          }];
+        case "Room.getAll":
+          return [{ id: "room5", name: "Schlafzimmer", channelIds: [] }];
+        case "Subsection.getAll":
+          return [{ id: "fn3", name: "Licht", channelIds: [] }];
+        default:
+          return true; // add/removeChannel ack
+      }
+    });
+
+  it("assigns a channel to a room by resolving names→IDs", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "assign_channel", { channel: "AAA:1", room: "Schlafzimmer" })) as any;
+    expect(result.assignedTo).toEqual([{ kind: "room", name: "Schlafzimmer" }]);
+    const call = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "Room.addChannel");
+    expect(call?.[1]).toEqual({ id: "room5", channelId: "ch10" });
+    cleanupDeps(deps);
+  });
+
+  it("assigns a channel to a function (Subsection)", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+    await callTool(server, "assign_channel", { channel: "AAA:1", function: "Licht" });
+    const call = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "Subsection.addChannel");
+    expect(call?.[1]).toEqual({ id: "fn3", channelId: "ch10" });
+    cleanupDeps(deps);
+  });
+
+  it("unassign_channel uses the remove APIs", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result = parseToolResult(await callTool(server, "unassign_channel", { channel: "AAA:1", room: "Schlafzimmer" })) as any;
+    expect(result.removedFrom).toEqual([{ kind: "room", name: "Schlafzimmer" }]);
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "Room.removeChannel")).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("INVALID_INPUT when neither room nor function is given", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "assign_channel", { channel: "AAA:1" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+
+  it("NOT_FOUND for an unknown channel address", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "assign_channel", { channel: "ZZZ:9", room: "Schlafzimmer" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    cleanupDeps(deps);
+  });
+
+  it("NOT_FOUND for an unknown room, with valid names in the hint", async () => {
+    const sessionCall = membershipMock();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "assign_channel", { channel: "AAA:1", room: "Nirgendwo" });
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0].text);
+    expect(body.error).toBe("NOT_FOUND");
+    expect(body.hint).toContain("Schlafzimmer");
+    cleanupDeps(deps);
+  });
+});
+
 describe("execute_program handler", () => {
   const programList = [{ id: "123", name: "Morgenroutine" }];
 

@@ -178,13 +178,13 @@ All configuration is via environment variables:
 
 ## Tools
 
-23 tools organized by what you'd actually want to do:
+25 tools organized by what you'd actually want to do:
 
 **Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `list_links`, `describe_device_type`
 
 **Read state** — `get_value`, `get_values` (bulk), `get_paramset`
 
-**Change things** — `set_value`, `put_paramset`, `set_system_variable`, `create_system_variable`, `delete_system_variable`, `execute_program`
+**Change things** — `set_value`, `put_paramset`, `set_system_variable`, `create_system_variable`, `delete_system_variable`, `assign_channel`, `unassign_channel`, `execute_program`
 
 **Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_rssi`, `get_system_info`
 
