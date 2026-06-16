@@ -59,6 +59,16 @@
           "description": "Directory for the device type cache and session persistence",
           "default": "/data",
           "format": "string"
+        },
+        {
+          "name": "MCP_CORS_ALLOW_ORIGIN",
+          "description": "CORS Access-Control-Allow-Origin for browser clients. Unset = no CORS (default-deny); use '*' for dev/MCP Inspector or a single trusted origin",
+          "format": "string"
+        },
+        {
+          "name": "MCP_ALLOWED_HOSTS",
+          "description": "Extra Host header values accepted by DNS-rebinding protection (comma-separated host:port); add your hostname when behind a proxy or container DNS name",
+          "format": "string"
         }
       ]
     }
