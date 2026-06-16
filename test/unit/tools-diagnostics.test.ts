@@ -132,10 +132,11 @@ describe("get_rssi handler", () => {
         case "Interface.listInterfaces":
           return [{ name: "HmIP-RF" }, { name: "BidCos-RF" }, { name: "VirtualDevices" }];
         case "Interface.rssiInfo":
+          // Real JSON-RPC shape: array of {name: <addr>, partner: [{name: <addr>, rssiData: [a,b]}]}
           if (params?.interface === "VirtualDevices") throw new Error("rssiInfo not supported");
-          if (params?.interface === "HmIP-RF") return { ABC123: { "HmIP-RF": [-65, -70] } };
-          if (params?.interface === "BidCos-RF") return { DEF456: { "BidCoS-RF": [65536, -80] } };
-          return {};
+          if (params?.interface === "HmIP-RF") return [{ name: "ABC123", partner: [{ name: "HmIP-RF", rssiData: [-65, -70] }] }];
+          if (params?.interface === "BidCos-RF") return [{ name: "DEF456", partner: [{ name: "BidCoS-RF", rssiData: [65536, -80] }] }];
+          return [];
         case "Interface.listBidcosInterfaces":
           return [{ ADDRESS: "OEQ0123456", DUTY_CYCLE: 12, CONNECTED: true }];
         default:

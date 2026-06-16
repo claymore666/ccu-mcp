@@ -387,8 +387,10 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
           if (!Array.isArray(raw)) continue;
 
           for (const l of raw as Array<Record<string, unknown>>) {
-            const sender = String(l.SENDER ?? "");
-            const receiver = String(l.RECEIVER ?? "");
+            // JSON-RPC getLinks returns lowercase fields (see occu
+            // .../interface/getlinks.tcl): sender, receiver, name, description, flags.
+            const sender = String(l.sender ?? "");
+            const receiver = String(l.receiver ?? "");
             // Re-filter client-side in case the interface ignores the address arg.
             if (!matchesAddr(sender) && !matchesAddr(receiver)) continue;
             links.push({
@@ -396,9 +398,9 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
               senderName: channelName.get(sender) ?? "",
               receiver,
               receiverName: channelName.get(receiver) ?? "",
-              name: l.NAME ?? "",
-              description: l.DESCRIPTION ?? "",
-              flags: l.FLAGS ?? 0,
+              name: l.name ?? "",
+              description: l.description ?? "",
+              flags: l.flags ?? 0,
               interface: iface.name,
             });
           }

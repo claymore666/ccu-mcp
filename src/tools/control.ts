@@ -316,32 +316,33 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
         }
 
         // Create via ReGa (no SysVar.createString exists, and this keeps all four
-        // types on one code path). Modeled exactly on the CCU's own JSON-RPC
-        // method scripts (occu WebUI/www/api/methods/sysvar/create*.tcl): set
-        // ValueType + type-specifics, then oSysVars.Add(sv.ID()) LAST. We add
-        // ValueUnit (float) and DPInfo (description), which those methods don't
-        // expose as parameters. There is no createString method, hence ReGa.
+        // types on one code path). Ordering matters and was verified live: set
+        // ValueType + Name + type-specifics, Add(sv.ID()), and only THEN set
+        // ValueUnit/DPInfo — setting those *before* Add makes the CCU store the
+        // variable under a deduplicated " N" name (silent rename). The script
+        // returns the actual stored name so we never report a name we didn't get.
         const name = escapeHmScript(args.name);
         const info = escapeHmScript(args.description ?? "");
+        const unit = escapeHmScript(args.unit ?? "");
         let typeSetup: string;
         switch (args.type) {
           case "bool":
             typeSetup =
               'sv.ValueType(ivtBinary);\n' +
               'sv.ValueSubType(istBool);\n' +
+              `sv.Name("${name}");\n` +
               'sv.ValueName0("false");\n' +
               'sv.ValueName1("true");\n' +
               'sv.State(false);';
             break;
           case "float": {
-            const unit = escapeHmScript(args.unit ?? "");
             const min = Number.isFinite(args.min) ? args.min : 0;
             const max = Number.isFinite(args.max) ? args.max : 100;
             typeSetup =
               'sv.ValueType(ivtFloat);\n' +
+              `sv.Name("${name}");\n` +
               `sv.ValueMin(${min});\n` +
               `sv.ValueMax(${max});\n` +
-              `sv.ValueUnit("${unit}");\n` +
               'sv.State(0);';
             break;
           }
@@ -350,6 +351,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
             typeSetup =
               'sv.ValueType(ivtInteger);\n' +
               'sv.ValueSubType(istEnum);\n' +
+              `sv.Name("${name}");\n` +
               `sv.ValueList("${list}");\n` +
               'sv.State(0);';
             break;
@@ -358,29 +360,58 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
           default:
             typeSetup =
               'sv.ValueType(ivtString);\n' +
+              `sv.Name("${name}");\n` +
               'sv.State("");';
             break;
         }
 
+        // ValueUnit applies to float only; DPInfo (description) to all. Both go
+        // AFTER Add (see comment above).
+        const postAdd =
+          (args.type === "float" ? `sv.ValueUnit("${unit}");\n` : "") +
+          `sv.DPInfo("${info}");`;
+
         const script =
           `object oSysVars = dom.GetObject(ID_SYSTEM_VARIABLES);\n` +
           `object sv = dom.CreateObject(OT_VARDP);\n` +
-          `sv.Name("${name}");\n` +
           `${typeSetup}\n` +
-          `sv.DPInfo("${info}");\n` +
           `sv.Internal(false);\n` +
-          `oSysVars.Add(sv.ID());`;
+          `oSysVars.Add(sv.ID());\n` +
+          `${postAdd}\n` +
+          `dom.RTUpdate(false);\n` +
+          `WriteLine(sv.Name());`;
 
         await rateLimiter.acquire();
-        await withRetry(
+        const createResult = await withRetry(
           () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
 
+        // The script echoes the ACTUAL stored name. The CCU silently dedups a
+        // requested name against existing similar names (e.g. "X" becomes "X 1"
+        // when an "X 2" already exists), which the exact-match pre-check above
+        // can't see. If we didn't get the name we asked for, undo it and report
+        // the collision rather than leaving a surprise variable behind.
+        const actualName = typeof createResult === "string" && createResult.trim()
+          ? createResult.trim()
+          : args.name;
+        if (actualName !== args.name) {
+          try {
+            await rateLimiter.acquire();
+            await session.call("SysVar.deleteSysVarByName", { name: actualName });
+          } catch { /* best-effort cleanup of the unintended object */ }
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `System variable name unavailable: "${args.name}" (the CCU would store it as "${actualName}")`,
+            hint: "Pick a different name — the CCU deduplicates against existing similar names.",
+          });
+        }
+
         typeCacheHolder.entry = null; // new variable must be visible to the next set
         logger.info("tool_call", { tool: "create_system_variable", duration_ms: Date.now() - start, status: "ok", type: args.type });
-        return toolResult({ name: args.name, type: args.type, created: true });
+        return toolResult({ name: actualName, type: args.type, created: true });
       } catch (err) {
         logger.info("tool_call", { tool: "create_system_variable", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();

@@ -230,8 +230,9 @@ describe("list_links handler", () => {
         case "Interface.listInterfaces":
           return [{ name: "HmIP-RF" }, { name: "VirtualDevices" }];
         case "Interface.getLinks":
+          // Real JSON-RPC shape: lowercase fields (occu .../interface/getlinks.tcl)
           if (params?.interface === "VirtualDevices") throw new Error("getLinks not supported");
-          return [{ SENDER: "AAA:1", RECEIVER: "BBB:3", NAME: "Taster→Licht", DESCRIPTION: "", FLAGS: 0 }];
+          return [{ sender: "AAA:1", receiver: "BBB:3", name: "Taster→Licht", description: "", flags: 0 }];
         default:
           return null;
       }
