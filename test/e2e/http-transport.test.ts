@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, request, type Server, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
@@ -504,10 +504,13 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
 // the clear. Skipped if openssl isn't available to mint a throwaway cert.
 const HAVE_OPENSSL = spawnSync("openssl", ["version"]).status === 0;
 
-// Minimal HTTPS client that trusts the self-signed test cert.
+// Minimal HTTPS client. TLS validation stays ENABLED — we trust the specific
+// throwaway cert by passing it as the CA (the cert carries an IP:127.0.0.1 SAN
+// so identity verification against the loopback host succeeds), rather than
+// disabling certificate validation.
 function httpsJson(
   port: number,
-  opts: { method?: string; path?: string; headers?: Record<string, string>; body?: unknown } = {},
+  opts: { method?: string; path?: string; headers?: Record<string, string>; body?: unknown; ca?: Buffer } = {},
 ): Promise<{ status: number; headers: IncomingHttpHeaders; text: string }> {
   return new Promise((resolve, reject) => {
     const payload = opts.body === undefined ? undefined : JSON.stringify(opts.body);
@@ -517,7 +520,7 @@ function httpsJson(
         port,
         path: opts.path ?? "/",
         method: opts.method ?? "GET",
-        rejectUnauthorized: false, // self-signed test cert
+        ca: opts.ca,
         headers: {
           ...(payload ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) } : {}),
           ...opts.headers,
@@ -540,21 +543,26 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   let child: ChildProcess;
   let mcpPort: number;
   let cacheDir: string;
+  let caCert: Buffer;
 
   beforeAll(async () => {
     ccu = await startCcuMock();
     cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-tls-"));
     mcpPort = 20000 + Math.floor(Math.random() * 20000);
 
-    // Mint a throwaway self-signed cert for localhost.
+    // Mint a throwaway self-signed cert. The SAN must include IP:127.0.0.1 —
+    // Node (>=17) no longer falls back to the subject CN for identity checks,
+    // so a CN-only cert would fail verification against the loopback host.
     const certPath = join(cacheDir, "cert.pem");
     const keyPath = join(cacheDir, "key.pem");
     const gen = spawnSync("openssl", [
       "req", "-x509", "-newkey", "rsa:2048", "-nodes",
       "-keyout", keyPath, "-out", certPath,
       "-days", "1", "-subj", "/CN=localhost",
+      "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
     ], { stdio: "ignore" });
     if (gen.status !== 0) throw new Error("openssl failed to generate test cert");
+    caCert = readFileSync(certPath);
 
     child = spawn("node", [DIST], {
       env: {
@@ -578,7 +586,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
     const deadline = Date.now() + 15_000;
     for (;;) {
       try {
-        const r = await httpsJson(mcpPort, { path: "/health" });
+        const r = await httpsJson(mcpPort, { path: "/health", ca: caCert });
         if (r.status === 200 || r.status === 503) break;
       } catch { /* not up yet */ }
       if (Date.now() > deadline) throw new Error("HTTPS server did not start");
@@ -595,7 +603,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   });
 
   it("serves the health endpoint over HTTPS", async () => {
-    const res = await httpsJson(mcpPort, { path: "/health" });
+    const res = await httpsJson(mcpPort, { path: "/health", ca: caCert });
     expect(res.status).toBe(200);
     expect((JSON.parse(res.text) as { status: string }).status).toBe("healthy");
   });
@@ -610,6 +618,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   it("completes the MCP initialize handshake over TLS", async () => {
     const res = await httpsJson(mcpPort, {
       method: "POST",
+      ca: caCert,
       headers: {
         "Authorization": `Bearer ${AUTH_TOKEN}`,
         "Accept": "application/json, text/event-stream",
@@ -627,6 +636,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   it("still enforces the bearer token over TLS", async () => {
     const res = await httpsJson(mcpPort, {
       method: "POST",
+      ca: caCert,
       headers: { "Accept": "application/json, text/event-stream" },
       body: { jsonrpc: "2.0", id: 1, method: "ping" },
     });
