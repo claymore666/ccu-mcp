@@ -45,7 +45,7 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 - \`run_script\` executes arbitrary HomeMatic Script for anything tools don't cover
 
 ## Available Tools
-**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, describe_device_type
+**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, list_links, describe_device_type
 **Read:** get_value, get_values, get_paramset
 **Control:** set_value, put_paramset, set_system_variable, execute_program
 **Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
@@ -82,6 +82,11 @@ Returns: Array of variables with id, name, value, type, min, max`,
   describe_device_type: `Get channel/datapoint schema for a device type (from cache).
 Args: deviceType (string, e.g. "HmIP-eTRV-2")
 Returns: Channels with paramsets, datapoint types, ranges, operations`,
+
+  list_links: `List direct device links (Direktverknüpfungen) — sender→receiver channel pairings that work without the CCU.
+Args: address? (device or channel address filter, e.g. "000A1BE9A71F15" or "000A1BE9A71F15:1")
+Returns: Array of {sender, senderName, receiver, receiverName, name, description, flags, interface}
+Read-only; answers "what directly controls this?". Link creation/removal is out of scope.`,
 
   get_value: `Read a single datapoint value.
 Args: address (string), valueKey (string), interface? (auto-resolved)

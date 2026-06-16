@@ -178,9 +178,9 @@ All configuration is via environment variables:
 
 ## Tools
 
-20 tools organized by what you'd actually want to do:
+21 tools organized by what you'd actually want to do:
 
-**Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `describe_device_type`
+**Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `list_links`, `describe_device_type`
 
 **Read state** — `get_value`, `get_values` (bulk), `get_paramset`
 
