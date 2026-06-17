@@ -139,6 +139,11 @@ The HTTP transport also has **DNS-rebinding protection** on by default: it rejec
 
 **TLS.** The bearer token travels in the request, so anything beyond loopback should be encrypted. You have two options: terminate TLS at a reverse proxy (Caddy/nginx) in front and bind the server to loopback (`MCP_HOST=127.0.0.1`), or let the server serve HTTPS itself by setting `MCP_TLS_CERT` and `MCP_TLS_KEY` to a PEM cert/key pair. Plain HTTP is still fully supported — it stays the zero-config default — but the server logs a warning at startup when it's serving the token over unencrypted HTTP on a non-loopback bind; set `MCP_ALLOW_PLAINTEXT=true` to acknowledge that and silence it.
 
+**Token rotation & expiry.** By default the bearer token lives forever. Two optional, composable controls let you rotate it without dropping clients:
+
+- *Auto-generated token* — set `MCP_AUTH_TOKEN_TTL_DAYS` (fractional days allowed) to give the generated token a lifetime. Once it lapses, the server mints a fresh one **on the next startup** and prints it on stderr, while the just-replaced token keeps validating for `MCP_AUTH_TOKEN_GRACE_HOURS` (default 24) so in-flight clients survive the swap. Expiry is also enforced live: a lapsed token is rejected mid-run with a `401` + `WWW-Authenticate: Bearer … error="invalid_token"`. To force a rotation sooner, delete `$CACHE_DIR/.env` (or just its `MCP_AUTH_TOKEN` line) and restart.
+- *Explicit token* — when you set `MCP_AUTH_TOKEN` yourself, you own its lifetime (TTL doesn't apply). To rotate, put the new token in `MCP_AUTH_TOKEN`, move the old one to `MCP_AUTH_TOKEN_PREVIOUS`, and restart; both are accepted during the overlap. Drop `MCP_AUTH_TOKEN_PREVIOUS` and restart once every client is on the new token. Comparison stays timing-safe across every currently-valid token.
+
 CORS support was first implemented by [@marcinn2](https://github.com/marcinn2) in his fork [marcinn2/debmatic-mcp](https://github.com/marcinn2/debmatic-mcp) — thanks!
 
 ### HTTPS
@@ -183,6 +188,9 @@ All configuration is via environment variables:
 | `MCP_TRANSPORT` | `http` | `http` or `stdio` (the `--stdio` CLI flag overrides this) |
 | `MCP_PORT` | `3000` | HTTP server port (HTTP mode only) |
 | `MCP_AUTH_TOKEN` | auto-generated | Bearer token for HTTP mode; generated and saved to `$CACHE_DIR/.env` on first start |
+| `MCP_AUTH_TOKEN_PREVIOUS` | unset | Previous bearer token, accepted alongside `MCP_AUTH_TOKEN` during a rotation overlap; remove it (and restart) to end the overlap. Explicit-token path only |
+| `MCP_AUTH_TOKEN_TTL_DAYS` | unset (never expires) | Lifetime of the **auto-generated** token, in days (fractional allowed). Past expiry it auto-rotates on next startup; ignored when `MCP_AUTH_TOKEN` is set |
+| `MCP_AUTH_TOKEN_GRACE_HOURS` | `24` | Overlap (hours) after an auto-rotation during which the just-replaced token is still accepted |
 | `MCP_ALLOWED_ORIGINS` | unset | Comma-separated allowlist of browser origins. Unset = no cross-origin browser access (default-deny). An allowlisted origin is reflected exactly in `Access-Control-Allow-Origin` (never `*`); the list also drives DNS-rebinding origin checks |
 | `MCP_ALLOWED_HOSTS` | `localhost`/`127.0.0.1` | Extra `Host` values accepted by DNS-rebinding protection (comma-separated `host:port`); add your hostname when behind a proxy or container DNS name |
 | `MCP_HOST` | unset (all interfaces) | Bind address for the HTTP listener; set `127.0.0.1` to restrict to loopback (e.g. behind a TLS-terminating proxy), which also silences the plaintext warning |

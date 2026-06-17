@@ -8,6 +8,26 @@ export interface AppConfig {
     port: number;
     authToken?: string;
     /**
+     * Previous bearer token kept valid for the rotation overlap
+     * (`MCP_AUTH_TOKEN_PREVIOUS`). Lets operators roll `MCP_AUTH_TOKEN` without
+     * dropping clients still on the old token; remove it (and restart) to end
+     * the overlap. Applies to the explicit-token path only.
+     */
+    authTokenPrevious?: string;
+    /**
+     * Lifetime of the AUTO-GENERATED bearer token in ms (`MCP_AUTH_TOKEN_TTL_DAYS`,
+     * fractional days allowed). Unset ⇒ the generated token never expires (the
+     * historical default). Does not apply to an explicit `MCP_AUTH_TOKEN`, which
+     * the operator owns. On startup past expiry the token auto-rotates.
+     */
+    authTokenTtlMs?: number;
+    /**
+     * Overlap after an auto-rotation during which the just-replaced token still
+     * validates, so in-flight clients survive the swap (`MCP_AUTH_TOKEN_GRACE_HOURS`,
+     * default 24).
+     */
+    authTokenGraceMs: number;
+    /**
      * Default-deny origin allowlist for browser-based MCP clients. Empty ⇒ no
      * cross-origin browser access (the secure default). A request whose `Origin`
      * is on this list gets that exact origin reflected in
@@ -80,6 +100,19 @@ export function loadConfig(): AppConfig {
     return val;
   };
 
+  // Optional positive duration in `unitMs` units; fractional values allowed
+  // (e.g. 0.5 days). Returns undefined when unset; throws on garbage so a
+  // typo'd TTL fails loudly instead of silently disabling expiry.
+  const parseDurationEnv = (name: string, unitMs: number): number | undefined => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return undefined;
+    const val = Number(raw);
+    if (!Number.isFinite(val) || val <= 0) {
+      throw new Error(`${name} must be a positive number, got: "${process.env[name]}"`);
+    }
+    return Math.round(val * unitMs);
+  };
+
   const mcpPort = parseIntEnv("MCP_PORT", "3000");
   // DNS-rebinding defense: the transport rejects any Host header not on this
   // list. localhost/127.0.0.1 on the bound port covers local use; deployments
@@ -146,6 +179,9 @@ export function loadConfig(): AppConfig {
       transport,
       port: mcpPort,
       authToken: process.env.MCP_AUTH_TOKEN,
+      authTokenPrevious: process.env.MCP_AUTH_TOKEN_PREVIOUS?.trim() || undefined,
+      authTokenTtlMs: parseDurationEnv("MCP_AUTH_TOKEN_TTL_DAYS", 86_400_000),
+      authTokenGraceMs: parseDurationEnv("MCP_AUTH_TOKEN_GRACE_HOURS", 3_600_000) ?? 24 * 3_600_000,
       allowedOrigins,
       allowedHosts,
       host: process.env.MCP_HOST?.trim() || undefined,

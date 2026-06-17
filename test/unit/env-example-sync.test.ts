@@ -27,8 +27,8 @@ function envKeysReferencedInCode(): Set<string> {
     for (const m of text.matchAll(/process\.env(?:\.([A-Z][A-Z0-9_]*)|\["([A-Z][A-Z0-9_]*)"\])/g)) {
       keys.add(m[1] ?? m[2]);
     }
-    // parseIntEnv("FOO", ...) — indirect numeric reads
-    for (const m of text.matchAll(/parseIntEnv\("([A-Z][A-Z0-9_]*)"/g)) {
+    // parseIntEnv("FOO", ...) / parseDurationEnv("FOO", ...) — indirect reads
+    for (const m of text.matchAll(/parse(?:Int|Duration)Env\("([A-Z][A-Z0-9_]*)"/g)) {
       keys.add(m[1]);
     }
   }
