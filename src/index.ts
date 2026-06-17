@@ -8,7 +8,7 @@ import {
 } from "node:http";
 import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
 import { readFile } from "node:fs/promises";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -19,7 +19,7 @@ import { RateLimiter } from "./middleware/rate-limiter.js";
 import { DeviceTypeCache } from "./cache/device-type-cache.js";
 import { Resolver } from "./middleware/resolver.js";
 import { ResourcePoller } from "./resources/poller.js";
-import { resolveAuthToken } from "./auth/token.js";
+import { resolveAuthTokens } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
 import { createMcpServer } from "./server.js";
 import { extractBearerToken } from "./utils.js";
@@ -83,7 +83,16 @@ async function main(): Promise<void> {
     // A stateless StreamableHTTPServerTransport only survives a single request,
     // so each MCP session gets its own transport + server (deps are shared),
     // routed by the Mcp-Session-Id header per the SDK's session pattern.
-    const authToken = await resolveAuthToken(config.mcp.authToken, config.cache.dir, logger);
+    const authTokens = await resolveAuthTokens(
+      {
+        envToken: config.mcp.authToken,
+        envPreviousToken: config.mcp.authTokenPrevious,
+        dataDir: config.cache.dir,
+        ttlMs: config.mcp.authTokenTtlMs,
+        graceMs: config.mcp.authTokenGraceMs,
+      },
+      logger,
+    );
     const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
     const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
@@ -132,12 +141,11 @@ async function main(): Promise<void> {
         }
 
         // Auth check for MCP endpoints. Token parsing tolerates the
-        // case-insensitive scheme (RFC 7235); the comparison is timing-safe
-        // (hash both sides so length differences don't leak via timing).
+        // case-insensitive scheme (RFC 7235); verify() is timing-safe across all
+        // currently-valid tokens (it hashes both sides and checks every entry
+        // without early return) and enforces expiry live (issue #52).
         const presented = extractBearerToken(req.headers.authorization ?? "");
-        const ha = createHash("sha256").update(presented).digest();
-        const hb = createHash("sha256").update(authToken).digest();
-        const headerValid = timingSafeEqual(ha, hb);
+        const headerValid = authTokens.verify(presented);
         if (!headerValid) {
           // Challenge header so clients can discover the scheme (RFC 6750 /
           // MCP auth spec). Add error=invalid_token only when a (bad) token was
@@ -249,6 +257,7 @@ async function main(): Promise<void> {
         port: config.mcp.port,
         host: config.mcp.host ?? "0.0.0.0",
         tls: useTls,
+        authTokens: authTokens.liveCount(),
       });
     });
   }

@@ -20,6 +20,9 @@ describe("loadConfig", () => {
     delete process.env.MCP_TRANSPORT;
     delete process.env.MCP_PORT;
     delete process.env.MCP_AUTH_TOKEN;
+    delete process.env.MCP_AUTH_TOKEN_PREVIOUS;
+    delete process.env.MCP_AUTH_TOKEN_TTL_DAYS;
+    delete process.env.MCP_AUTH_TOKEN_GRACE_HOURS;
     delete process.env.MCP_ALLOWED_ORIGINS;
     delete process.env.MCP_ALLOWED_HOSTS;
     delete process.env.CACHE_DIR;
@@ -285,5 +288,36 @@ describe("loadConfig", () => {
     const config = loadConfig();
     expect(config.mcp.host).toBe("127.0.0.1");
     expect(config.mcp.allowPlaintext).toBe(true);
+  });
+
+  // Issue #52: token rotation + expiry
+  it("token TTL/previous default to none; grace defaults to 24h", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.mcp.authTokenPrevious).toBeUndefined();
+    expect(config.mcp.authTokenTtlMs).toBeUndefined();
+    expect(config.mcp.authTokenGraceMs).toBe(24 * 3_600_000);
+  });
+
+  it("parses MCP_AUTH_TOKEN_TTL_DAYS / _GRACE_HOURS / _PREVIOUS (fractional ok)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_AUTH_TOKEN_PREVIOUS = "old-token";
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "30";
+    process.env.MCP_AUTH_TOKEN_GRACE_HOURS = "0.5";
+    const config = loadConfig();
+    expect(config.mcp.authTokenPrevious).toBe("old-token");
+    expect(config.mcp.authTokenTtlMs).toBe(30 * 86_400_000);
+    expect(config.mcp.authTokenGraceMs).toBe(Math.round(0.5 * 3_600_000));
+  });
+
+  it("throws on a non-positive / garbage MCP_AUTH_TOKEN_TTL_DAYS", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "0";
+    expect(() => loadConfig()).toThrow(/MCP_AUTH_TOKEN_TTL_DAYS must be a positive number/);
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "soon";
+    expect(() => loadConfig()).toThrow(/MCP_AUTH_TOKEN_TTL_DAYS must be a positive number/);
   });
 });
