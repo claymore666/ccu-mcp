@@ -133,7 +133,16 @@ curl http://localhost:3000/health
 
 #### Browser-based clients (CORS)
 
-The HTTP server sends permissive CORS headers and answers `OPTIONS` preflight requests, so browser-based MCP clients like [MCP Inspector](https://github.com/modelcontextprotocol/inspector) can connect directly — no proxy needed. Authentication is still enforced: browsers can read the endpoint, but every MCP request needs the bearer token.
+By default the HTTP server sends **no** CORS headers, so a random web page can't drive a local instance. To let browser-based MCP clients like [MCP Inspector](https://github.com/modelcontextprotocol/inspector) connect directly, set `MCP_ALLOWED_ORIGINS` to a comma-separated allowlist of trusted origins (e.g. `https://app.example,http://localhost:6274`). A request whose `Origin` is on the list gets that **exact** origin reflected in `Access-Control-Allow-Origin` — never the wildcard `*`, which would let any site drive a local instance that controls real CCU hardware. A request from any other origin gets no CORS headers (the browser blocks it) and is rejected server-side by DNS-rebinding protection. Authentication is always enforced regardless: every MCP request needs the bearer token.
+
+The HTTP transport also has **DNS-rebinding protection** on by default: it rejects requests whose `Host` header isn't `localhost`/`127.0.0.1` on the configured port. If you reach the server under another hostname (reverse proxy, container DNS name), list those hosts in `MCP_ALLOWED_HOSTS` or legitimate requests get a `403`.
+
+**TLS.** The bearer token travels in the request, so anything beyond loopback should be encrypted. You have two options: terminate TLS at a reverse proxy (Caddy/nginx) in front and bind the server to loopback (`MCP_HOST=127.0.0.1`), or let the server serve HTTPS itself by setting `MCP_TLS_CERT` and `MCP_TLS_KEY` to a PEM cert/key pair. Plain HTTP is still fully supported — it stays the zero-config default — but the server logs a warning at startup when it's serving the token over unencrypted HTTP on a non-loopback bind; set `MCP_ALLOW_PLAINTEXT=true` to acknowledge that and silence it.
+
+**Token rotation & expiry.** By default the bearer token lives forever. Two optional, composable controls let you rotate it without dropping clients:
+
+- *Auto-generated token* — set `MCP_AUTH_TOKEN_TTL_DAYS` (fractional days allowed) to give the generated token a lifetime. Once it lapses, the server mints a fresh one **on the next startup** and prints it on stderr, while the just-replaced token keeps validating for `MCP_AUTH_TOKEN_GRACE_HOURS` (default 24) so in-flight clients survive the swap. Expiry is also enforced live: a lapsed token is rejected mid-run with a `401` + `WWW-Authenticate: Bearer … error="invalid_token"`. To force a rotation sooner, delete `$CACHE_DIR/.env` (or just its `MCP_AUTH_TOKEN` line) and restart.
+- *Explicit token* — when you set `MCP_AUTH_TOKEN` yourself, you own its lifetime (TTL doesn't apply). To rotate, put the new token in `MCP_AUTH_TOKEN`, move the old one to `MCP_AUTH_TOKEN_PREVIOUS`, and restart; both are accepted during the overlap. Drop `MCP_AUTH_TOKEN_PREVIOUS` and restart once every client is on the new token. Comparison stays timing-safe across every currently-valid token.
 
 CORS support was first implemented by [@marcinn2](https://github.com/marcinn2) in his fork [marcinn2/debmatic-mcp](https://github.com/marcinn2/debmatic-mcp) — thanks!
 
@@ -146,7 +155,16 @@ CCU_HTTPS=true
 CCU_PORT=443
 ```
 
-The server accepts self-signed certificates automatically — certificate verification is **off by default** because CCUs ship with self-signed certs. If your CCU has a proper certificate, enable verification with `CCU_TLS_VERIFY=true`.
+The server accepts self-signed certificates automatically — certificate verification is **off by default** because CCUs ship with self-signed certs (the server logs a warning when running unverified). To actually verify the connection and close the MITM gap, you have three options:
+
+- **Pin the fingerprint** (simplest for a self-signed appliance cert): set `CCU_TLS_FINGERPRINT` to the cert's SHA-256 (hex, with or without colons). The connection is rejected unless the CCU presents exactly that certificate. Read it with:
+  ```bash
+  echo | openssl s_client -connect "$CCU_HOST:443" 2>/dev/null | openssl x509 -noout -fingerprint -sha256
+  ```
+- **Trust a CA/self-signed PEM**: point `CCU_CA_CERT` at the certificate file for standard chain validation.
+- **System trust store**: if your CCU has a publicly-trusted certificate, set `CCU_TLS_VERIFY=true`.
+
+`CCU_TLS_FINGERPRINT` takes precedence over `CCU_CA_CERT`, which takes precedence over `CCU_TLS_VERIFY`.
 
 ## Configuration
 
@@ -159,7 +177,9 @@ All configuration is via environment variables:
 | `CCU_USER` | `Admin` | CCU username |
 | `CCU_PORT` | `80` | API port (`443` when using HTTPS) |
 | `CCU_HTTPS` | `false` | Connect via HTTPS (self-signed certs supported) |
-| `CCU_TLS_VERIFY` | `false` | Verify the CCU's TLS certificate (enable if you have a proper cert) |
+| `CCU_TLS_VERIFY` | `false` | Verify the CCU's TLS certificate against the system trust store (for a publicly-trusted cert) |
+| `CCU_TLS_FINGERPRINT` | unset | Pin the CCU's self-signed leaf cert by its SHA-256 fingerprint (hex, colons optional). Takes precedence over the other TLS options |
+| `CCU_CA_CERT` | unset | Path to the CCU's CA/self-signed PEM for chain validation |
 | `CCU_TIMEOUT` | `10000` | CCU request timeout in milliseconds |
 | `CCU_SCRIPT_TIMEOUT` | `30000` | HM Script execution timeout in milliseconds |
 | `LOG_LEVEL` | `info` | `error`, `warn`, `info`, or `debug` |
@@ -168,21 +188,29 @@ All configuration is via environment variables:
 | `MCP_TRANSPORT` | `http` | `http` or `stdio` (the `--stdio` CLI flag overrides this) |
 | `MCP_PORT` | `3000` | HTTP server port (HTTP mode only) |
 | `MCP_AUTH_TOKEN` | auto-generated | Bearer token for HTTP mode; generated and saved to `$CACHE_DIR/.env` on first start |
+| `MCP_AUTH_TOKEN_PREVIOUS` | unset | Previous bearer token, accepted alongside `MCP_AUTH_TOKEN` during a rotation overlap; remove it (and restart) to end the overlap. Explicit-token path only |
+| `MCP_AUTH_TOKEN_TTL_DAYS` | unset (never expires) | Lifetime of the **auto-generated** token, in days (fractional allowed). Past expiry it auto-rotates on next startup; ignored when `MCP_AUTH_TOKEN` is set |
+| `MCP_AUTH_TOKEN_GRACE_HOURS` | `24` | Overlap (hours) after an auto-rotation during which the just-replaced token is still accepted |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated allowlist of browser origins. Unset = no cross-origin browser access (default-deny). An allowlisted origin is reflected exactly in `Access-Control-Allow-Origin` (never `*`); the list also drives DNS-rebinding origin checks |
+| `MCP_ALLOWED_HOSTS` | `localhost`/`127.0.0.1` | Extra `Host` values accepted by DNS-rebinding protection (comma-separated `host:port`); add your hostname when behind a proxy or container DNS name |
+| `MCP_HOST` | unset (all interfaces) | Bind address for the HTTP listener; set `127.0.0.1` to restrict to loopback (e.g. behind a TLS-terminating proxy), which also silences the plaintext warning |
+| `MCP_TLS_CERT` / `MCP_TLS_KEY` | unset | PEM cert/key paths. Set **both** to serve MCP over HTTPS natively; leave unset for plain HTTP. Setting only one is a configuration error |
+| `MCP_ALLOW_PLAINTEXT` | `false` | Set `true` to acknowledge serving the bearer token over plain HTTP and silence the non-loopback plaintext warning |
 | `CCU_RATE_LIMIT_BURST` | `20` | Max burst of requests sent to the CCU |
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
 ## Tools
 
-18 tools organized by what you'd actually want to do:
+25 tools organized by what you'd actually want to do:
 
-**Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `describe_device_type`
+**Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `list_links`, `describe_device_type`
 
 **Read state** — `get_value`, `get_values` (bulk), `get_paramset`
 
-**Change things** — `set_value`, `put_paramset`, `set_system_variable`, `execute_program`
+**Change things** — `set_value`, `put_paramset`, `set_system_variable`, `create_system_variable`, `delete_system_variable`, `assign_channel`, `unassign_channel`, `execute_program`
 
-**Check health** — `get_service_messages`, `get_system_info`
+**Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_rssi`, `get_system_info`
 
 **Other** — `help` (context-aware), `run_script` (raw HomeMatic Script for bulk operations, renaming devices/channels, querying room membership, or anything not covered by the other tools)
 

@@ -17,9 +17,42 @@ export function escapeHmScript(input: string): string {
     .replace(/\r/g, "\\r");
 }
 
+/**
+ * Extract the token from an `Authorization: Bearer <token>` header (scheme is
+ * case-insensitive per RFC 7235). Returns "" when absent or not a well-formed
+ * bearer header.
+ *
+ * The capture is anchored to a non-space first char (`\S.*`) so the whitespace
+ * and token patterns can't overlap — `\s+(.+)` overlapped on whitespace and
+ * backtracked polynomially on a caller-controlled header, which is reachable
+ * pre-auth (CodeQL js/polynomial-redos). Bearer tokens contain no spaces, so
+ * anchoring is behaviour-preserving for valid input.
+ */
+export function extractBearerToken(authHeader: string): string {
+  return authHeader.match(/^Bearer\s+(\S.*)$/i)?.[1] ?? "";
+}
+
 /** Format a tool result as MCP text content. */
 export function toolResult(data: unknown) {
   return { content: [{ type: "text" as const, text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
+}
+
+/**
+ * Tool result carrying BOTH a human-readable text block (backwards-compatible
+ * with pre-structuredContent clients) and machine-readable `structuredContent`
+ * that validates against the tool's `outputSchema` (MCP 2025-11-25).
+ *
+ * `structured` must be an object (structuredContent is always a JSON object).
+ * For list/array tools, pass the wrapper object as `structured` and the bare
+ * array as `text` so the text block stays byte-for-byte what older clients got.
+ * For object tools, omit `text` and the object is used for both.
+ */
+export function structuredResult(structured: Record<string, unknown>, text?: unknown) {
+  const body = text === undefined ? structured : text;
+  return {
+    content: [{ type: "text" as const, text: typeof body === "string" ? body : JSON.stringify(body, null, 2) }],
+    structuredContent: structured,
+  };
 }
 
 /** Try to parse JSON, return raw string on failure. */

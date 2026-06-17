@@ -20,6 +20,8 @@ services:
       # - MCP_TRANSPORT=http
       # - MCP_PORT=3000
       # - MCP_AUTH_TOKEN=           # auto-generated if unset
+      # - MCP_ALLOWED_ORIGINS=      # comma-separated browser origin allowlist; unset = no cross-origin browser access (default-deny). Exact origin reflected, never '*'
+      # - MCP_ALLOWED_HOSTS=        # extra Host values for DNS-rebinding protection (comma-separated host:port)
 
       # === Cache (optional) ===
       # - CACHE_DIR=/data

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { CcuConfig } from "./ccu/types.js";
 
 export interface AppConfig {
@@ -6,6 +7,62 @@ export interface AppConfig {
     transport: "http" | "stdio";
     port: number;
     authToken?: string;
+    /**
+     * Previous bearer token kept valid for the rotation overlap
+     * (`MCP_AUTH_TOKEN_PREVIOUS`). Lets operators roll `MCP_AUTH_TOKEN` without
+     * dropping clients still on the old token; remove it (and restart) to end
+     * the overlap. Applies to the explicit-token path only.
+     */
+    authTokenPrevious?: string;
+    /**
+     * Lifetime of the AUTO-GENERATED bearer token in ms (`MCP_AUTH_TOKEN_TTL_DAYS`,
+     * fractional days allowed). Unset ⇒ the generated token never expires (the
+     * historical default). Does not apply to an explicit `MCP_AUTH_TOKEN`, which
+     * the operator owns. On startup past expiry the token auto-rotates.
+     */
+    authTokenTtlMs?: number;
+    /**
+     * Overlap after an auto-rotation during which the just-replaced token still
+     * validates, so in-flight clients survive the swap (`MCP_AUTH_TOKEN_GRACE_HOURS`,
+     * default 24).
+     */
+    authTokenGraceMs: number;
+    /**
+     * Default-deny origin allowlist for browser-based MCP clients. Empty ⇒ no
+     * cross-origin browser access (the secure default). A request whose `Origin`
+     * is on this list gets that exact origin reflected in
+     * `Access-Control-Allow-Origin` (never `*`); the same list drives the
+     * transport's DNS-rebinding `allowedOrigins` so CORS and rebinding
+     * protection can't drift apart. Set via `MCP_ALLOWED_ORIGINS`
+     * (comma-separated, e.g. `https://app.example,http://localhost:6274`).
+     */
+    allowedOrigins: string[];
+    /**
+     * Host-header allowlist for the StreamableHTTP transport's DNS-rebinding
+     * protection. Defaults to localhost/127.0.0.1 on the MCP port; extend via
+     * `MCP_ALLOWED_HOSTS` when the server is reached under another hostname.
+     */
+    allowedHosts: string[];
+    /**
+     * Optional bind address for the HTTP listener (`MCP_HOST`). Unset ⇒ bind
+     * all interfaces (the unchanged default). Set to `127.0.0.1`/`::1` to
+     * restrict the server to loopback (e.g. when a reverse proxy terminates TLS
+     * in front), which also suppresses the plaintext warning.
+     */
+    host?: string;
+    /**
+     * Optional TLS cert/key paths (`MCP_TLS_CERT` / `MCP_TLS_KEY`). When BOTH
+     * are set the server listens over HTTPS natively; otherwise it serves plain
+     * HTTP (the zero-config default). Setting only one is a configuration error.
+     */
+    tlsCertPath?: string;
+    tlsKeyPath?: string;
+    /**
+     * Acknowledge that serving over plain HTTP is intended
+     * (`MCP_ALLOW_PLAINTEXT=true`). Silences the non-loopback plaintext warning
+     * for operators who deliberately run without TLS (e.g. a trusted LAN).
+     */
+    allowPlaintext: boolean;
   };
   cache: {
     dir: string;
@@ -43,12 +100,76 @@ export function loadConfig(): AppConfig {
     return val;
   };
 
+  // Optional positive duration in `unitMs` units; fractional values allowed
+  // (e.g. 0.5 days). Returns undefined when unset; throws on garbage so a
+  // typo'd TTL fails loudly instead of silently disabling expiry.
+  const parseDurationEnv = (name: string, unitMs: number): number | undefined => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return undefined;
+    const val = Number(raw);
+    if (!Number.isFinite(val) || val <= 0) {
+      throw new Error(`${name} must be a positive number, got: "${process.env[name]}"`);
+    }
+    return Math.round(val * unitMs);
+  };
+
+  const mcpPort = parseIntEnv("MCP_PORT", "3000");
+  // DNS-rebinding defense: the transport rejects any Host header not on this
+  // list. localhost/127.0.0.1 on the bound port covers local use; deployments
+  // reached under another hostname (reverse proxy, container DNS name) add it
+  // via MCP_ALLOWED_HOSTS (comma-separated, "host:port").
+  const allowedHosts = [
+    `127.0.0.1:${mcpPort}`,
+    `localhost:${mcpPort}`,
+    ...(process.env.MCP_ALLOWED_HOSTS || "")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean),
+  ];
+
+  // Default-deny browser origin allowlist. Empty unless MCP_ALLOWED_ORIGINS is
+  // set; it feeds both the reflective CORS headers and the transport's
+  // DNS-rebinding Origin check (single source of truth).
+  const allowedOrigins = (process.env.MCP_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean);
+
+  // Native TLS for the HTTP transport is opt-in: set BOTH cert and key. Plain
+  // HTTP stays the zero-config default (issue #50). Setting only one is almost
+  // certainly a mistake, so fail loudly rather than silently serving plaintext.
+  const tlsCertPath = process.env.MCP_TLS_CERT?.trim() || undefined;
+  const tlsKeyPath = process.env.MCP_TLS_KEY?.trim() || undefined;
+  if (Boolean(tlsCertPath) !== Boolean(tlsKeyPath)) {
+    throw new Error("MCP_TLS_CERT and MCP_TLS_KEY must both be set (or both unset)");
+  }
+
+  // CCU TLS verification (issue #51). A CCU ships a self-signed cert, so verify
+  // it either by pinning the leaf fingerprint (CCU_TLS_FINGERPRINT) or by
+  // trusting a CA/self-signed PEM (CCU_CA_CERT). Fingerprint takes precedence.
+  const tlsFingerprint = process.env.CCU_TLS_FINGERPRINT?.trim() || undefined;
+  const caCertPath = process.env.CCU_CA_CERT?.trim() || undefined;
+  let caCert: string | undefined;
+  if (caCertPath) {
+    try {
+      caCert = readFileSync(caCertPath, "utf-8");
+    } catch (err) {
+      // Don't interpolate the env-derived path here: a fatal config error is
+      // logged at the top level, and echoing raw env values into logs is a
+      // leak vector (js/clear-text-logging). The fs error already names the
+      // path for the operator.
+      throw new Error(`CCU_CA_CERT could not be read: ${(err as Error).message}`);
+    }
+  }
+
   return {
     ccu: {
       host,
       port: parseIntEnv("CCU_PORT", process.env.CCU_HTTPS === "true" ? "443" : "80"),
       https: process.env.CCU_HTTPS === "true",
       tlsVerify: process.env.CCU_TLS_VERIFY === "true",
+      tlsFingerprint,
+      caCert,
       user: process.env.CCU_USER || "Admin",
       password,
       timeout: parseIntEnv("CCU_TIMEOUT", "10000"),
@@ -56,8 +177,17 @@ export function loadConfig(): AppConfig {
     },
     mcp: {
       transport,
-      port: parseIntEnv("MCP_PORT", "3000"),
+      port: mcpPort,
       authToken: process.env.MCP_AUTH_TOKEN,
+      authTokenPrevious: process.env.MCP_AUTH_TOKEN_PREVIOUS?.trim() || undefined,
+      authTokenTtlMs: parseDurationEnv("MCP_AUTH_TOKEN_TTL_DAYS", 86_400_000),
+      authTokenGraceMs: parseDurationEnv("MCP_AUTH_TOKEN_GRACE_HOURS", 3_600_000) ?? 24 * 3_600_000,
+      allowedOrigins,
+      allowedHosts,
+      host: process.env.MCP_HOST?.trim() || undefined,
+      tlsCertPath,
+      tlsKeyPath,
+      allowPlaintext: process.env.MCP_ALLOW_PLAINTEXT === "true",
     },
     cache: {
       dir: process.env.CACHE_DIR || "/data",

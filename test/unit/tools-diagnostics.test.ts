@@ -58,6 +58,148 @@ describe("get_service_messages handler", () => {
   });
 });
 
+describe("acknowledge_service_messages handler", () => {
+  it("confirms a single alarm by id and reports what was confirmed", async () => {
+    const mock = JSON.stringify({ confirmed: [{ id: "4711", type: "LOWBAT", address: "ABC:0" }] });
+    const sessionCall = vi.fn().mockResolvedValue(mock);
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result = parseToolResult(await callTool(server, "acknowledge_service_messages", { id: "4711" })) as any;
+    expect(result.count).toBe(1);
+    expect(result.confirmed[0].id).toBe("4711");
+    cleanupDeps(deps);
+  });
+
+  it("confirms all active messages on a channel address", async () => {
+    const mock = JSON.stringify({
+      confirmed: [
+        { id: "1", type: "LOWBAT", address: "ABC:0" },
+        { id: "2", type: "UNREACH", address: "ABC:0" },
+      ],
+    });
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(mock) });
+
+    const result = parseToolResult(await callTool(server, "acknowledge_service_messages", { address: "ABC:0" })) as any;
+    expect(result.count).toBe(2);
+    cleanupDeps(deps);
+  });
+
+  it("returns INVALID_INPUT when neither id nor address is given", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result: any = await callTool(server, "acknowledge_service_messages", {});
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    expect(sessionCall).not.toHaveBeenCalled(); // validated before touching the CCU
+    cleanupDeps(deps);
+  });
+
+  it("returns NOT_FOUND when nothing matched (no active alarm for that id/address)", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [] })),
+    });
+
+    const result: any = await callTool(server, "acknowledge_service_messages", { id: "9999" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    cleanupDeps(deps);
+  });
+
+  it("generates a script that confirms (AlConfirm) and escapes the requested id/address", async () => {
+    const sessionCall = vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [{ id: "1", type: "x", address: 'A":0' }] }));
+    const { server, deps } = createTestServer({ sessionCall });
+
+    await callTool(server, "acknowledge_service_messages", { address: 'A":0' });
+    const script = sessionCall.mock.calls[0][1].script as string;
+    expect(script).toContain("AlConfirm()");
+    expect(script).toContain("OT_ALARMDP");
+    // the embedded address literal is escaped (quote -> \")
+    expect(script).toContain('string wantAddr = "A\\":0";');
+    cleanupDeps(deps);
+  });
+});
+
+describe("get_rssi handler", () => {
+  const rssiMock = () =>
+    vi.fn().mockImplementation(async (method: string, params?: any) => {
+      switch (method) {
+        case "Device.listAllDetail":
+          return [
+            { id: "1", name: "Thermostat Büro", address: "ABC123", interface: "HmIP-RF", type: "HmIP-eTRV",
+              channels: [{ id: "10", name: "M", address: "ABC123:0", deviceId: "1", index: 0 }] },
+            { id: "2", name: "Fenster Küche", address: "DEF456", interface: "BidCos-RF", type: "HM-SWDO", channels: [] },
+          ];
+        case "Interface.listInterfaces":
+          return [{ name: "HmIP-RF" }, { name: "BidCos-RF" }, { name: "VirtualDevices" }];
+        case "Interface.rssiInfo":
+          // Real JSON-RPC shape: array of {name: <addr>, partner: [{name: <addr>, rssiData: [a,b]}]}.
+          // HmIP-RF and VirtualDevices don't implement rssiInfo on a real CCU → throw.
+          if (params?.interface === "BidCos-RF") return [{ name: "DEF456", partner: [{ name: "BidCoS-RF", rssiData: [65536, -80] }] }];
+          throw new Error("rssiInfo not supported");
+        case "Interface.getParamset":
+          // HmIP :0 maintenance channel exposes RSSI_DEVICE (dBm, negative).
+          // Raw getParamset returns STRING values (the tool coerces them).
+          if (params?.address === "ABC123:0") return { RSSI_DEVICE: "-72", UNREACH: "0" };
+          return {};
+        case "Interface.listBidcosInterfaces":
+          return [{ ADDRESS: "OEQ0123456", DUTY_CYCLE: 12, CONNECTED: true }];
+        default:
+          return null;
+      }
+    });
+
+  it("reports BidCos RSSI via rssiInfo (65536 → null) and HmIP RSSI via maintenance datapoints", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+
+    const byAddr = Object.fromEntries(result.devices.map((d: any) => [d.address, d]));
+    // BidCos via rssiInfo: 65536 sentinel → null, other direction kept
+    expect(byAddr.DEF456.links[0].rssiDevice).toBeNull();
+    expect(byAddr.DEF456.links[0].rssiPeer).toBe(-80);
+    // HmIP via RSSI_DEVICE datapoint (rssiInfo threw for HmIP-RF)
+    expect(byAddr.ABC123.name).toBe("Thermostat Büro");
+    expect(byAddr.ABC123.links[0].rssiDevice).toBe(-72);
+    expect(byAddr.ABC123.links[0].rssiPeer).toBeNull(); // no RSSI_PEER datapoint
+    cleanupDeps(deps);
+  });
+
+  it("includes BidCos interface health (duty cycle, connected)", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.interfaces[0].DUTY_CYCLE).toBe(12);
+    expect(result.interfaces[0].CONNECTED).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("filters by device name/address substring", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi", { name: "küche" })) as any;
+    expect(result.devices).toHaveLength(1);
+    expect(result.devices[0].address).toBe("DEF456");
+    cleanupDeps(deps);
+  });
+
+  it("tolerates interfaces that don't support rssiInfo (e.g. VirtualDevices)", async () => {
+    const { server, deps } = createTestServer({ sessionCall: rssiMock() });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.devices).toHaveLength(2); // both RF devices present despite VirtualDevices throwing
+    cleanupDeps(deps);
+  });
+
+  it("tolerates listBidcosInterfaces failure (returns empty interfaces)", async () => {
+    const base = rssiMock().getMockImplementation()!;
+    const sessionCall = vi.fn().mockImplementation(async (method: string, params?: any) => {
+      if (method === "Interface.listBidcosInterfaces") throw new Error("unsupported");
+      return base(method, params);
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result = parseToolResult(await callTool(server, "get_rssi")) as any;
+    expect(result.interfaces).toEqual([]);
+    cleanupDeps(deps);
+  });
+});
+
 describe("get_system_info handler", () => {
   it("returns all system info fields", async () => {
     const { server, deps } = createTestServer({
@@ -129,6 +271,28 @@ describe("merge fallbacks (coverage round)", () => {
     const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(mock) });
     const result = parseToolResult(await callTool(server, "get_service_messages")) as any[];
     expect(result[0].channelName).toBe("");
+    cleanupDeps(deps);
+  });
+});
+
+// Issue #26: structuredContent on diagnostics tools.
+describe("structured output (diagnostics)", () => {
+  it("get_system_info returns structuredContent as an object", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockImplementation(async (method: string) => (method === "CCU.getVersion" ? "3.85.7" : null)),
+    });
+    const res = await callTool(server, "get_system_info") as any;
+    expect(res.structuredContent).toBeTypeOf("object");
+    expect(res.structuredContent.version).toBe("3.85.7");
+    cleanupDeps(deps);
+  });
+
+  it("get_service_messages wraps alarms under structuredContent.messages", async () => {
+    const mock = JSON.stringify({ alarms: [{ id: "1", type: "LOWBAT", address: "ABC:0", timestamp: "t" }], channelNames: {} });
+    const { server, deps } = createTestServer({ sessionCall: vi.fn().mockResolvedValue(mock) });
+    const res = await callTool(server, "get_service_messages") as any;
+    expect(Array.isArray(res.structuredContent.messages)).toBe(true);
+    expect(res.structuredContent.messages[0].type).toBe("LOWBAT");
     cleanupDeps(deps);
   });
 });

@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
-import { createServer, type Server as HttpServer } from "node:http";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import {
+  createServer as createHttpServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { createServer as createHttpsServer, type Server as HttpsServer } from "node:https";
+import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,9 +19,10 @@ import { RateLimiter } from "./middleware/rate-limiter.js";
 import { DeviceTypeCache } from "./cache/device-type-cache.js";
 import { Resolver } from "./middleware/resolver.js";
 import { ResourcePoller } from "./resources/poller.js";
-import { resolveAuthToken } from "./auth/token.js";
+import { resolveAuthTokens } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
 import { createMcpServer } from "./server.js";
+import { extractBearerToken } from "./utils.js";
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -57,7 +65,7 @@ async function main(): Promise<void> {
 
   let poller: ResourcePoller;
   let closeTransports: () => Promise<void>;
-  let httpServer: HttpServer | null = null;
+  let httpServer: HttpServer | HttpsServer | null = null;
 
   if (config.mcp.transport === "stdio") {
     const mcpServer = createMcpServer(deps);
@@ -75,26 +83,53 @@ async function main(): Promise<void> {
     // A stateless StreamableHTTPServerTransport only survives a single request,
     // so each MCP session gets its own transport + server (deps are shared),
     // routed by the Mcp-Session-Id header per the SDK's session pattern.
-    const authToken = await resolveAuthToken(config.mcp.authToken, config.cache.dir, logger);
+    const authTokens = await resolveAuthTokens(
+      {
+        envToken: config.mcp.authToken,
+        envPreviousToken: config.mcp.authTokenPrevious,
+        dataDir: config.cache.dir,
+        ttlMs: config.mcp.authTokenTtlMs,
+        graceMs: config.mcp.authTokenGraceMs,
+      },
+      logger,
+    );
     const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
 
-    httpServer = createServer(async (req, res) => {
+    const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
         // CORS so browser-based MCP clients (e.g. MCP Inspector) can connect
-        // directly. Auth is still enforced via the bearer token below.
-        // Mcp-Session-Id must be exposed or browsers can't reuse the session.
-        // Credit: @marcinn2 (marcinn2/debmatic-mcp@d33a0cb)
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-        res.setHeader(
-          "Access-Control-Allow-Headers",
-          "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID",
-        );
-        res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
-        res.setHeader("Access-Control-Max-Age", "86400");
+        // directly. Default-deny against a configurable origin allowlist
+        // (MCP_ALLOWED_ORIGINS): a cross-origin browser is allowed solely when
+        // its Origin is on the list, and we reflect that exact origin back —
+        // never `*`, which would let any web page drive a local instance that
+        // controls real CCU hardware (the DNS-rebinding vector). With the list
+        // empty (the default) no CORS headers are sent at all. The same list
+        // also feeds the transport's DNS-rebinding `allowedOrigins` (below), so
+        // a disallowed origin is rejected server-side too. Auth is still
+        // enforced via the bearer token regardless.
+        // CORS first implemented by @marcinn2 (marcinn2/debmatic-mcp@d33a0cb).
+        const requestOrigin = req.headers.origin;
+        const originAllowed =
+          typeof requestOrigin === "string" && config.mcp.allowedOrigins.includes(requestOrigin);
+        if (originAllowed) {
+          // Reflect the exact origin (never `*`); Vary so shared caches don't
+          // serve this response to a different origin.
+          res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+          res.setHeader("Vary", "Origin");
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+          res.setHeader(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID",
+          );
+          res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
+          res.setHeader("Access-Control-Max-Age", "86400");
+        }
 
         if (req.method === "OPTIONS") {
-          res.writeHead(204);
+          // Preflight succeeds (204, with the CORS headers above) only for an
+          // allowed origin; anything else gets 403 and no allow headers, so the
+          // browser blocks the actual request.
+          res.writeHead(originAllowed ? 204 : 403);
           res.end();
           return;
         }
@@ -105,16 +140,24 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Auth check for MCP endpoints. The scheme is case-insensitive per
-        // RFC 7235; the token comparison is timing-safe (hash both sides so
-        // length differences don't create a timing side-channel).
-        const authHeader = req.headers.authorization ?? "";
-        const presented = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
-        const ha = createHash("sha256").update(presented).digest();
-        const hb = createHash("sha256").update(authToken).digest();
-        const headerValid = timingSafeEqual(ha, hb);
+        // Auth check for MCP endpoints. Token parsing tolerates the
+        // case-insensitive scheme (RFC 7235); verify() is timing-safe across all
+        // currently-valid tokens (it hashes both sides and checks every entry
+        // without early return) and enforces expiry live (issue #52).
+        const presented = extractBearerToken(req.headers.authorization ?? "");
+        const headerValid = authTokens.verify(presented);
         if (!headerValid) {
-          res.writeHead(401, { "Content-Type": "application/json" });
+          // Challenge header so clients can discover the scheme (RFC 6750 /
+          // MCP auth spec). Add error=invalid_token only when a (bad) token was
+          // actually presented; RFC 6750 §3 omits the error param when no
+          // credentials were sent.
+          const challenge = presented
+            ? 'Bearer realm="debmatic-mcp", error="invalid_token"'
+            : 'Bearer realm="debmatic-mcp"';
+          res.writeHead(401, {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": challenge,
+          });
           res.end(JSON.stringify({ error: "Unauthorized" }));
           return;
         }
@@ -130,6 +173,17 @@ async function main(): Promise<void> {
         // transport itself rejects non-initialize requests without a session.
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          // Defense-in-depth against DNS rebinding: reject requests whose Host
+          // header isn't an expected one (a browser tricked into hitting a
+          // local instance carries the attacker's host, not localhost:port).
+          // allowedOrigins mirrors the CORS allowlist so a browser request with
+          // a disallowed Origin is also rejected server-side; an empty list
+          // disables the Origin check (the SDK only enforces it when non-empty,
+          // and only when an Origin header is present — non-browser clients that
+          // send no Origin are unaffected).
+          enableDnsRebindingProtection: true,
+          allowedHosts: config.mcp.allowedHosts,
+          allowedOrigins: config.mcp.allowedOrigins,
           onsessioninitialized: (sid) => {
             sessions.set(sid, { server: sessionServer, transport });
             logger.info("mcp_session_started", { sessions: sessions.size });
@@ -151,7 +205,37 @@ async function main(): Promise<void> {
         }
         res.end(JSON.stringify({ error: "Internal error" }));
       }
-    });
+    };
+
+    // Native TLS is opt-in (issue #50): with both cert and key set we serve
+    // HTTPS so the bearer token isn't exposed in transit; otherwise we keep
+    // plain HTTP (the zero-config default). config validates that cert/key are
+    // set together.
+    const useTls = Boolean(config.mcp.tlsCertPath && config.mcp.tlsKeyPath);
+    if (useTls) {
+      const [cert, key] = await Promise.all([
+        readFile(config.mcp.tlsCertPath!),
+        readFile(config.mcp.tlsKeyPath!),
+      ]);
+      httpServer = createHttpsServer({ cert, key }, handleRequest);
+    } else {
+      httpServer = createHttpServer(handleRequest);
+      // Plain HTTP is allowed (some run behind a TLS-terminating proxy, or on a
+      // trusted LAN), but the bearer token then travels in the clear. Warn once
+      // at startup unless the listener is loopback-only or the operator has
+      // acknowledged it via MCP_ALLOW_PLAINTEXT.
+      const host = config.mcp.host;
+      const loopbackOnly = host === "127.0.0.1" || host === "::1" || host === "localhost";
+      if (!loopbackOnly && !config.mcp.allowPlaintext) {
+        logger.warn("plaintext_http", {
+          hint:
+            "MCP is serving the bearer token over unencrypted HTTP on a non-loopback " +
+            "address. Set MCP_TLS_CERT/MCP_TLS_KEY for native TLS, put a TLS-terminating " +
+            "reverse proxy in front, bind loopback with MCP_HOST=127.0.0.1, or set " +
+            "MCP_ALLOW_PLAINTEXT=true to silence this warning.",
+        });
+      }
+    }
 
     poller = new ResourcePoller(
       async () => {
@@ -167,8 +251,14 @@ async function main(): Promise<void> {
       sessions.clear();
     };
 
-    httpServer.listen(config.mcp.port, () => {
-      logger.info("server_ready", { transport: "http", port: config.mcp.port });
+    httpServer.listen(config.mcp.port, config.mcp.host, () => {
+      logger.info("server_ready", {
+        transport: useTls ? "https" : "http",
+        port: config.mcp.port,
+        host: config.mcp.host ?? "0.0.0.0",
+        tls: useTls,
+        authTokens: authTokens.liveCount(),
+      });
     });
   }
 

@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { loadConfig } from "../../src/config.js";
 
 describe("loadConfig", () => {
@@ -17,6 +20,11 @@ describe("loadConfig", () => {
     delete process.env.MCP_TRANSPORT;
     delete process.env.MCP_PORT;
     delete process.env.MCP_AUTH_TOKEN;
+    delete process.env.MCP_AUTH_TOKEN_PREVIOUS;
+    delete process.env.MCP_AUTH_TOKEN_TTL_DAYS;
+    delete process.env.MCP_AUTH_TOKEN_GRACE_HOURS;
+    delete process.env.MCP_ALLOWED_ORIGINS;
+    delete process.env.MCP_ALLOWED_HOSTS;
     delete process.env.CACHE_DIR;
     delete process.env.CACHE_TTL;
     delete process.env.CCU_RATE_LIMIT_BURST;
@@ -25,6 +33,12 @@ describe("loadConfig", () => {
     delete process.env.CCU_TIMEOUT;
     delete process.env.CCU_SCRIPT_TIMEOUT;
     delete process.env.CCU_TLS_VERIFY;
+    delete process.env.CCU_TLS_FINGERPRINT;
+    delete process.env.CCU_CA_CERT;
+    delete process.env.MCP_HOST;
+    delete process.env.MCP_TLS_CERT;
+    delete process.env.MCP_TLS_KEY;
+    delete process.env.MCP_ALLOW_PLAINTEXT;
     delete process.env.LOG_LEVEL;
   });
 
@@ -150,6 +164,43 @@ describe("loadConfig", () => {
     expect(() => loadConfig()).toThrow(/RESOURCE_POLL_INTERVAL must be a positive number/);
   });
 
+  // Issue #28 / #37: HTTP transport hardening
+  it("origin allowlist is default-deny: allowedOrigins is empty unless configured", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    expect(loadConfig().mcp.allowedOrigins).toEqual([]);
+  });
+
+  it("MCP_ALLOWED_ORIGINS parses a comma-separated allowlist (trimmed, no blanks)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_ALLOWED_ORIGINS = "https://app.example, , http://localhost:6274 ";
+    expect(loadConfig().mcp.allowedOrigins).toEqual([
+      "https://app.example",
+      "http://localhost:6274",
+    ]);
+  });
+
+  it("allowedHosts defaults to localhost/127.0.0.1 on the MCP port", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_PORT = "4567";
+    expect(loadConfig().mcp.allowedHosts).toEqual(["127.0.0.1:4567", "localhost:4567"]);
+  });
+
+  it("MCP_ALLOWED_HOSTS extends the default host allowlist (trimmed, no blanks)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_PORT = "3000";
+    process.env.MCP_ALLOWED_HOSTS = "mcp.lan:3000, , proxy.example ";
+    expect(loadConfig().mcp.allowedHosts).toEqual([
+      "127.0.0.1:3000",
+      "localhost:3000",
+      "mcp.lan:3000",
+      "proxy.example",
+    ]);
+  });
+
   it("parses CCU_TLS_VERIFY (default off)", () => {
     process.env.CCU_HOST = "test";
     process.env.CCU_PASSWORD = "pw";
@@ -157,5 +208,116 @@ describe("loadConfig", () => {
 
     process.env.CCU_TLS_VERIFY = "true";
     expect(loadConfig().ccu.tlsVerify).toBe(true);
+  });
+
+  // Issue #51: CCU TLS verification via fingerprint pin or CA cert
+  it("CCU TLS pinning is off by default", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.ccu.tlsFingerprint).toBeUndefined();
+    expect(config.ccu.caCert).toBeUndefined();
+  });
+
+  it("parses CCU_TLS_FINGERPRINT", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_TLS_FINGERPRINT = "AB:CD:EF:01";
+    expect(loadConfig().ccu.tlsFingerprint).toBe("AB:CD:EF:01");
+  });
+
+  it("reads CCU_CA_CERT file contents", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccu-ca-"));
+    const caPath = join(dir, "ca.pem");
+    writeFileSync(caPath, "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n");
+    try {
+      process.env.CCU_HOST = "test";
+      process.env.CCU_PASSWORD = "pw";
+      process.env.CCU_CA_CERT = caPath;
+      expect(loadConfig().ccu.caCert).toContain("BEGIN CERTIFICATE");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws if CCU_CA_CERT points at a missing file", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_CA_CERT = "/no/such/ca.pem";
+    expect(() => loadConfig()).toThrow(/CCU_CA_CERT could not be read/);
+  });
+
+  // Issue #50: native TLS for the HTTP transport (opt-in), bind host, plaintext ack
+  it("TLS is off by default: no cert/key paths, plain HTTP", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.mcp.tlsCertPath).toBeUndefined();
+    expect(config.mcp.tlsKeyPath).toBeUndefined();
+    expect(config.mcp.host).toBeUndefined();
+    expect(config.mcp.allowPlaintext).toBe(false);
+  });
+
+  it("reads MCP_TLS_CERT/MCP_TLS_KEY when both are set", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_TLS_CERT = "/data/cert.pem";
+    process.env.MCP_TLS_KEY = "/data/key.pem";
+    const config = loadConfig();
+    expect(config.mcp.tlsCertPath).toBe("/data/cert.pem");
+    expect(config.mcp.tlsKeyPath).toBe("/data/key.pem");
+  });
+
+  it("throws if only one of MCP_TLS_CERT / MCP_TLS_KEY is set", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+
+    process.env.MCP_TLS_CERT = "/data/cert.pem";
+    expect(() => loadConfig()).toThrow(/MCP_TLS_CERT and MCP_TLS_KEY must both be set/);
+
+    delete process.env.MCP_TLS_CERT;
+    process.env.MCP_TLS_KEY = "/data/key.pem";
+    expect(() => loadConfig()).toThrow(/MCP_TLS_CERT and MCP_TLS_KEY must both be set/);
+  });
+
+  it("reads MCP_HOST and MCP_ALLOW_PLAINTEXT", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_HOST = "127.0.0.1";
+    process.env.MCP_ALLOW_PLAINTEXT = "true";
+    const config = loadConfig();
+    expect(config.mcp.host).toBe("127.0.0.1");
+    expect(config.mcp.allowPlaintext).toBe(true);
+  });
+
+  // Issue #52: token rotation + expiry
+  it("token TTL/previous default to none; grace defaults to 24h", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    const config = loadConfig();
+    expect(config.mcp.authTokenPrevious).toBeUndefined();
+    expect(config.mcp.authTokenTtlMs).toBeUndefined();
+    expect(config.mcp.authTokenGraceMs).toBe(24 * 3_600_000);
+  });
+
+  it("parses MCP_AUTH_TOKEN_TTL_DAYS / _GRACE_HOURS / _PREVIOUS (fractional ok)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_AUTH_TOKEN_PREVIOUS = "old-token";
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "30";
+    process.env.MCP_AUTH_TOKEN_GRACE_HOURS = "0.5";
+    const config = loadConfig();
+    expect(config.mcp.authTokenPrevious).toBe("old-token");
+    expect(config.mcp.authTokenTtlMs).toBe(30 * 86_400_000);
+    expect(config.mcp.authTokenGraceMs).toBe(Math.round(0.5 * 3_600_000));
+  });
+
+  it("throws on a non-positive / garbage MCP_AUTH_TOKEN_TTL_DAYS", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "0";
+    expect(() => loadConfig()).toThrow(/MCP_AUTH_TOKEN_TTL_DAYS must be a positive number/);
+    process.env.MCP_AUTH_TOKEN_TTL_DAYS = "soon";
+    expect(() => loadConfig()).toThrow(/MCP_AUTH_TOKEN_TTL_DAYS must be a positive number/);
   });
 });

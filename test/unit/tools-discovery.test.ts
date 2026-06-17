@@ -215,3 +215,72 @@ describe("list_devices error path (coverage round)", () => {
     cleanupDeps(deps);
   });
 });
+
+describe("list_links handler", () => {
+  const linksMock = () =>
+    vi.fn().mockImplementation(async (method: string, params?: any) => {
+      switch (method) {
+        case "Device.listAllDetail":
+          return [
+            { id: "1", name: "Wandtaster", address: "AAA", interface: "HmIP-RF", type: "x", operateGroupOnly: "false", isReady: "true",
+              channels: [{ id: "11", name: "Taste Oben", address: "AAA:1", deviceId: "1", index: 1 }] },
+            { id: "2", name: "Deckenlampe", address: "BBB", interface: "HmIP-RF", type: "y", operateGroupOnly: "false", isReady: "true",
+              channels: [{ id: "21", name: "Licht", address: "BBB:3", deviceId: "2", index: 3 }] },
+          ];
+        case "Interface.listInterfaces":
+          return [{ name: "HmIP-RF" }, { name: "VirtualDevices" }];
+        case "Interface.getLinks":
+          // Real JSON-RPC shape: lowercase fields (occu .../interface/getlinks.tcl)
+          if (params?.interface === "VirtualDevices") throw new Error("getLinks not supported");
+          return [{ sender: "AAA:1", receiver: "BBB:3", name: "Taster→Licht", description: "", flags: 0 }];
+        default:
+          return null;
+      }
+    });
+
+  it("lists links with sender/receiver channel names resolved", async () => {
+    const { server, deps } = createTestServer({ sessionCall: linksMock() });
+    const result = parseToolResult(await callTool(server, "list_links")) as any[];
+
+    expect(result).toHaveLength(1);
+    expect(result[0].sender).toBe("AAA:1");
+    expect(result[0].senderName).toBe("Taste Oben");
+    expect(result[0].receiver).toBe("BBB:3");
+    expect(result[0].receiverName).toBe("Licht");
+    expect(result[0].interface).toBe("HmIP-RF");
+    cleanupDeps(deps);
+  });
+
+  it("filters by device address (matches either endpoint)", async () => {
+    const { server, deps } = createTestServer({ sessionCall: linksMock() });
+    const hit = parseToolResult(await callTool(server, "list_links", { address: "BBB" })) as any[];
+    expect(hit).toHaveLength(1);
+
+    const miss = parseToolResult(await callTool(server, "list_links", { address: "ZZZ" })) as any[];
+    expect(miss).toHaveLength(0);
+    cleanupDeps(deps);
+  });
+
+  it("tolerates interfaces that don't support getLinks", async () => {
+    const { server, deps } = createTestServer({ sessionCall: linksMock() });
+    // VirtualDevices.getLinks throws; the HmIP-RF link still comes back
+    const result = parseToolResult(await callTool(server, "list_links")) as any[];
+    expect(result).toHaveLength(1);
+    cleanupDeps(deps);
+  });
+});
+
+// Issue #26: list tools wrap their array under a named structuredContent key,
+// while the text block stays the bare array (backwards-compatible).
+describe("structured output (discovery)", () => {
+  it("list_devices exposes structuredContent.devices and a bare-array text block", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockImplementation(async (method: string) => (method === "Device.listAllDetail" ? mockDevices : [])),
+    });
+    const res = await callTool(server, "list_devices") as any;
+    expect(Array.isArray(res.structuredContent.devices)).toBe(true);
+    expect(res.structuredContent.devices.length).toBeGreaterThan(0);
+    expect(Array.isArray(parseToolResult(res))).toBe(true); // text remains the bare array
+    cleanupDeps(deps);
+  });
+});

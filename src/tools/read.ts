@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
-import { toolResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
+import { toolResult, structuredResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
 
 export function registerReadTools(server: McpServer, deps: ServerDeps): void {
   registerGetValue(server, deps);
@@ -25,6 +25,12 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         valueKey: z.string().describe("Datapoint name (e.g. 'STATE', 'LEVEL', 'ACTUAL_TEMPERATURE')"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
       },
+      outputSchema: {
+        address: z.string(),
+        valueKey: z.string(),
+        value: z.unknown().describe("Parsed datapoint value (bool/number/string/null)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -45,7 +51,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         );
 
         logger.info("tool_call", { tool: "get_value", duration_ms: Date.now() - start, status: "ok", address: args.address });
-        return toolResult({ address: args.address, valueKey: args.valueKey, value: parseValue(value) });
+        return structuredResult({ address: args.address, valueKey: args.valueKey, value: parseValue(value) });
       } catch (err) {
         logger.info("tool_call", { tool: "get_value", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
@@ -68,6 +74,10 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         room: z.string().optional().describe("Room name — read all channels in this room"),
         function: z.string().optional().describe("Function name — read all channels in this function group"),
       },
+      outputSchema: {
+        values: z.array(z.unknown()).describe("One entry per channel: {address, name, datapoints}"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -104,7 +114,9 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         );
 
         logger.info("tool_call", { tool: "get_values", duration_ms: Date.now() - start, status: "ok" });
-        return toolResult(typeof result === "string" ? tryParseJson(result) : result);
+        const data = typeof result === "string" ? tryParseJson(result) : result;
+        // Wrap the array for structuredContent; keep the bare array as the text block.
+        return structuredResult({ values: Array.isArray(data) ? data : [] }, data);
       } catch (err) {
         logger.info("tool_call", { tool: "get_values", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();
@@ -196,6 +208,12 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         paramsetKey: z.enum(["VALUES", "MASTER", "LINK"]).describe("Paramset to read"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
       },
+      outputSchema: {
+        address: z.string(),
+        paramsetKey: z.string(),
+        params: z.unknown().describe("Map of parameter name → value"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
@@ -220,7 +238,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         const params = (typeof result === "object" && result !== null && !Array.isArray(result))
           ? parseValues(result as Record<string, unknown>)
           : result;
-        return toolResult({ address: args.address, paramsetKey: args.paramsetKey, params });
+        return structuredResult({ address: args.address, paramsetKey: args.paramsetKey, params });
       } catch (err) {
         logger.info("tool_call", { tool: "get_paramset", duration_ms: Date.now() - start, status: "error" });
         if (err instanceof CcuError) return err.toMcpError();

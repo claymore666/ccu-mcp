@@ -44,7 +44,7 @@ describeIf("MCP tools against live CCU", () => {
     deps = {
       config: {
         ccu: config,
-        mcp: { transport: "stdio", port: 3000 },
+        mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
         cache: { dir: tempDir, ttl: 86400 },
         rateLimiter: { burst: 20, rate: 10 },
         resourcePollInterval: 3600,
@@ -109,4 +109,128 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
+
+  // Exercises the real ReGa enumeration + AlConfirm path without mutating the
+  // user's CCU: a bogus id matches no active alarm → empty confirmed → NOT_FOUND.
+  // We deliberately do NOT auto-confirm a real active alarm (it would silently
+  // dismiss the user's warnings during a test run).
+  it("acknowledge_service_messages returns NOT_FOUND for an unknown id (live ReGa)", async () => {
+    const result: any = await callTool(server, "acknowledge_service_messages", { id: "999999999" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+  }, 30_000);
+
+  it("acknowledge_service_messages rejects an empty request with INVALID_INPUT", async () => {
+    const result: any = await callTool(server, "acknowledge_service_messages", {});
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+  }, 30_000);
+
+  it("get_rssi returns devices with plausible dBm RSSI values (live)", async () => {
+    const result = parseToolResult(await callTool(server, "get_rssi")) as {
+      devices: Array<{ address: string; links: Array<{ rssiDevice: number | null; rssiPeer: number | null }> }>;
+      interfaces: unknown;
+    };
+    expect(Array.isArray(result.devices)).toBe(true);
+
+    for (const d of result.devices) {
+      expect(typeof d.address).toBe("string");
+      for (const link of d.links) {
+        for (const v of [link.rssiDevice, link.rssiPeer]) {
+          if (v !== null) {
+            // dBm: never the 65536 sentinel, within a physically plausible range
+            expect(v).not.toBe(65536);
+            expect(v).toBeGreaterThan(-130);
+            expect(v).toBeLessThan(0);
+          }
+        }
+      }
+    }
+  }, 60_000);
+
+  it("list_links returns well-formed links (live; production CCU has thermostat↔FALMOT links)", async () => {
+    const links = parseToolResult(await callTool(server, "list_links")) as Array<{
+      sender: string; receiver: string; senderName: string; receiverName: string; interface: string;
+    }>;
+    expect(Array.isArray(links)).toBe(true);
+    for (const l of links) {
+      expect(typeof l.sender).toBe("string");
+      expect(typeof l.receiver).toBe("string");
+      expect(l.sender).not.toBe("");
+      expect(l.receiver).not.toBe("");
+    }
+    // Filtering by a sender's device returns a subset that all involve that device.
+    if (links.length > 0) {
+      const dev = links[0]!.sender.split(":")[0]!;
+      const filtered = parseToolResult(await callTool(server, "list_links", { address: dev })) as Array<{ sender: string; receiver: string }>;
+      for (const l of filtered) {
+        expect(l.sender.split(":")[0] === dev || l.receiver.split(":")[0] === dev).toBe(true);
+      }
+    }
+  }, 60_000);
+
+  // Full lifecycle against real ReGa: create → set → read back → delete. Uses a
+  // throwaway name and always deletes, so the CCU is left as it was found.
+  it("system variable lifecycle: create → set → read → delete (live)", async () => {
+    // Unique per run: the CCU keeps hidden VARDP objects for a name even after
+    // deletion, so reusing a fixed name eventually makes create dedup it to
+    // "<name> N". A fresh name each run sidesteps that and keeps the test clean.
+    const name = `debmatic_mcp_test_${Date.now()}`;
+    try {
+      const created = parseToolResult(await callTool(server, "create_system_variable", { name, type: "float", unit: "°C", min: 0, max: 50 })) as any;
+      expect(created.created).toBe(true);
+      expect(created.name).toBe(name); // got the exact requested name, not a deduped one
+
+      // Duplicate create is rejected.
+      const dup: any = await callTool(server, "create_system_variable", { name, type: "float" });
+      expect(dup.isError).toBe(true);
+      expect(JSON.parse(dup.content[0].text).error).toBe("INVALID_INPUT");
+
+      // Set and read back through the normal tools (cache must see the new var).
+      await callTool(server, "set_system_variable", { name, value: 21.5 });
+      const vars = parseToolResult(await callTool(server, "list_system_variables", { name })) as Array<{ name: string; value: unknown }>;
+      const mine = vars.find((v) => v.name === name);
+      expect(mine).toBeDefined();
+      expect(Number(mine!.value)).toBeCloseTo(21.5, 1);
+    } finally {
+      const del = parseToolResult(await callTool(server, "delete_system_variable", { name })) as any;
+      expect(del?.deleted ?? del?.isError === undefined).toBeTruthy();
+    }
+
+    // After deletion it's gone → NOT_FOUND on a second delete.
+    const second: any = await callTool(server, "delete_system_variable", { name });
+    expect(second.isError).toBe(true);
+    expect(JSON.parse(second.content[0].text).error).toBe("NOT_FOUND");
+  }, 90_000);
+
+  // Assign a channel to a room, verify via list_rooms, then revert — leaving the
+  // CCU as found. Skips gracefully if the CCU has no rooms/channels to work with.
+  it("assign_channel → verify via list_rooms → unassign (live)", async () => {
+    const rooms = parseToolResult(await callTool(server, "list_rooms")) as Array<{ id: string; name: string; channelIds: string[] }>;
+    expect(rooms.length).toBeGreaterThan(0);
+    // Filtered list_devices returns FULL channel objects (with `id`); the
+    // unfiltered/compact form omits `id`, which we need to check room membership.
+    const populated = rooms.find((r) => r.channelIds.length > 0) ?? rooms[0]!;
+    const devices = parseToolResult(await callTool(server, "list_devices", { room: populated.name })) as Array<{ channels: Array<{ id: string; address: string }> }>;
+    const channel = devices.flatMap((d) => d.channels).find((c) => c.id && c.address);
+    expect(channel).toBeDefined();
+
+    // Pick a room the channel is NOT already in, so the revert is a true revert.
+    const target = rooms.find((r) => !r.channelIds.includes(channel!.id)) ?? rooms[0]!;
+    const wasMember = target.channelIds.includes(channel!.id);
+
+    try {
+      const res = parseToolResult(await callTool(server, "assign_channel", { channel: channel!.address, room: target.name })) as any;
+      expect(res.assignedTo).toContainEqual({ kind: "room", name: target.name });
+
+      const after = parseToolResult(await callTool(server, "list_rooms")) as Array<{ name: string; channelIds: string[] }>;
+      const updated = after.find((r) => r.name === target.name)!;
+      expect(updated.channelIds).toContain(channel!.id);
+    } finally {
+      // Revert only if we added it (don't strip a pre-existing membership).
+      if (!wasMember) {
+        await callTool(server, "unassign_channel", { channel: channel!.address, room: target.name });
+      }
+    }
+  }, 90_000);
 });

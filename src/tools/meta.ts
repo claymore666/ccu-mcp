@@ -45,10 +45,10 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 - \`run_script\` executes arbitrary HomeMatic Script for anything tools don't cover
 
 ## Available Tools
-**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, describe_device_type
+**Discovery:** list_devices, list_interfaces, list_rooms, list_functions, list_programs, list_system_variables, list_links, describe_device_type
 **Read:** get_value, get_values, get_paramset
-**Control:** set_value, put_paramset, set_system_variable, execute_program
-**Diagnostics:** get_service_messages, get_system_info
+**Control:** set_value, put_paramset, set_system_variable, create_system_variable, delete_system_variable, assign_channel, unassign_channel, execute_program
+**Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
 **Meta:** help, run_script
 `;
 
@@ -83,6 +83,11 @@ Returns: Array of variables with id, name, value, type, min, max`,
 Args: deviceType (string, e.g. "HmIP-eTRV-2")
 Returns: Channels with paramsets, datapoint types, ranges, operations`,
 
+  list_links: `List direct device links (Direktverknüpfungen) — sender→receiver channel pairings that work without the CCU.
+Args: address? (device or channel address filter, e.g. "000A1BE9A71F15" or "000A1BE9A71F15:1")
+Returns: Array of {sender, senderName, receiver, receiverName, name, description, flags, interface}
+Read-only; answers "what directly controls this?". Link creation/removal is out of scope.`,
+
   get_value: `Read a single datapoint value.
 Args: address (string), valueKey (string), interface? (auto-resolved)
 Returns: {address, valueKey, value}
@@ -114,6 +119,27 @@ Args: name (string), value (string|number|boolean)
 Returns: {name, value, method}
 Idempotent: yes`,
 
+  create_system_variable: `Create a new system variable.
+Args: name (string), type ("bool"|"float"|"enum"|"string"), description? (string),
+  unit?/min?/max? (float only), values? (string[], required for enum)
+Returns: {name, type, created: true}
+INVALID_INPUT if the name already exists (or enum without values). Use set_system_variable to write it.`,
+
+  delete_system_variable: `Delete a system variable by name.
+Args: name (string, exact match)
+Returns: {name, deleted: true}
+NOT_FOUND if the name doesn't exist.`,
+
+  assign_channel: `Assign a channel to a room and/or function group.
+Args: channel (address), room? (name), function? (name) — at least one of room/function
+Returns: {channel, assignedTo: [{kind, name}]}
+NOT_FOUND (with valid names) for unknown channel/room/function.`,
+
+  unassign_channel: `Remove a channel from a room and/or function group.
+Args: channel (address), room? (name), function? (name) — at least one of room/function
+Returns: {channel, removedFrom: [{kind, name}]}
+NOT_FOUND (with valid names) for unknown channel/room/function.`,
+
   execute_program: `Trigger an automation program. NOT idempotent — never auto-retried.
 Args: id (string)
 Returns: {id, executed}`,
@@ -122,9 +148,19 @@ Returns: {id, executed}`,
 Args: none
 Returns: Array of {id, name, address, channelName, timestamp}`,
 
+  acknowledge_service_messages: `Confirm/dismiss active service messages (e.g. clear a low-battery warning).
+Args: id (single alarm id from get_service_messages) OR address (all active messages on a channel) — at least one required
+Returns: {confirmed: Array of {id, type, address}, count}
+NOT_FOUND if no active message matches; the warning reappears if its condition persists.`,
+
   get_system_info: `Get CCU system info: firmware, serial, addresses, cache status.
 Args: none
 Returns: {version, serial, address, hmipAddress, cacheTypes, cacheWarming}`,
+
+  get_rssi: `Radio link quality (RSSI, dBm) per device, plus BidCos interface health.
+Args: name (optional substring filter on device name/address)
+Returns: {devices: [{address, name, interface, links: [{peer, peerName, rssiDevice, rssiPeer}]}], interfaces}
+rssiDevice/rssiPeer are dBm (higher = better); null means no measurement. Use to diagnose flaky devices.`,
 
   run_script: `Execute arbitrary HomeMatic Script. NOT idempotent — never auto-retried.
 Args: script (string)
@@ -146,6 +182,8 @@ function registerHelp(server: McpServer, deps: ServerDeps): void {
       inputSchema: {
         topic: z.string().optional().describe("Tool name, device type, or omit for general guide"),
       },
+      // Local-only: serves the static guide and the device-type cache; never reaches the CCU.
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async (args) => {
       if (!args.topic) {
@@ -186,8 +224,8 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
         script: z.string().describe("HomeMatic Script to execute"),
       },
       annotations: {
-        title: "Run Script",
         destructiveHint: true,
+        openWorldHint: true,
       },
     },
     async (args) => {

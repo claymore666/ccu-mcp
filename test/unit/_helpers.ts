@@ -13,7 +13,7 @@ export function createMockDeps(overrides?: {
   return {
     config: {
       ccu: { host: "test", port: 80, https: false, tlsVerify: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 10000 },
-      mcp: { transport: "stdio" as const, port: 3000 },
+      mcp: { transport: "stdio" as const, port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
       cache: { dir: "/tmp", ttl: 86400 },
       rateLimiter: { burst: 1000, rate: 1000 },
       resourcePollInterval: 60,
