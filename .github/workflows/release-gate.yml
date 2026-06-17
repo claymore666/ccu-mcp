@@ -1,0 +1,31 @@
+name: Release gate
+
+# Enforce the release convention (see CLAUDE.md): main only advances via a PR
+# titled "Release vX.Y.Z". Runs solely on PRs targeting main, so everyday dev
+# PRs are unaffected. It's a required status check, but branch protection keeps
+# enforce_admins off, so an admin can still override for emergency hotfixes.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+# No repo access needed: the title comes from the event payload.
+permissions: {}
+
+jobs:
+  release-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a "Release vX.Y.Z" title
+        # Pass the title via env, never interpolate ${{ }} into the script body
+        # (avoids shell injection from an attacker-controllable PR title).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $PR_TITLE"
+          if [[ "$PR_TITLE" =~ ^Release\ v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Title matches the release convention."
+          else
+            echo "::error::PRs into main must be titled 'Release vX.Y.Z' (e.g. 'Release v1.3.0'). See CLAUDE.md. An admin can override for hotfixes."
+            exit 1
+          fi
