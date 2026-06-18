@@ -1,6 +1,6 @@
 {
   "name": "debmatic-mcp",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
   "mcpName": "io.github.claymore666/debmatic-mcp",
   "type": "module",
