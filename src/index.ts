@@ -22,7 +22,7 @@ import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthTokens } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
 import { createMcpServer } from "./server.js";
-import { extractBearerToken } from "./utils.js";
+import { extractBearerToken, normalizeClientIp } from "./utils.js";
 
 async function main(): Promise<void> {
   const logger = createLogger();
@@ -147,6 +147,16 @@ async function main(): Promise<void> {
         const presented = extractBearerToken(req.headers.authorization ?? "");
         const headerValid = authTokens.verify(presented);
         if (!headerValid) {
+          // Structured, greppable failure line so an external tool (fail2ban et
+          // al.) can ban brute-force sources at the firewall — the server
+          // deliberately does NOT throttle in-process (that belongs upstream;
+          // see README "Brute-force protection"). `client` is the peer IP
+          // (fail2ban's <HOST>); `hadToken` lets a filter ignore credential-less
+          // probes and ban only actual bad-token guesses.
+          logger.warn("auth_failed", {
+            client: normalizeClientIp(req.socket.remoteAddress),
+            hadToken: Boolean(presented),
+          });
           // Challenge header so clients can discover the scheme (RFC 6750 /
           // MCP auth spec). Add error=invalid_token only when a (bad) token was
           // actually presented; RFC 6750 §3 omits the error param when no
