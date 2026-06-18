@@ -144,6 +144,14 @@ The HTTP transport also has **DNS-rebinding protection** on by default: it rejec
 - *Auto-generated token* — set `MCP_AUTH_TOKEN_TTL_DAYS` (fractional days allowed) to give the generated token a lifetime. Once it lapses, the server mints a fresh one **on the next startup** and prints it on stderr, while the just-replaced token keeps validating for `MCP_AUTH_TOKEN_GRACE_HOURS` (default 24) so in-flight clients survive the swap. Expiry is also enforced live: a lapsed token is rejected mid-run with a `401` + `WWW-Authenticate: Bearer … error="invalid_token"`. To force a rotation sooner, delete `$CACHE_DIR/.env` (or just its `MCP_AUTH_TOKEN` line) and restart.
 - *Explicit token* — when you set `MCP_AUTH_TOKEN` yourself, you own its lifetime (TTL doesn't apply). To rotate, put the new token in `MCP_AUTH_TOKEN`, move the old one to `MCP_AUTH_TOKEN_PREVIOUS`, and restart; both are accepted during the overlap. Drop `MCP_AUTH_TOKEN_PREVIOUS` and restart once every client is on the new token. Comparison stays timing-safe across every currently-valid token.
 
+**Brute-force protection (fail2ban).** The auto-generated token is 256 bits of randomness, so guessing it is infeasible. If you set `MCP_AUTH_TOKEN` yourself, **make it long and random** (e.g. `openssl rand -base64 32`) — a short or guessable token is the one case brute force matters. The server does **not** rate-limit or lock out failed logins in-process; that job belongs to a firewall-level tool like [fail2ban](https://www.fail2ban.org/), which bans the source IP before the request ever reaches the server. To make that easy, every rejected request logs a structured line to stderr:
+
+```json
+{"ts":"2026-06-18T17:28:00.370Z","level":"warn","msg":"auth_failed","client":"203.0.113.7","hadToken":true}
+```
+
+Ready-to-use fail2ban config ships in [`fail2ban/`](fail2ban/): copy `filter.d/debmatic-mcp.conf` to `/etc/fail2ban/filter.d/` and the jail in `jail.d/debmatic-mcp.local` to `/etc/fail2ban/jail.d/` (it defaults to 5 failures in 10 minutes → 1-hour ban). The server logs to stderr, so point fail2ban at wherever you collect it — the journal (`backend = systemd`) when run as a unit, or a file when you redirect stderr/`docker logs`; both are spelled out in the jail file. Requires `LOG_LEVEL=warn` or lower (`info`, the default, is fine; `error` suppresses the line). Behind a reverse proxy the logged IP is the proxy's, so run fail2ban against the proxy's access log instead.
+
 CORS support was first implemented by [@marcinn2](https://github.com/marcinn2) in his fork [marcinn2/debmatic-mcp](https://github.com/marcinn2/debmatic-mcp) — thanks!
 
 ### HTTPS

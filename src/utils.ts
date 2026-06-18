@@ -32,6 +32,18 @@ export function extractBearerToken(authHeader: string): string {
   return authHeader.match(/^Bearer\s+(\S.*)$/i)?.[1] ?? "";
 }
 
+/**
+ * Normalize a socket's remote address into a plain client IP for logging.
+ * Strips the IPv6-mapped-IPv4 prefix (`::ffff:127.0.0.1` → `127.0.0.1`) so the
+ * value matches what fail2ban's `<HOST>` expects, and never returns undefined —
+ * an unknown peer logs as the literal "unknown" (which no IP-based fail2ban
+ * rule matches, so it's safely ignored).
+ */
+export function normalizeClientIp(remoteAddress: string | undefined): string {
+  if (!remoteAddress) return "unknown";
+  return remoteAddress.startsWith("::ffff:") ? remoteAddress.slice("::ffff:".length) : remoteAddress;
+}
+
 /** Format a tool result as MCP text content. */
 export function toolResult(data: unknown) {
   return { content: [{ type: "text" as const, text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] };
