@@ -1,5 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { escapeHmScript, parseValue, parseValues } from "../../src/utils.js";
+import { escapeHmScript, parseValue, parseValues, normalizeClientIp } from "../../src/utils.js";
+
+describe("normalizeClientIp", () => {
+  it("passes through a plain IPv4 / IPv6 address", () => {
+    expect(normalizeClientIp("203.0.113.7")).toBe("203.0.113.7");
+    expect(normalizeClientIp("2001:db8::1")).toBe("2001:db8::1");
+  });
+
+  it("strips the IPv6-mapped-IPv4 prefix so fail2ban sees the bare IPv4", () => {
+    expect(normalizeClientIp("::ffff:127.0.0.1")).toBe("127.0.0.1");
+    expect(normalizeClientIp("::ffff:203.0.113.7")).toBe("203.0.113.7");
+  });
+
+  it("returns 'unknown' for a missing address (no IP-based rule will match it)", () => {
+    expect(normalizeClientIp(undefined)).toBe("unknown");
+    expect(normalizeClientIp("")).toBe("unknown");
+  });
+});
 
 describe("escapeHmScript", () => {
   // Escape semantics verified against a live CCU (issue #16):

@@ -1,0 +1,32 @@
+# Example Fail2Ban jail for debmatic-mcp. Copy to
+# /etc/fail2ban/jail.d/debmatic-mcp.local, adjust to your deployment, then
+# `systemctl reload fail2ban`. Check it with `fail2ban-client status debmatic-mcp`.
+#
+# The server writes its JSON logs to STDERR, so point Fail2Ban at wherever you
+# collect them. Pick ONE of the two backends below.
+
+[debmatic-mcp]
+enabled  = true
+filter   = debmatic-mcp
+
+# Ban the IP on the MCP port (match your MCP_PORT). Use a single number, or
+# drop this line to ban on all ports.
+port     = 3000
+
+maxretry = 5
+findtime = 10m
+bantime  = 1h
+
+# ── Backend A: systemd/journald ─────────────────────────────────────────────
+# Use when the server runs as a systemd unit (stderr → the journal). Set
+# journalmatch to your unit name.
+backend      = systemd
+journalmatch = _SYSTEMD_UNIT=debmatic-mcp.service
+
+# ── Backend B: a log file ───────────────────────────────────────────────────
+# Use instead of the two systemd lines above when you redirect the server's
+# stderr to a file (systemd `StandardError=append:`, a Docker logging driver,
+# or `docker logs debmatic-mcp >> /var/log/debmatic-mcp.log`). Comment out
+# `backend`/`journalmatch` above and uncomment:
+#backend = auto
+#logpath = /var/log/debmatic-mcp.log
