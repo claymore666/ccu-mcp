@@ -226,7 +226,7 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     expect(res.status).toBe(401);
     const challenge = res.headers.get("www-authenticate") ?? "";
     expect(challenge).toContain("Bearer");
-    expect(challenge).toContain('realm="debmatic-mcp"');
+    expect(challenge).toContain('realm="ccu-mcp"');
     expect(challenge).not.toContain("error="); // no credentials presented
   });
 

@@ -1,9 +1,9 @@
 services:
-  debmatic-mcp:
+  ccu-mcp:
     build: .
     restart: unless-stopped
     volumes:
-      - debmatic-data:/data
+      - ccu-data:/data
     ports:
       - "3000:3000"
     environment:
@@ -42,4 +42,4 @@ services:
       # - LOG_LEVEL=info
 
 volumes:
-  debmatic-data:
+  ccu-data:

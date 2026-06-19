@@ -3,8 +3,8 @@ import type { CcuRpcError, ErrorCategory, StructuredError } from "../ccu/types.j
 // Map CCU error codes to our error categories
 const CCU_ERROR_MAP: Record<number, { category: ErrorCategory; hint: string }> = {
   400: { category: "AUTH", hint: "Session expired. Will re-login automatically." },
-  401: { category: "INTERNAL", hint: "Invalid CCU method called — this is a bug in debmatic-mcp." },
-  402: { category: "INTERNAL", hint: "Missing required argument — this is a bug in debmatic-mcp." },
+  401: { category: "INTERNAL", hint: "Invalid CCU method called — this is a bug in ccu-mcp." },
+  402: { category: "INTERNAL", hint: "Missing required argument — this is a bug in ccu-mcp." },
   501: { category: "CCU_ERROR", hint: "CCU internal error. Try again or check CCU logs." },
   502: { category: "NOT_FOUND", hint: "Device or channel not found. Call list_devices to discover valid addresses." },
   503: { category: "NOT_FOUND", hint: "Invalid paramset key. Valid keys are: VALUES, MASTER, LINK." },

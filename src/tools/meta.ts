@@ -9,7 +9,7 @@ export function registerMetaTools(server: McpServer, deps: ServerDeps): void {
   registerRunScript(server, deps);
 }
 
-const CONCEPTUAL_GUIDE = `# HomeMatic via debmatic-mcp
+const CONCEPTUAL_GUIDE = `# HomeMatic via ccu-mcp
 
 ## Object Hierarchy
 CCU → Interfaces → Devices → Channels → Datapoints (paramsets)

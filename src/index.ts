@@ -162,8 +162,8 @@ async function main(): Promise<void> {
           // actually presented; RFC 6750 §3 omits the error param when no
           // credentials were sent.
           const challenge = presented
-            ? 'Bearer realm="debmatic-mcp", error="invalid_token"'
-            : 'Bearer realm="debmatic-mcp"';
+            ? 'Bearer realm="ccu-mcp", error="invalid_token"'
+            : 'Bearer realm="ccu-mcp"';
           res.writeHead(401, {
             "Content-Type": "application/json",
             "WWW-Authenticate": challenge,
