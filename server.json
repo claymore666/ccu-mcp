@@ -25,7 +25,7 @@
       "environmentVariables": [
         {
           "name": "CCU_HOST",
-          "description": "Hostname or IP of your HomeMatic CCU (debmatic, CCU3, or RaspberryMatic)",
+          "description": "Hostname or IP of your HomeMatic CCU (debmatic, CCU3, or OpenCCU/RaspberryMatic)",
           "isRequired": true,
           "format": "string"
         },

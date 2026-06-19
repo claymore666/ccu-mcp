@@ -8,7 +8,7 @@ Talk to your HomeMatic smart home from Claude, Cursor, or any MCP client.
 
 ccu-mcp connects to the CCU's built-in JSON-RPC API and exposes your devices, rooms, programs, and system variables as MCP tools. No addons, no XML-API, no cloud — just a direct connection to the CCU on your local network.
 
-Works with any HomeMatic CCU: [debmatic](https://github.com/alexreinert/debmatic) (HomeMatic on Debian), a CCU3, or RaspberryMatic/OpenCCU — anything that exposes the standard `/api/homematic.cgi` endpoint.
+Works with any HomeMatic CCU: [debmatic](https://github.com/alexreinert/debmatic) (HomeMatic on Debian), a CCU3, or [OpenCCU](https://github.com/OpenCCU/OpenCCU) (formerly RaspberryMatic) — anything that exposes the standard `/api/homematic.cgi` endpoint.
 
 ## What can it do?
 
@@ -28,7 +28,7 @@ The MCP server handles device discovery, type resolution, session management, an
 
 ## Prerequisites
 
-- A running HomeMatic CCU (debmatic, CCU3, or RaspberryMatic) reachable on your network
+- A running HomeMatic CCU (debmatic, CCU3, or OpenCCU — formerly RaspberryMatic) reachable on your network
 - The CCU's admin username and password (the same credentials you use to log into the WebUI)
 - Node.js 22+ (for running from source or stdio mode) or Docker
 
@@ -273,9 +273,9 @@ Other device types should work too — the server queries the CCU for parameter 
 
 ## Related projects
 
+- [OpenCCU](https://github.com/OpenCCU/OpenCCU) — community-maintained, cloud-free CCU firmware for Raspberry Pi, x86/ARM, and CCU3/ELV-Charly hardware (formerly **RaspberryMatic**; built on the OCCU framework)
 - [debmatic](https://github.com/alexreinert/debmatic) — Run HomeMatic on Debian, Ubuntu, Raspberry Pi OS, Armbian
-- [OCCU](https://github.com/eq-3/occu) — Open CCU SDK by eQ-3 (the upstream HomeMatic software)
-- [RaspberryMatic](https://github.com/jens-maus/RaspberryMatic) — HomeMatic on Raspberry Pi
+- [OCCU](https://github.com/eq-3/occu) — eQ-3's original Open CCU SDK (the upstream HomeMatic software); now being superseded by the community-maintained [OpenCCU](https://github.com/OpenCCU/OpenCCU)
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol specification
 
 ## License
