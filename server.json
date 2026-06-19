@@ -6,12 +6,12 @@
     "url": "https://github.com/claymore666/ccu-mcp",
     "source": "github"
   },
-  "version": "1.4.0",
+  "version": "1.5.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "ccu-mcp",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

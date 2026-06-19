@@ -1,6 +1,6 @@
 {
   "name": "ccu-mcp",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
   "mcpName": "io.github.claymore666/ccu-mcp",
   "type": "module",
