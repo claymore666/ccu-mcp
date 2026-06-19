@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.claymore666/debmatic-mcp",
+  "name": "io.github.claymore666/ccu-mcp",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
   "repository": {
-    "url": "https://github.com/claymore666/debmatic-mcp",
+    "url": "https://github.com/claymore666/ccu-mcp",
     "source": "github"
   },
-  "version": "1.4.0",
+  "version": "1.5.0",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "debmatic-mcp",
-      "version": "1.4.0",
+      "identifier": "ccu-mcp",
+      "version": "1.5.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -25,7 +25,7 @@
       "environmentVariables": [
         {
           "name": "CCU_HOST",
-          "description": "Hostname or IP of your HomeMatic CCU (debmatic, CCU3, or RaspberryMatic)",
+          "description": "Hostname or IP of your HomeMatic CCU (debmatic, CCU3, or OpenCCU/RaspberryMatic)",
           "isRequired": true,
           "format": "string"
         },

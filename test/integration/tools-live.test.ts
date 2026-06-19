@@ -175,7 +175,7 @@ describeIf("MCP tools against live CCU", () => {
     // Unique per run: the CCU keeps hidden VARDP objects for a name even after
     // deletion, so reusing a fixed name eventually makes create dedup it to
     // "<name> N". A fresh name each run sidesteps that and keeps the test clean.
-    const name = `debmatic_mcp_test_${Date.now()}`;
+    const name = `ccu_mcp_test_${Date.now()}`;
     try {
       const created = parseToolResult(await callTool(server, "create_system_variable", { name, type: "float", unit: "°C", min: 0, max: 50 })) as any;
       expect(created.created).toBe(true);

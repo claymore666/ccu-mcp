@@ -6,7 +6,7 @@ describe("help handler", () => {
     const { server, deps } = createTestServer();
     const result = parseToolResult(await callTool(server, "help", {}));
     expect(typeof result).toBe("string");
-    expect((result as string)).toContain("HomeMatic via debmatic-mcp");
+    expect((result as string)).toContain("HomeMatic via ccu-mcp");
     expect((result as string)).toContain("Object Hierarchy");
     cleanupDeps(deps);
   });

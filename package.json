@@ -1,12 +1,12 @@
 {
-  "name": "debmatic-mcp",
-  "version": "1.4.0",
+  "name": "ccu-mcp",
+  "version": "1.5.0",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
-  "mcpName": "io.github.claymore666/debmatic-mcp",
+  "mcpName": "io.github.claymore666/ccu-mcp",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "debmatic-mcp": "dist/index.js"
+    "ccu-mcp": "dist/index.js"
   },
   "files": [
     "dist",
@@ -32,7 +32,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/claymore666/debmatic-mcp.git"
+    "url": "git+https://github.com/claymore666/ccu-mcp.git"
   },
   "keywords": [
     "mcp",
@@ -49,9 +49,9 @@
   "author": "claymore666",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/claymore666/debmatic-mcp/issues"
+    "url": "https://github.com/claymore666/ccu-mcp/issues"
   },
-  "homepage": "https://github.com/claymore666/debmatic-mcp#readme",
+  "homepage": "https://github.com/claymore666/ccu-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "undici": "^8.5.0",
