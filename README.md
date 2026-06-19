@@ -1,14 +1,14 @@
-# debmatic-mcp
+# ccu-mcp
 
 Talk to your HomeMatic smart home from Claude, Cursor, or any MCP client.
 
-<a href="https://glama.ai/mcp/servers/claymore666/debmatic-mcp">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/claymore666/debmatic-mcp/badge" alt="debmatic-mcp MCP server" />
+<a href="https://glama.ai/mcp/servers/claymore666/ccu-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/claymore666/ccu-mcp/badge" alt="ccu-mcp MCP server" />
 </a>
 
-debmatic-mcp connects to the CCU's built-in JSON-RPC API and exposes your devices, rooms, programs, and system variables as MCP tools. No addons, no XML-API, no cloud — just a direct connection to the CCU on your local network.
+ccu-mcp connects to the CCU's built-in JSON-RPC API and exposes your devices, rooms, programs, and system variables as MCP tools. No addons, no XML-API, no cloud — just a direct connection to the CCU on your local network.
 
-Built for [debmatic](https://github.com/alexreinert/debmatic) (HomeMatic on Debian) but works with any CCU3 or RaspberryMatic installation that exposes the standard `/api/homematic.cgi` endpoint.
+Works with any HomeMatic CCU: [debmatic](https://github.com/alexreinert/debmatic) (HomeMatic on Debian), a CCU3, or RaspberryMatic/OpenCCU — anything that exposes the standard `/api/homematic.cgi` endpoint.
 
 ## What can it do?
 
@@ -37,7 +37,7 @@ The MCP server handles device discovery, type resolution, session management, an
 ```bash
 export CCU_HOST=your-ccu-hostname-or-ip
 export CCU_PASSWORD=your-ccu-admin-password
-npx debmatic-mcp --stdio
+npx ccu-mcp --stdio
 ```
 
 If it prints `server_ready` to stderr, it's working. Press Ctrl+C to stop. Now set it up in your MCP client — see below.
@@ -57,7 +57,7 @@ For Claude Code, create a `.mcp.json` file in your project directory (or any dir
   "mcpServers": {
     "debmatic": {
       "command": "npx",
-      "args": ["debmatic-mcp", "--stdio"],
+      "args": ["ccu-mcp", "--stdio"],
       "env": {
         "CCU_HOST": "your-ccu-hostname-or-ip",
         "CCU_PASSWORD": "your-ccu-admin-password"
@@ -74,7 +74,7 @@ Restart Claude Code. Run `/mcp` to check it connected. You should see `debmatic`
 Alternatively, use the Claude Code CLI:
 
 ```bash
-claude mcp add debmatic -- npx debmatic-mcp --stdio
+claude mcp add debmatic -- npx ccu-mcp --stdio
 ```
 
 ### Option B: Docker (standalone HTTP server)
@@ -85,18 +85,18 @@ Use this if you want the server running independently — for example on a home 
 
 ```bash
 docker run -d \
-  --name debmatic-mcp \
+  --name ccu-mcp \
   -e CCU_HOST=your-ccu-hostname-or-ip \
   -e CCU_PASSWORD=your-ccu-admin-password \
-  -v debmatic-data:/data \
+  -v ccu-data:/data \
   -p 3000:3000 \
-  debmatic-mcp
+  ccu-mcp
 ```
 
 **2. Get the auth token.** The server generates a random bearer token on first startup and saves it inside the container's data volume. You need this token to authenticate your MCP client. Grab it with:
 
 ```bash
-docker exec debmatic-mcp grep MCP_AUTH_TOKEN /data/.env
+docker exec ccu-mcp grep MCP_AUTH_TOKEN /data/.env
 ```
 
 This prints something like `MCP_AUTH_TOKEN=e96suzi1iG0H-GPif6K2...`. The part after `=` is your token.
@@ -119,7 +119,7 @@ This prints something like `MCP_AUTH_TOKEN=e96suzi1iG0H-GPif6K2...`. The part af
 To inject the token automatically (requires `jq`):
 
 ```bash
-TOKEN=$(docker exec debmatic-mcp grep MCP_AUTH_TOKEN /data/.env | cut -d= -f2)
+TOKEN=$(docker exec ccu-mcp grep MCP_AUTH_TOKEN /data/.env | cut -d= -f2)
 jq --arg t "$TOKEN" '.mcpServers.debmatic.headers.Authorization = "Bearer " + $t' .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
 ```
 
@@ -150,7 +150,7 @@ The HTTP transport also has **DNS-rebinding protection** on by default: it rejec
 {"ts":"2026-06-18T17:28:00.370Z","level":"warn","msg":"auth_failed","client":"203.0.113.7","hadToken":true}
 ```
 
-Ready-to-use fail2ban config ships in [`fail2ban/`](fail2ban/): copy `filter.d/debmatic-mcp.conf` to `/etc/fail2ban/filter.d/` and the jail in `jail.d/debmatic-mcp.local` to `/etc/fail2ban/jail.d/` (it defaults to 5 failures in 10 minutes → 1-hour ban). The server logs to stderr, so point fail2ban at wherever you collect it — the journal (`backend = systemd`) when run as a unit, or a file when you redirect stderr/`docker logs`; both are spelled out in the jail file. Requires `LOG_LEVEL=warn` or lower (`info`, the default, is fine; `error` suppresses the line). Behind a reverse proxy the logged IP is the proxy's, so run fail2ban against the proxy's access log instead.
+Ready-to-use fail2ban config ships in [`fail2ban/`](fail2ban/): copy `filter.d/ccu-mcp.conf` to `/etc/fail2ban/filter.d/` and the jail in `jail.d/ccu-mcp.local` to `/etc/fail2ban/jail.d/` (it defaults to 5 failures in 10 minutes → 1-hour ban). The server logs to stderr, so point fail2ban at wherever you collect it — the journal (`backend = systemd`) when run as a unit, or a file when you redirect stderr/`docker logs`; both are spelled out in the jail file. Requires `LOG_LEVEL=warn` or lower (`info`, the default, is fine; `error` suppresses the line). Behind a reverse proxy the logged IP is the proxy's, so run fail2ban against the proxy's access log instead.
 
 CORS support was first implemented by [@marcinn2](https://github.com/marcinn2) in his fork [marcinn2/debmatic-mcp](https://github.com/marcinn2/debmatic-mcp) — thanks!
 

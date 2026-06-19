@@ -1,8 +1,8 @@
 # Release runbook
 
-How to publish a `vX.Y.Z` of `debmatic-mcp`. The release is **manual** —
+How to publish a `vX.Y.Z` of `ccu-mcp`. The release is **manual** —
 there is no release workflow (CI only builds and tests). The publish
-targets are **npm** (`npx debmatic-mcp`, the primary install path) and the
+targets are **npm** (`npx ccu-mcp`, the primary install path) and the
 **official MCP registry** (`registry.modelcontextprotocol.io`). The Docker
 image is build-your-own (`docker-compose` builds from source); nothing is
 pushed to a container registry, so there is no image-publish step.
@@ -17,6 +17,36 @@ default/integration branch; `main` is protected and holds released code;
 each release is a tag `vX.Y.Z` on `main`. Branch off `dev`, never `main`.
 This runbook expands the release half of that model.
 
+## One-time: the v1.5.0 rename (`debmatic-mcp` → `ccu-mcp`)
+
+The project was renamed from `debmatic-mcp` to `ccu-mcp` for v1.5.0 (the name
+is CCU-platform-generic; the tool was never debmatic-specific). The in-repo
+code/docs change shipped in the rename PR. The out-of-repo moves below are
+**one-time owner actions**, done around the v1.5.0 release — *not* every
+release:
+
+1. **GitHub repo rename** — Settings → rename `claymore666/debmatic-mcp` →
+   `claymore666/ccu-mcp`. GitHub keeps redirects from the old URL and git
+   remote indefinitely. Update the local clone: `git remote set-url origin
+   https://github.com/claymore666/ccu-mcp.git`. Do this **before** the
+   `mcp-publisher publish` so the `io.github.claymore666/ccu-mcp` namespace
+   resolves.
+2. **npm** — there is no rename. Publish the new `ccu-mcp` package via the
+   normal per-release flow below, then tombstone the old name:
+   `npm deprecate debmatic-mcp "renamed to ccu-mcp — install ccu-mcp instead"`.
+   The old package stays published forever; the deprecation warning points
+   users across.
+3. **MCP registry** — `mcp-publisher publish` creates the new
+   `io.github.claymore666/ccu-mcp` entry. The old
+   `io.github.claymore666/debmatic-mcp` entry remains; leave it.
+4. **Smithery** — re-list as `ccu-mcp` (was `christian-kamien/debmatic-mcp`,
+   MCPB bundle).
+5. **glama.ai badge** — auto-derives from the repo path, so it follows the
+   GitHub rename; the README badge URL was already updated to `…/ccu-mcp`.
+
+After v1.5.0 ships, this section is historical — the steady-state procedure
+below is all that applies to subsequent releases.
+
 ## One-time prerequisites
 
 Per-account setup, **not** per-release. Done once when the publishing chain
@@ -24,7 +54,7 @@ is first wired up.
 
 ### npm — publish auth
 
-`debmatic-mcp` is published to npm under the unscoped name `debmatic-mcp`
+`ccu-mcp` is published to npm under the unscoped name `ccu-mcp`
 (`package.json` `name`). Publishing needs an authenticated npm session with
 publish rights on that package.
 
@@ -93,9 +123,9 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    ```
    This gate also runs in CI on every push and in `prepublishOnly`, so a
    drifted manifest can't merge or publish even if the bump is done by hand.
-   The README install snippets use unversioned `npx debmatic-mcp` /
+   The README install snippets use unversioned `npx ccu-mcp` /
    `claude mcp add` — there are **no pinned version strings to bump there**.
-   Keep it that way; don't add versioned `npx debmatic-mcp@X.Y.Z` snippets to
+   Keep it that way; don't add versioned `npx ccu-mcp@X.Y.Z` snippets to
    the README, or this list grows.
 
 3. **Documentation review — against the milestone, not from memory.** List
@@ -175,11 +205,11 @@ milestone — it's the source of the `Closes #N` list in the release PR.
 
 After publishing:
 
-- `npm view debmatic-mcp version` returns `vX.Y.Z` (allow a minute for the
-  registry to update). `npx -y debmatic-mcp@X.Y.Z --help` from a clean
+- `npm view ccu-mcp version` returns `vX.Y.Z` (allow a minute for the
+  registry to update). `npx -y ccu-mcp@X.Y.Z --help` from a clean
   machine pulls and runs it.
 - The MCP registry shows the new version:
-  `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=io.github.claymore666/debmatic-mcp' | jq '.servers[].version'`.
+  `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=io.github.claymore666/ccu-mcp' | jq '.servers[].version'`.
 - `gh release view vX.Y.Z` shows the notes body.
 - The milestone is closed:
   `gh issue list --milestone vX.Y.Z --state open` — should be empty.

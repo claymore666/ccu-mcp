@@ -121,9 +121,9 @@ function announce(token: string, dataDir: string, rotated: boolean): void {
   const envPath = join(dataDir, ENV_FILENAME);
   const what = rotated ? "Rotated auth token" : "Generated auth token";
   // stderr so the operator can copy it; never goes through the structured logger.
-  process.stderr.write(`\n[debmatic-mcp] ${what}: ${token}\n`);
-  process.stderr.write(`[debmatic-mcp] Token saved to ${envPath}\n`);
-  process.stderr.write(`[debmatic-mcp] Use this token in your MCP client configuration.\n\n`);
+  process.stderr.write(`\n[ccu-mcp] ${what}: ${token}\n`);
+  process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+  process.stderr.write(`[ccu-mcp] Use this token in your MCP client configuration.\n\n`);
 }
 
 /**

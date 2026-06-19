@@ -6,10 +6,10 @@ import { normalizeClientIp } from "../../src/utils.js";
 
 // Locks the contract between the auth-failure log line the server emits and the
 // committed fail2ban filter. If either the log shape (src/index.ts) or the
-// filter regex (fail2ban/filter.d/debmatic-mcp.conf) drifts, this fails — so a
+// filter regex (fail2ban/filter.d/ccu-mcp.conf) drifts, this fails — so a
 // shipped filter can't silently stop matching real log lines.
 
-const FILTER = join(__dirname, "../../fail2ban/filter.d/debmatic-mcp.conf");
+const FILTER = join(__dirname, "../../fail2ban/filter.d/ccu-mcp.conf");
 
 /** The exact line the server writes on a rejected request (mirrors src/index.ts). */
 function authFailedLine(client: string, hadToken: boolean): string {

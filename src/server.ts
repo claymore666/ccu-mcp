@@ -26,7 +26,7 @@ export interface ServerDeps {
 export function createMcpServer(deps: ServerDeps): McpServer {
   const server = new McpServer(
     {
-      name: "debmatic-mcp",
+      name: "ccu-mcp",
       version: VERSION,
     },
     {

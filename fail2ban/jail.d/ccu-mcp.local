@@ -1,13 +1,13 @@
-# Example Fail2Ban jail for debmatic-mcp. Copy to
-# /etc/fail2ban/jail.d/debmatic-mcp.local, adjust to your deployment, then
-# `systemctl reload fail2ban`. Check it with `fail2ban-client status debmatic-mcp`.
+# Example Fail2Ban jail for ccu-mcp. Copy to
+# /etc/fail2ban/jail.d/ccu-mcp.local, adjust to your deployment, then
+# `systemctl reload fail2ban`. Check it with `fail2ban-client status ccu-mcp`.
 #
 # The server writes its JSON logs to STDERR, so point Fail2Ban at wherever you
 # collect them. Pick ONE of the two backends below.
 
-[debmatic-mcp]
+[ccu-mcp]
 enabled  = true
-filter   = debmatic-mcp
+filter   = ccu-mcp
 
 # Ban the IP on the MCP port (match your MCP_PORT). Use a single number, or
 # drop this line to ban on all ports.
@@ -21,12 +21,12 @@ bantime  = 1h
 # Use when the server runs as a systemd unit (stderr → the journal). Set
 # journalmatch to your unit name.
 backend      = systemd
-journalmatch = _SYSTEMD_UNIT=debmatic-mcp.service
+journalmatch = _SYSTEMD_UNIT=ccu-mcp.service
 
 # ── Backend B: a log file ───────────────────────────────────────────────────
 # Use instead of the two systemd lines above when you redirect the server's
 # stderr to a file (systemd `StandardError=append:`, a Docker logging driver,
-# or `docker logs debmatic-mcp >> /var/log/debmatic-mcp.log`). Comment out
+# or `docker logs ccu-mcp >> /var/log/ccu-mcp.log`). Comment out
 # `backend`/`journalmatch` above and uncomment:
 #backend = auto
-#logpath = /var/log/debmatic-mcp.log
+#logpath = /var/log/ccu-mcp.log
