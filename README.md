@@ -208,10 +208,37 @@ All configuration is via environment variables:
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
+### How to supply these (inline, `.env`, or export)
+
+The required `CCU_HOST` / `CCU_PASSWORD` (and everything else) are **environment
+variables**. Provide them in whichever of these you prefer — you need just one:
+
+- **Inline in `.mcp.json`** — the `env` block shown in [Option A](#option-a-stdio-direct-simplest)
+  above. Simplest; self-contained.
+- **Shell `export`** — as in [Quick start](#quick-start) above.
+- **A `.env` file** — keeps secrets out of `.mcp.json`. The server does not read
+  `.env` on its own, so load it with Node's built-in flag (Node ≥ 20.6):
+
+  ```json
+  {
+    "mcpServers": {
+      "ccu": {
+        "command": "node",
+        "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
+      }
+    }
+  }
+  ```
+
+  Copy [`.env.example`](.env.example) to `.env` and fill it in (it documents every
+  variable). Docker users can pass the same file with `docker run --env-file .env`
+  or compose's `env_file:`. Keep `.env` gitignored.
+
 ### Multiple CCU targets (profiles)
 
 By default the `CCU_*` vars above configure a single CCU. To reach several CCUs
-(e.g. **prod + dev**) from one server, define named profiles instead:
+(e.g. **prod + dev**) from one server, define named profiles instead. Set these
+the same way as any other config (inline, `.env`, or export — see above):
 
 ```sh
 CCU_PROFILES=prod,dev
@@ -243,29 +270,6 @@ profile (unchanged behavior). At runtime, `list_ccu_targets` shows the targets,
 `get_connection_info` reports the active one, and `use_ccu` switches it. Read
 tools also accept an optional `target` to read from another CCU for a single call
 without switching.
-
-### Using a `.env` file
-
-The server reads its configuration from **environment variables** and does not
-load a `.env` file on its own. To keep secrets out of `.mcp.json`, load a `.env`
-with Node's built-in flag (Node ≥ 20.6):
-
-```json
-{
-  "mcpServers": {
-    "ccu": {
-      "command": "node",
-      "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
-    }
-  }
-}
-```
-
-Copy [`.env.example`](.env.example) to `.env` and fill it in (it documents every
-variable, including the profile vars above). Docker users can pass the same file
-with `docker run --env-file .env` or compose's `env_file:`. Keep `.env`
-gitignored. Alternatively, set the variables inline in the `.mcp.json` `env`
-block or export them in your shell.
 
 ## Tools
 
