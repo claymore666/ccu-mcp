@@ -208,6 +208,65 @@ All configuration is via environment variables:
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
+### Multiple CCU targets (profiles)
+
+By default the `CCU_*` vars above configure a single CCU. To reach several CCUs
+(e.g. **prod + dev**) from one server, define named profiles instead:
+
+```sh
+CCU_PROFILES=prod,dev
+CCU_DEFAULT_PROFILE=prod           # active at startup (defaults to the first listed)
+
+CCU_PROD_HOST=ccu.example
+CCU_PROD_USER=ai
+CCU_PROD_PASSWORD=...
+CCU_PROD_HTTPS=true
+CCU_PROD_PROTECTED=true            # writes need confirm:true
+
+CCU_DEV_HOST=127.0.0.1
+CCU_DEV_PORT=18080
+CCU_DEV_USER=Admin
+CCU_DEV_PASSWORD=                  # may be empty (e.g. an OpenCCU dev box)
+```
+
+Each profile takes the same settings as the flat vars, prefixed
+`CCU_<NAME>_` (name upper-cased, non-alphanumerics → `_`): `HOST` (required),
+`PASSWORD` (may be empty), `USER`, `PORT`, `HTTPS`, `TIMEOUT`, `SCRIPT_TIMEOUT`,
+`TLS_FINGERPRINT`, `CA_CERT`, `TLS_VERIFY` — plus two policy flags:
+
+- `CCU_<NAME>_PROTECTED=true` — write tools refuse unless called with
+  `confirm: true`, which unlocks writes to that target for the rest of the session.
+- `CCU_<NAME>_READONLY=true` — write tools are refused outright.
+
+With `CCU_PROFILES` unset, the flat `CCU_*` vars are used as a single `default`
+profile (unchanged behavior). At runtime, `list_ccu_targets` shows the targets,
+`get_connection_info` reports the active one, and `use_ccu` switches it. Read
+tools also accept an optional `target` to read from another CCU for a single call
+without switching.
+
+### Using a `.env` file
+
+The server reads its configuration from **environment variables** and does not
+load a `.env` file on its own. To keep secrets out of `.mcp.json`, load a `.env`
+with Node's built-in flag (Node ≥ 20.6):
+
+```json
+{
+  "mcpServers": {
+    "ccu": {
+      "command": "node",
+      "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
+    }
+  }
+}
+```
+
+Copy [`.env.example`](.env.example) to `.env` and fill it in (it documents every
+variable, including the profile vars above). Docker users can pass the same file
+with `docker run --env-file .env` or compose's `env_file:`. Keep `.env`
+gitignored. Alternatively, set the variables inline in the `.mcp.json` `env`
+block or export them in your shell.
+
 ## Tools
 
 25 tools organized by what you'd actually want to do:
