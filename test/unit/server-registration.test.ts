@@ -1,35 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createMcpServer } from "../../src/server.js";
-import { Logger } from "../../src/logger.js";
-import { RateLimiter } from "../../src/middleware/rate-limiter.js";
-import { DeviceTypeCache } from "../../src/cache/device-type-cache.js";
-import { Resolver } from "../../src/middleware/resolver.js";
-
-// Minimal mock deps — we're testing that registration doesn't throw, not calling tools
-function createMockDeps() {
-  return {
-    config: {
-      ccu: { host: "test", port: 80, https: false, tlsVerify: false, user: "Admin", password: "pw", timeout: 5000, scriptTimeout: 10000 },
-      mcp: { transport: "stdio" as const, port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
-      cache: { dir: "/tmp", ttl: 86400 },
-      rateLimiter: { burst: 20, rate: 10 },
-      resourcePollInterval: 60,
-    },
-    session: {
-      call: async () => [],
-      login: async () => {},
-      logout: async () => {},
-      isLoggedIn: () => true,
-      getSessionId: () => "test",
-      callNoSession: async () => null,
-      destroy: () => {},
-    } as any,
-    rateLimiter: new RateLimiter(20, 10),
-    logger: new Logger("error"),
-    deviceTypeCache: new DeviceTypeCache("/tmp", 86400, new Logger("error")),
-    resolver: new Resolver(),
-  };
-}
+import { createMockDeps } from "./_helpers.js";
 
 describe("MCP Server Registration", () => {
   it("creates server without errors", () => {
@@ -39,7 +10,7 @@ describe("MCP Server Registration", () => {
     deps.rateLimiter.destroy();
   });
 
-  it("registers all 18 tools", () => {
+  it("registers all tools", () => {
     const deps = createMockDeps();
     const server = createMcpServer(deps);
 
@@ -53,6 +24,7 @@ describe("MCP Server Registration", () => {
       "delete_system_variable",
       "describe_device_type",
       "execute_program",
+      "get_connection_info",
       "get_paramset",
       "get_rssi",
       "get_service_messages",
@@ -60,6 +32,7 @@ describe("MCP Server Registration", () => {
       "get_value",
       "get_values",
       "help",
+      "list_ccu_targets",
       "list_devices",
       "list_functions",
       "list_interfaces",
@@ -72,9 +45,10 @@ describe("MCP Server Registration", () => {
       "set_system_variable",
       "set_value",
       "unassign_channel",
+      "use_ccu",
     ]);
 
-    expect(Object.keys(tools).length).toBe(25);
+    expect(Object.keys(tools).length).toBe(28);
     deps.rateLimiter.destroy();
   });
 
@@ -131,7 +105,8 @@ describe("Tool annotations", () => {
   ];
   const WRITE_TOOLS = ["acknowledge_service_messages", "assign_channel", "create_system_variable", "delete_system_variable", "execute_program", "put_paramset", "run_script", "set_system_variable", "set_value", "unassign_channel"];
   const IDEMPOTENT_WRITES = ["acknowledge_service_messages", "assign_channel", "delete_system_variable", "put_paramset", "set_system_variable", "set_value", "unassign_channel"];
-  const LOCAL_TOOLS = ["help"]; // everything else reaches the external CCU
+  // help + the target-management tools are local-only (never reach a CCU).
+  const LOCAL_TOOLS = ["help", "list_ccu_targets", "get_connection_info", "use_ccu"];
 
   type Ann = {
     title?: string; readOnlyHint?: boolean; destructiveHint?: boolean;
