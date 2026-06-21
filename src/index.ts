@@ -83,7 +83,7 @@ async function main(): Promise<void> {
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
       () => mcpServer.server.sendResourceListChanged(),
-      targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = () => mcpServer.close();
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
           [...sessions.values()].map((s) => s.server.server.sendResourceListChanged()),
         );
       },
-      targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = async () => {
