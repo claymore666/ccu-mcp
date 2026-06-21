@@ -4,21 +4,20 @@ import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
+import { assertWritable } from "../ccu/target-registry.js";
 import { toolResult, parseValue, escapeHmScript } from "../utils.js";
 
-// Short-lived name→type cache (#9), shared so create/delete can invalidate it
-// and a freshly created/removed variable is reflected on the next set.
-interface SysVarTypeCacheHolder {
-  entry: { ts: number; types: Map<string, string> } | null;
-}
+// Optional `confirm` field for write tools: required (true) to authorize a write
+// against a `protected` CCU target (e.g. prod). Harmless on unprotected targets.
+const confirmField = z.boolean().optional()
+  .describe("Set true to authorize this write against a protected CCU target (e.g. prod). Unlocks writes to that target for the rest of the session.");
 
 export function registerControlTools(server: McpServer, deps: ServerDeps): void {
-  const sysVarTypeCache: SysVarTypeCacheHolder = { entry: null };
   registerSetValue(server, deps);
   registerPutParamset(server, deps);
-  registerSetSystemVariable(server, deps, sysVarTypeCache);
-  registerCreateSystemVariable(server, deps, sysVarTypeCache);
-  registerDeleteSystemVariable(server, deps, sysVarTypeCache);
+  registerSetSystemVariable(server, deps);
+  registerCreateSystemVariable(server, deps);
+  registerDeleteSystemVariable(server, deps);
   registerExecuteProgram(server, deps);
   registerAssignChannel(server, deps, "add");
   registerAssignChannel(server, deps, "remove");
@@ -39,6 +38,7 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
         value: z.union([z.string(), z.number(), z.boolean()]).describe("Value to set"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
         type: z.enum(["bool", "int", "double", "string"]).optional().describe("Value type override (auto-resolved if omitted)"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -51,6 +51,7 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
         const valueType = args.type ?? deps.resolver.resolveType(args.address, args.valueKey, deviceTypeCache) ?? inferType(args.value);
 
@@ -113,6 +114,7 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
         set: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
           .describe("Key-value pairs to write (e.g. {TEMPERATURE_WINDOW_OPEN: 5.0})"),
         interface: z.string().optional().describe("Interface name override"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -125,6 +127,7 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
         // CCU expects set as array of {name, type, value} objects
@@ -160,10 +163,10 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
 
 const SYSVAR_TYPE_TTL_MS = 30_000;
 
-function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
-  // Short-lived name→type cache (shared via the holder): avoids fetching the
-  // full sysvar list on every write. create/delete clear it so new/removed
-  // variables are reflected immediately.
+function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
+  // Short-lived name→type cache (per active target): avoids fetching the full
+  // sysvar list on every write. create/delete clear it so new/removed variables
+  // are reflected immediately.
 
   server.registerTool(
     "set_system_variable",
@@ -174,6 +177,7 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCach
       inputSchema: {
         name: z.string().describe("Variable name (exact match)"),
         value: z.union([z.string(), z.number(), z.boolean()]).describe("Value to set"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -183,9 +187,11 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCach
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
+      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         // Look up variable type (cached) to choose correct setter
         let method: string;
         let sysVarType: string | undefined;
@@ -219,7 +225,7 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCach
             await withRetry(
               () => session.call("ReGa.runScript", {
                 script: `var sv = dom.GetObject("${escapedName}"); if (sv) { sv.State("${escapedValue}"); }`,
-              }, deps.config.ccu.scriptTimeout),
+              }, deps.targets.active.profile.ccu.scriptTimeout),
               "ReGa.runScript",
               logger,
             );
@@ -262,7 +268,7 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps, typeCach
   );
 }
 
-function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
+function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void {
   server.registerTool(
     "create_system_variable",
     {
@@ -279,6 +285,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
         min: z.number().optional().describe("Minimum value (float only)"),
         max: z.number().optional().describe("Maximum value (float only)"),
         values: z.array(z.string()).optional().describe("Enum value labels in order (enum only, e.g. ['off','low','high'])"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -287,9 +294,11 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
+      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         if (args.type === "enum" && (!args.values || args.values.length === 0)) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -383,7 +392,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
 
         await rateLimiter.acquire();
         const createResult = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -421,7 +430,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps, typeC
   );
 }
 
-function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps, typeCacheHolder: SysVarTypeCacheHolder): void {
+function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void {
   server.registerTool(
     "delete_system_variable",
     {
@@ -429,6 +438,7 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps, typeC
       description: "Delete a system variable by name. Use list_system_variables to see existing names.",
       inputSchema: {
         name: z.string().describe("Variable name (exact match)"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -438,9 +448,11 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps, typeC
     },
     async (args) => {
       const { session, rateLimiter, logger } = deps;
+      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         // Validate existence so an unknown name is a clean NOT_FOUND rather than
         // a silent no-op (deleteSysVarByName doesn't report a missing name).
         await rateLimiter.acquire();
@@ -494,6 +506,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
         channel: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
         room: z.string().optional().describe("Room name (exact match)"),
         function: z.string().optional().describe("Function group name (exact match)"),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -506,6 +519,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         if (!args.room && !args.function) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -613,6 +627,7 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
         "Use list_programs to find program IDs.",
       inputSchema: {
         id: z.string().describe("Program ID. Get from list_programs."),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -624,6 +639,7 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         // The CCU's Program.execute reports success even for nonexistent IDs
         // (issue #18) — validate against the program list first.
         await rateLimiter.acquire();

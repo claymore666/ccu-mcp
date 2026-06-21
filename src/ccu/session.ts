@@ -6,7 +6,7 @@ import { CcuError } from "../middleware/error-mapper.js";
 import type { Logger } from "../logger.js";
 
 const SESSION_RENEW_INTERVAL = 60_000; // Renew every 60s
-const SESSION_FILE = "session.json";
+const DEFAULT_SESSION_FILE = "session.json";
 const LOGIN_RETRY_DELAY = 3_000;
 const LOGIN_MAX_RETRIES = 3;
 
@@ -15,15 +15,19 @@ export class SessionManager {
   private readonly config: CcuConfig;
   private readonly logger: Logger;
   private readonly cacheDir: string;
+  private readonly sessionFile: string;
   private sessionId: string | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private loginPromise: Promise<void> | null = null;
 
-  constructor(config: CcuConfig, logger: Logger, cacheDir?: string) {
+  constructor(config: CcuConfig, logger: Logger, cacheDir?: string, sessionFile?: string) {
     this.config = config;
     this.client = new CcuClient(config, logger);
     this.logger = logger;
     this.cacheDir = cacheDir || "/tmp";
+    // Per-target session file so multiple SessionManagers don't fight over one
+    // session.json (each target's session is keyed by host/port/user too).
+    this.sessionFile = sessionFile || DEFAULT_SESSION_FILE;
   }
 
   /**
@@ -127,7 +131,7 @@ export class SessionManager {
 
   private async tryRestoreSession(): Promise<boolean> {
     try {
-      const filePath = join(this.cacheDir, SESSION_FILE);
+      const filePath = join(this.cacheDir, this.sessionFile);
       const data = JSON.parse(await readFile(filePath, "utf-8"));
 
       if (data.sessionId && data.host === this.config.host && data.port === this.config.port
@@ -153,7 +157,7 @@ export class SessionManager {
     if (!this.sessionId) return;
     try {
       await mkdir(this.cacheDir, { recursive: true });
-      const filePath = join(this.cacheDir, SESSION_FILE);
+      const filePath = join(this.cacheDir, this.sessionFile);
       const tmpPath = filePath + ".tmp";
       const data = JSON.stringify({
         sessionId: this.sessionId,
@@ -173,7 +177,7 @@ export class SessionManager {
   private async clearPersistedSession(): Promise<void> {
     try {
       const { unlink } = await import("node:fs/promises");
-      await unlink(join(this.cacheDir, SESSION_FILE));
+      await unlink(join(this.cacheDir, this.sessionFile));
     } catch {
       // Ignore
     }

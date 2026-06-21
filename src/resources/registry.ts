@@ -4,11 +4,14 @@ import { withRetry } from "../middleware/retry.js";
 import { VERSION } from "../utils.js";
 
 export function registerResources(server: McpServer, deps: ServerDeps): void {
-  const { session, rateLimiter, logger, deviceTypeCache } = deps;
+  const { rateLimiter, logger } = deps;
 
+  // Read deps.session / deps.deviceTypeCache per-call (they're getters for the
+  // ACTIVE target) so resources follow a use_ccu() switch instead of capturing
+  // the startup target at registration time.
   const ccuRead = async (method: string) => {
     await rateLimiter.acquire();
-    return withRetry(() => session.call(method), method, logger);
+    return withRetry(() => deps.session.call(method), method, logger);
   };
 
   server.registerResource("devices", "homematic://devices", { description: "All devices with channels" }, async () => ({
@@ -36,7 +39,7 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
   }));
 
   server.registerResource("device-types", "homematic://device-types", { description: "Cached device type schemas" }, async () => ({
-    contents: [{ uri: "homematic://device-types", text: JSON.stringify(deviceTypeCache.getAll(), null, 2), mimeType: "application/json" }],
+    contents: [{ uri: "homematic://device-types", text: JSON.stringify(deps.deviceTypeCache.getAll(), null, 2), mimeType: "application/json" }],
   }));
 
   server.registerResource("system", "homematic://system", { description: "CCU system info" }, async () => {

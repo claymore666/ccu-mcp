@@ -4,6 +4,7 @@ import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
+import { assertWritable } from "../ccu/target-registry.js";
 import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
@@ -95,7 +96,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -136,6 +137,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
       inputSchema: {
         id: z.string().optional().describe("Alarm id from get_service_messages (confirm a single message)"),
         address: z.string().optional().describe("Channel address — confirm all active messages on this channel (e.g. '000A1BE9A71F15:0')"),
+        confirm: z.boolean().optional().describe("Set true to authorize this write against a protected CCU target (e.g. prod)."),
       },
       annotations: {
         destructiveHint: true,
@@ -148,6 +150,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         if (!args.id && !args.address) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -205,7 +208,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -246,6 +249,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       description: "Get CCU system information: firmware version, serial number, addresses.",
       outputSchema: {
         serverVersion: z.string().optional(),
+        target: z.string().optional().describe("Active CCU target name"),
         version: z.unknown().optional(),
         serial: z.unknown().optional(),
         address: z.unknown().optional(),
@@ -260,7 +264,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
-        const results: Record<string, unknown> = { serverVersion: VERSION };
+        const results: Record<string, unknown> = { serverVersion: VERSION, target: deps.targets.active.profile.name };
 
         const calls: Array<{ key: string; method: string }> = [
           { key: "version", method: "CCU.getVersion" },

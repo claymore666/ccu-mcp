@@ -4,7 +4,12 @@ import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
+import { resolveTarget } from "../ccu/target-registry.js";
 import { toolResult, structuredResult } from "../utils.js";
+
+// Optional per-call target override (route one read to a named CCU).
+const targetField = z.string().optional()
+  .describe("CCU target to read from (default: active). See list_ccu_targets.");
 
 export function registerDiscoveryTools(server: McpServer, deps: ServerDeps): void {
   registerListDevices(server, deps);
@@ -31,15 +36,17 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
         function: z.string().optional().describe("Filter by function group name (exact match)"),
         type: z.string().optional().describe("Filter by device type (exact match, e.g. 'HmIP-eTRV-2')"),
         name: z.string().optional().describe("Filter by device/channel name (substring, case-insensitive)"),
+        target: targetField,
       },
       outputSchema: { devices: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
       const start = Date.now();
 
       try {
+        const { session, resolver } = resolveTarget(deps.targets, args.target);
         await rateLimiter.acquire();
         const result = await withRetry(
           () => session.call("Device.listAllDetail"),
@@ -50,7 +57,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
         let devices = result as CcuDevice[];
 
         // Update resolver's device list
-        deps.resolver.updateDeviceList(devices);
+        resolver.updateDeviceList(devices);
 
         if (args.room || args.function) {
           const channelIds = new Set<string>();
@@ -287,13 +294,23 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
         "Served from cache (instant). Use list_devices first to find device types.",
       inputSchema: {
         deviceType: z.string().describe("Device type name (e.g. 'HmIP-eTRV-2', 'HmIP-SWDO-I'). Get from list_devices."),
+        target: targetField,
       },
       outputSchema: { deviceType: z.string().optional().describe("Echoed device type; other keys hold the channel/datapoint schema or a not-found hint") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
-      const { session, rateLimiter, logger, deviceTypeCache } = deps;
+      const { rateLimiter, logger } = deps;
       const start = Date.now();
+
+      let target;
+      try {
+        target = resolveTarget(deps.targets, args.target);
+      } catch (err) {
+        if (err instanceof CcuError) return err.toMcpError();
+        throw err;
+      }
+      const { session, resolver, deviceTypeCache } = target;
 
       let cached = deviceTypeCache.get(args.deviceType);
 
@@ -303,7 +320,7 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
       }
 
       // Cache miss — try live query if we can find a device instance
-      const devices = deps.resolver.getDeviceList();
+      const devices = resolver.getDeviceList();
       if (devices) {
         const device = devices.find((d) => d.type === args.deviceType);
         if (device) {

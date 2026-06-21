@@ -3,7 +3,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
+import { resolveTarget } from "../ccu/target-registry.js";
 import { toolResult, structuredResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
+
+// Optional per-call target override for read tools: route this one read to a
+// named CCU without switching the active target (handy for prod-vs-dev compares).
+const targetField = z.string().optional()
+  .describe("CCU target to read from (default: active). See list_ccu_targets.");
 
 export function registerReadTools(server: McpServer, deps: ServerDeps): void {
   registerGetValue(server, deps);
@@ -24,6 +30,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         address: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
         valueKey: z.string().describe("Datapoint name (e.g. 'STATE', 'LEVEL', 'ACTUAL_TEMPERATURE')"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
+        target: targetField,
       },
       outputSchema: {
         address: z.string(),
@@ -33,11 +40,12 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
       const start = Date.now();
 
       try {
-        const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
+        const { session, resolver } = resolveTarget(deps.targets, args.target);
+        const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
         await rateLimiter.acquire();
         const value = await withRetry(
@@ -73,6 +81,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         channels: z.array(z.string()).optional().describe("Array of channel addresses to read"),
         room: z.string().optional().describe("Room name — read all channels in this room"),
         function: z.string().optional().describe("Function name — read all channels in this function group"),
+        target: targetField,
       },
       outputSchema: {
         values: z.array(z.unknown()).describe("One entry per channel: {address, name, datapoints}"),
@@ -80,10 +89,12 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
       const start = Date.now();
 
       try {
+        const t = resolveTarget(deps.targets, args.target);
+        const { session } = t;
         // Build HM Script to collect values
         let script: string;
 
@@ -108,7 +119,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -207,6 +218,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         address: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
         paramsetKey: z.enum(["VALUES", "MASTER", "LINK"]).describe("Paramset to read"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
+        target: targetField,
       },
       outputSchema: {
         address: z.string(),
@@ -216,11 +228,12 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
       const start = Date.now();
 
       try {
-        const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
+        const { session, resolver } = resolveTarget(deps.targets, args.target);
+        const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
         await rateLimiter.acquire();
         const result = await withRetry(

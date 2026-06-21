@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { SessionManager } from "../../src/ccu/session.js";
 import { RateLimiter } from "../../src/middleware/rate-limiter.js";
-import { DeviceTypeCache } from "../../src/cache/device-type-cache.js";
-import { Resolver } from "../../src/middleware/resolver.js";
+import { TargetRegistry } from "../../src/ccu/target-registry.js";
 import { createLogger } from "../../src/logger.js";
 import { createMcpServer, type ServerDeps } from "../../src/server.js";
+import type { AppConfig } from "../../src/config.js";
 import { escapeHmScript } from "../../src/utils.js";
 import { callTool, parseToolResult } from "../unit/_helpers.js";
 import type { CcuConfig } from "../../src/ccu/types.js";
@@ -32,35 +31,39 @@ describeIf("MCP tools against live CCU", () => {
   };
 
   const logger = createLogger();
-  let session: SessionManager;
+  let targets: TargetRegistry;
   let server: McpServer;
   let deps: ServerDeps;
   let tempDir: string;
 
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "debmatic-tools-live-"));
-    session = new SessionManager(config, logger, tempDir);
-    await session.login();
+    const appConfig: AppConfig = {
+      ccu: config,
+      profiles: [{ name: "default", protected: false, readonly: false, ccu: config }],
+      defaultProfile: "default",
+      mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
+      cache: { dir: tempDir, ttl: 86400 },
+      rateLimiter: { burst: 20, rate: 10 },
+      resourcePollInterval: 3600,
+    };
+    targets = new TargetRegistry(appConfig, logger, tempDir);
+    await targets.loginActive();
     deps = {
-      config: {
-        ccu: config,
-        mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
-        cache: { dir: tempDir, ttl: 86400 },
-        rateLimiter: { burst: 20, rate: 10 },
-        resourcePollInterval: 3600,
-      },
-      session,
+      config: appConfig,
+      targets,
+      get session() { return targets.active.session; },
+      get resolver() { return targets.active.resolver; },
+      get deviceTypeCache() { return targets.active.deviceTypeCache; },
       rateLimiter: new RateLimiter(20, 10),
       logger,
-      deviceTypeCache: new DeviceTypeCache(tempDir, 86400, logger),
-      resolver: new Resolver(),
     };
     server = createMcpServer(deps);
   }, 30_000);
 
   afterAll(async () => {
-    await session.logout();
-    session.destroy();
+    await targets.logoutAll();
+    targets.destroyAll();
     deps.rateLimiter.destroy();
     await rm(tempDir, { recursive: true, force: true });
   });

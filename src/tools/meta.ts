@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { CcuError } from "../middleware/error-mapper.js";
+import { assertWritable } from "../ccu/target-registry.js";
 import { toolResult } from "../utils.js";
 
 export function registerMetaTools(server: McpServer, deps: ServerDeps): void {
@@ -36,6 +37,17 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 3. \`get_value\` / \`get_values\` / \`get_paramset\` → read current state
 4. \`set_value\` / \`put_paramset\` → change state (returns previous value)
 
+## CCU Targets (prod / dev)
+This server can be configured with several named CCU targets (profiles). One is
+"active" at a time; tools run against it.
+- \`list_ccu_targets\` — see configured targets (name, host, user, protected/active)
+- \`get_connection_info\` — confirm which target is active (do this before a write!)
+- \`use_ccu\` — switch the active target
+- Read tools accept an optional \`target\` arg to read from another target for one
+  call without switching (e.g. compare prod vs dev).
+- A \`protected\` target (e.g. prod) refuses writes unless you pass \`confirm: true\`
+  once — that unlocks writes to it for the rest of the session.
+
 ## Tips
 - Use \`list_devices\` with room/function filters to reduce output
 - Use \`get_values\` with room filter instead of multiple \`get_value\` calls
@@ -49,6 +61,7 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 **Read:** get_value, get_values, get_paramset
 **Control:** set_value, put_paramset, set_system_variable, create_system_variable, delete_system_variable, assign_channel, unassign_channel, execute_program
 **Diagnostics:** get_service_messages, acknowledge_service_messages, get_rssi, get_system_info
+**Targets:** list_ccu_targets, get_connection_info, use_ccu
 **Meta:** help, run_script
 `;
 
@@ -163,8 +176,23 @@ Returns: {devices: [{address, name, interface, links: [{peer, peerName, rssiDevi
 rssiDevice/rssiPeer are dBm (higher = better); null means no measurement. Use to diagnose flaky devices.`,
 
   run_script: `Execute arbitrary HomeMatic Script. NOT idempotent — never auto-retried.
-Args: script (string)
+Args: script (string), confirm? (true to write to a protected target)
 Returns: Script output`,
+
+  list_ccu_targets: `List configured CCU targets (profiles) you can switch between.
+Args: none
+Returns: {targets: [{name, host, port, user, https, protected, readonly, active, loggedIn}], active}
+Never exposes passwords.`,
+
+  get_connection_info: `Report the active CCU target (host, user, https, protected/readonly, login state).
+Args: none
+Returns: {name, host, port, user, https, protected, readonly, active, loggedIn, writesUnlocked}
+Use before a write to confirm WHERE it will run.`,
+
+  use_ccu: `Switch the active CCU target. Subsequent calls run against it.
+Args: profile (string — see list_ccu_targets)
+Returns: the new active connection info
+For a one-off read elsewhere, prefer the per-call \`target\` arg on read tools instead.`,
 
   help: `Context-aware help. No args = guide, tool name = tool docs, device type = schema.
 Args: topic? (string)`,
@@ -222,6 +250,7 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
         "Use for anything the other tools don't cover.",
       inputSchema: {
         script: z.string().describe("HomeMatic Script to execute"),
+        confirm: z.boolean().optional().describe("Set true to authorize this script against a protected CCU target (e.g. prod)."),
       },
       annotations: {
         destructiveHint: true,
@@ -233,9 +262,10 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
+        assertWritable(deps.targets.active, args.confirm);
         await rateLimiter.acquire();
         // No retry — scripts are not idempotent
-        const result = await session.call("ReGa.runScript", { script: args.script }, deps.config.ccu.scriptTimeout);
+        const result = await session.call("ReGa.runScript", { script: args.script }, deps.targets.active.profile.ccu.scriptTimeout);
 
         logger.info("tool_call", { tool: "run_script", duration_ms: Date.now() - start, status: "ok" });
         return toolResult(result);
