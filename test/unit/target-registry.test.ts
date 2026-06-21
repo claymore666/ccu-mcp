@@ -80,8 +80,23 @@ describe("TargetRegistry", () => {
     (dev!.deviceTypeCache as any).cache.set("HmIP-DEV", { interface: "HmIP-RF", channels: {} });
     await reg.saveCaches();
     const files = (await readdir(tempDir)).sort();
-    expect(files).toContain("device-type-cache.json");      // legacy name for "default"
-    expect(files).toContain("device-type-cache.dev.json");  // suffixed for "dev"
+    expect(files).toContain("device-type-cache.json"); // legacy name for "default"
+    // Named profiles get a readable slug plus a short hash of the name.
+    expect(files.some((f) => /^device-type-cache\.dev-[0-9a-f]{8}\.json$/.test(f))).toBe(true);
+  });
+
+  it("names differing only by punctuation get distinct cache files (no collision)", async () => {
+    // "my-ccu" and "my.ccu" both slugify to "my-ccu"; without the name hash they
+    // would share one device-type-cache file and cross-contaminate two CCUs.
+    const reg = new TargetRegistry(appConfig([profile("my-ccu"), profile("my.ccu")], "my-ccu", tempDir), logger, tempDir);
+    const [a, b] = reg.list();
+    (a!.deviceTypeCache as any).cache.set("HmIP-A", { interface: "HmIP-RF", channels: {} });
+    (b!.deviceTypeCache as any).cache.set("HmIP-B", { interface: "HmIP-RF", channels: {} });
+    await reg.saveCaches();
+    const files = (await readdir(tempDir)).filter((f) => f.startsWith("device-type-cache."));
+    // Two distinct files written, not one shared file.
+    expect(files.length).toBe(2);
+    expect(new Set(files).size).toBe(2);
   });
 });
 

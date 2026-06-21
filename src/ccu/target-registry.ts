@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AppConfig } from "../config.js";
 import type { CcuProfile } from "./types.js";
 import type { Logger } from "../logger.js";
@@ -31,9 +32,19 @@ export interface Target {
   unlocked: boolean;
 }
 
-// Filesystem-safe per-target suffix for cache/session filenames.
+// Filesystem-safe, collision-free per-target suffix for cache/session filenames.
+// The readable slug alone can collide for names that differ only in punctuation
+// ("my-ccu" vs "my.ccu" both slugify to "my-ccu"), which would make two distinct
+// targets share one on-disk session/device-type-cache file. Append a short hash
+// of the canonical (lowercased) name so distinct names always map to distinct
+// files, keeping the slug only for human readability. (The session file is also
+// host/port/user-guarded on restore, but the device-type cache file is not, so
+// the filename must carry the uniqueness.)
 function fileSuffix(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const canonical = name.toLowerCase();
+  const slug = canonical.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 8);
+  return slug ? `${slug}-${hash}` : hash;
 }
 
 /**
