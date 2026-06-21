@@ -277,6 +277,10 @@ Other device types should work too — the server queries the CCU for parameter 
 - [debmatic](https://github.com/alexreinert/debmatic) — Run HomeMatic on Debian, Ubuntu, Raspberry Pi OS, Armbian
 - [OCCU](https://github.com/eq-3/occu) — eQ-3's original Open CCU SDK (the upstream HomeMatic software); now being superseded by the community-maintained [OpenCCU](https://github.com/OpenCCU/OpenCCU)
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol specification
+- [ccu-ai-mcp](https://github.com/mdzio/ccu-ai-mcp) by **Mathias (mdzio)** — a
+  kindred MCP server for HomeMatic, taking a deliberately different, elegant
+  approach (a lean Go core with user-defined HM-Script tools). See his write-up
+  on the [HomeMatic forum](https://homematic-forum.de/forum/viewtopic.php?t=88226).
 
 ## License
 
