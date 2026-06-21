@@ -4,6 +4,35 @@ const _require = createRequire(import.meta.url);
 /** Server version — read from package.json at runtime, single source of truth. */
 export const VERSION: string = (_require("../package.json") as { version: string }).version;
 
+/** Git build identification, stamped into dist/build-info.json at build time. */
+export interface BuildInfo {
+  branch: string | null;
+  commit: string | null;
+  tag: string | null;
+  describe: string | null;
+  dirty: boolean | null;
+  builtAt: string | null;
+}
+
+/**
+ * Load the build identification written by scripts/gen-build-info.mjs. Best-effort:
+ * if the file is missing (server run straight from an unbuilt checkout) every
+ * field is null rather than throwing. Tries the compiled location first
+ * (dist/build-info.json, next to utils.js) then the source-tree fallback
+ * (../dist/build-info.json) so unit tests importing from src/ still find it.
+ */
+export function loadBuildInfo(): BuildInfo {
+  const fallback: BuildInfo = { branch: null, commit: null, tag: null, describe: null, dirty: null, builtAt: null };
+  for (const rel of ["./build-info.json", "../dist/build-info.json"]) {
+    try {
+      return { ...fallback, ...(_require(rel) as Partial<BuildInfo>) };
+    } catch {
+      // try the next location
+    }
+  }
+  return fallback;
+}
+
 /**
  * Escape a string for safe interpolation into HomeMatic Script double-quoted strings.
  * Verified against a live CCU (issue #16): \\ \" \n are real ReGa escapes; # needs
