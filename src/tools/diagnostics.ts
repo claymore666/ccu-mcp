@@ -5,7 +5,7 @@ import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { assertWritable } from "../ccu/target-registry.js";
-import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
+import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
@@ -246,7 +246,9 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
     "get_system_info",
     {
       title: "Get System Info",
-      description: "Get CCU system information: firmware version, serial number, addresses.",
+      description:
+        "Get CCU system information: firmware version, serial number, addresses. Also reports the " +
+        "running server's build identification (git branch/commit/tag and build time) under `build`.",
       outputSchema: {
         serverVersion: z.string().optional(),
         target: z.string().optional().describe("Active CCU target name"),
@@ -256,6 +258,14 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         hmipAddress: z.unknown().optional(),
         cacheTypes: z.number().optional(),
         cacheWarming: z.boolean().optional(),
+        build: z.object({
+          branch: z.string().nullable().describe("Git branch (null if detached or not a git checkout)"),
+          commit: z.string().nullable().describe("Short commit SHA"),
+          tag: z.string().nullable().describe("Tag if HEAD is exactly on one, else null"),
+          describe: z.string().nullable().describe("git describe --tags --dirty --always"),
+          dirty: z.boolean().nullable().describe("true if the working tree had uncommitted changes at build time"),
+          builtAt: z.string().nullable().describe("ISO timestamp of the build"),
+        }).optional().describe("Build identification of the running server (stamped at build time)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -284,6 +294,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
 
         results.cacheTypes = deviceTypeCache.size();
         results.cacheWarming = deviceTypeCache.isWarming();
+        results.build = loadBuildInfo();
 
         logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "ok" });
         return structuredResult(results as Record<string, unknown>);

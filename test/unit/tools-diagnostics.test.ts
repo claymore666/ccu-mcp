@@ -223,6 +223,20 @@ describe("get_system_info handler", () => {
     cleanupDeps(deps);
   });
 
+  it("includes a build identification block", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue("ok"),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    // Shape is always present; values are null off a git checkout, populated on one.
+    expect(result.build).toBeTypeOf("object");
+    for (const key of ["branch", "commit", "tag", "describe", "dirty", "builtAt"]) {
+      expect(result.build).toHaveProperty(key);
+    }
+    cleanupDeps(deps);
+  });
+
   it("returns null for individual call failures", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockImplementation(async (method: string) => {

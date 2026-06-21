@@ -49,7 +49,9 @@ export function registerPrompts(server: McpServer): void {
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       "Run a diagnostic check on the HomeMatic system:\n" +
       "1. Use get_service_messages to find active issues (low battery, unreachable devices)\n" +
-      "2. Use get_system_info to check firmware and cache status\n" +
+      "2. Use get_system_info to check firmware and cache status — it also reports the running " +
+      "server's build identification (git branch/commit/tag and build time) under `build`, " +
+      "useful for confirming which version is deployed\n" +
       "3. Summarize findings with recommended actions."
     }}],
   }));
