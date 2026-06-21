@@ -55,7 +55,7 @@ For Claude Code, create a `.mcp.json` file in your project directory (or any dir
 ```json
 {
   "mcpServers": {
-    "debmatic": {
+    "ccu-mcp": {
       "command": "npx",
       "args": ["ccu-mcp", "--stdio"],
       "env": {
@@ -69,12 +69,12 @@ For Claude Code, create a `.mcp.json` file in your project directory (or any dir
 
 Replace `your-ccu-hostname-or-ip` with your CCU's hostname (like `homematic-ccu3`) or IP (like `192.168.1.50`), and `your-ccu-admin-password` with the password you use to log into the CCU WebUI.
 
-Restart Claude Code. Run `/mcp` to check it connected. You should see `debmatic` in the list.
+Restart Claude Code. Run `/mcp` to check it connected. You should see `ccu-mcp` in the list.
 
 Alternatively, use the Claude Code CLI:
 
 ```bash
-claude mcp add debmatic -- npx ccu-mcp --stdio
+claude mcp add ccu-mcp -- npx ccu-mcp --stdio
 ```
 
 ### Option B: Docker (standalone HTTP server)
@@ -106,7 +106,7 @@ This prints something like `MCP_AUTH_TOKEN=e96suzi1iG0H-GPif6K2...`. The part af
 ```json
 {
   "mcpServers": {
-    "debmatic": {
+    "ccu-mcp": {
       "url": "http://your-server-ip:3000",
       "headers": {
         "Authorization": "Bearer PASTE-YOUR-TOKEN-HERE"
@@ -120,10 +120,10 @@ To inject the token automatically (requires `jq`):
 
 ```bash
 TOKEN=$(docker exec ccu-mcp grep MCP_AUTH_TOKEN /data/.env | cut -d= -f2)
-jq --arg t "$TOKEN" '.mcpServers.debmatic.headers.Authorization = "Bearer " + $t' .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
+jq --arg t "$TOKEN" '.mcpServers["ccu-mcp"].headers.Authorization = "Bearer " + $t' .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
 ```
 
-This only updates the `debmatic` entry — other servers in your `.mcp.json` are left alone.
+This only updates the `ccu-mcp` entry — other servers in your `.mcp.json` are left alone.
 
 **4. Check it's healthy:**
 
@@ -222,7 +222,7 @@ variables**. Provide them in whichever of these you prefer — you need just one
   ```json
   {
     "mcpServers": {
-      "ccu": {
+      "ccu-mcp": {
         "command": "node",
         "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
       }
