@@ -18,7 +18,10 @@ const git = (args) => {
 };
 
 const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
-const status = git(["status", "--porcelain"]);
+// Tracked modifications only (--untracked-files=no), matching `git describe --dirty`
+// semantics: stray untracked files (drafts, build output) don't change which
+// committed source the build came from, so they must not flip the dirty flag.
+const status = git(["status", "--porcelain", "--untracked-files=no"]);
 
 const buildInfo = {
   // branch is "HEAD" when detached (e.g. a CI checkout of a tag) — report null
@@ -28,7 +31,7 @@ const buildInfo = {
   tag: git(["describe", "--tags", "--exact-match"]),
   // human-readable: <tag>-<n>-g<sha>[-dirty], or just <sha> with no tags
   describe: git(["describe", "--tags", "--dirty", "--always"]),
-  // null when not a git checkout; true if the working tree has uncommitted changes
+  // null when not a git checkout; true if tracked files have uncommitted changes
   dirty: status === null ? null : status.length > 0,
   builtAt: new Date().toISOString(),
 };
