@@ -247,15 +247,21 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get System Info",
       description:
-        "Get CCU system information: firmware version, serial number, addresses. Also reports the " +
-        "running server's build identification (git branch/commit/tag and build time) under `build`.",
+        "Get CCU system information: firmware version, serial number, addresses. Reports the active " +
+        "login user and inferred role (ADMIN/USER) — note that version/serial/address are ADMIN-only " +
+        "on the CCU, so they show \"N/A\" for a non-admin (USER) login. Also reports the running " +
+        "server's build identification (git branch/commit/tag and build time) under `build`.",
       outputSchema: {
         serverVersion: z.string().optional(),
         target: z.string().optional().describe("Active CCU target name"),
-        version: z.unknown().optional(),
-        serial: z.unknown().optional(),
-        address: z.unknown().optional(),
-        hmipAddress: z.unknown().optional(),
+        user: z.string().optional().describe("Configured login user for the active target"),
+        role: z.enum(["ADMIN", "USER", "UNKNOWN"]).optional()
+          .describe("Access role inferred from which CCU methods answer: ADMIN if admin-only calls succeed, USER if logged in without admin rights, UNKNOWN if not connected"),
+        version: z.unknown().optional().describe("Firmware version, or \"N/A\" if unavailable (ADMIN-only)"),
+        serial: z.unknown().optional().describe("Serial number, or \"N/A\" if unavailable (ADMIN-only)"),
+        address: z.unknown().optional().describe("BidCos address, or \"N/A\" if unavailable (ADMIN-only)"),
+        hmipAddress: z.unknown().optional().describe("HmIP address, or \"N/A\" if unavailable (ADMIN-only)"),
+        accessNote: z.string().optional().describe("Present when ADMIN-only fields are unavailable, explaining why"),
         cacheTypes: z.number().optional(),
         cacheWarming: z.boolean().optional(),
         build: z.object({
@@ -274,8 +280,16 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       const start = Date.now();
 
       try {
-        const results: Record<string, unknown> = { serverVersion: VERSION, target: deps.targets.active.profile.name };
+        const active = deps.targets.active;
+        const results: Record<string, unknown> = {
+          serverVersion: VERSION,
+          target: active.profile.name,
+          user: active.profile.ccu.user,
+        };
 
+        // These four are LEVEL ADMIN on the CCU (verified in OCCU methods.conf),
+        // so they only return real values for an admin session. We use that as a
+        // capability probe: any non-empty result => the login has admin rights.
         const calls: Array<{ key: string; method: string }> = [
           { key: "version", method: "CCU.getVersion" },
           { key: "serial", method: "CCU.getSerial" },
@@ -283,13 +297,31 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
           { key: "hmipAddress", method: "CCU.getHmIPAddress" },
         ];
 
+        let anyAdminOk = false;
         for (const { key, method } of calls) {
           try {
             await rateLimiter.acquire();
-            results[key] = await session.call(method);
+            const value = await session.call(method);
+            if (value !== null && value !== undefined && value !== "") {
+              results[key] = value;
+              anyAdminOk = true;
+            } else {
+              results[key] = "N/A"; // empty/no value rather than null
+            }
           } catch {
-            results[key] = null;
+            results[key] = "N/A"; // permission denied or call failed
           }
+        }
+
+        // Infer role: admin-only calls answered => ADMIN; otherwise logged in but
+        // without those rights => USER; not logged in / unreachable => UNKNOWN.
+        const loggedIn = active.session.isLoggedIn();
+        results.role = anyAdminOk ? "ADMIN" : (loggedIn ? "USER" : "UNKNOWN");
+        if (!anyAdminOk && loggedIn) {
+          results.accessNote =
+            `Firmware version, serial and addresses are ADMIN-only on the CCU; ` +
+            `'${active.profile.ccu.user}' is a non-admin (USER) login, so those show "N/A". ` +
+            `Use an ADMIN account to see them.`;
         }
 
         results.cacheTypes = deviceTypeCache.size();

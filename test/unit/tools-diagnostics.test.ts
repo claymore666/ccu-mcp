@@ -237,7 +237,7 @@ describe("get_system_info handler", () => {
     cleanupDeps(deps);
   });
 
-  it("returns null for individual call failures", async () => {
+  it("shows N/A for individual call failures", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockImplementation(async (method: string) => {
         if (method === "CCU.getSerial") throw new Error("fail");
@@ -247,7 +247,35 @@ describe("get_system_info handler", () => {
 
     const result = parseToolResult(await callTool(server, "get_system_info")) as any;
     expect(result.version).toBe("ok");
-    expect(result.serial).toBe(null);
+    expect(result.serial).toBe("N/A");
+    cleanupDeps(deps);
+  });
+
+  it("reports user and ADMIN role when admin-only calls succeed", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue("ok"),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    expect(result.user).toBe("Admin");
+    expect(result.role).toBe("ADMIN");
+    expect(result.accessNote).toBeUndefined();
+    cleanupDeps(deps);
+  });
+
+  it("reports USER role with N/A fields and an accessNote when admin-only calls are denied", async () => {
+    const { server, deps } = createTestServer({
+      // Every ADMIN-gated CCU.* call is denied — mimics a non-admin login.
+      sessionCall: vi.fn().mockRejectedValue(new Error("access denied")),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    expect(result.role).toBe("USER");
+    expect(result.version).toBe("N/A");
+    expect(result.serial).toBe("N/A");
+    expect(result.address).toBe("N/A");
+    expect(result.hmipAddress).toBe("N/A");
+    expect(result.accessNote).toMatch(/ADMIN-only/);
     cleanupDeps(deps);
   });
 });
@@ -262,8 +290,8 @@ describe("error and edge paths (coverage round)", () => {
     });
     const result = parseToolResult(await callTool(server, "get_system_info")) as any;
     expect(result.version).toBe("3.85.7");
-    expect(result.serial).toBeNull();
-    expect(result.hmipAddress).toBeNull();
+    expect(result.serial).toBe("N/A");
+    expect(result.hmipAddress).toBe("N/A");
     cleanupDeps(deps);
   });
 
