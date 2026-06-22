@@ -103,7 +103,39 @@ async function main(): Promise<void> {
       },
       logger,
     );
-    const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+    // Bound the session map. Each MCP session pins a McpServer + transport that
+    // is removed only on transport.onclose (explicit DELETE / clean teardown).
+    // A client that initializes then drops its connection — or reconnects in a
+    // loop — would otherwise leak one pair per session forever. Cap the count
+    // and reclaim sessions idle past the timeout. Auth runs before session
+    // creation, so only valid-token holders reach here, but a single misbehaving
+    // authenticated client must still not grow this without bound.
+    const MAX_SESSIONS = 256;
+    const SESSION_IDLE_MS = 30 * 60_000; // 30 min without a request → reclaim
+    const sessions = new Map<
+      string,
+      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number }
+    >();
+
+    // Reclaim sessions whose last request predates `cutoff`. Returns how many
+    // were evicted. Shared by the periodic sweep and the at-capacity fast path.
+    const evictIdleSessions = (cutoff: number): number => {
+      let evicted = 0;
+      for (const [sid, s] of sessions) {
+        if (s.lastSeen < cutoff) {
+          sessions.delete(sid);
+          s.server.close().catch(() => {});
+          evicted++;
+        }
+      }
+      if (evicted > 0) logger.info("mcp_sessions_idle_evicted", { evicted, sessions: sessions.size });
+      return evicted;
+    };
+
+    // Periodic idle sweep. unref'd so it never holds the process open; cleared
+    // on shutdown via closeTransports.
+    const idleSweep = setInterval(() => evictIdleSessions(Date.now() - SESSION_IDLE_MS), 60_000);
+    idleSweep.unref();
 
     const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
@@ -182,15 +214,32 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Existing session: route to its transport (POST, GET/SSE, DELETE)
+        // Existing session: route to its transport (POST, GET/SSE, DELETE) and
+        // mark it active so the idle sweep doesn't reclaim a session in use.
         const sessionId = req.headers["mcp-session-id"];
-        if (typeof sessionId === "string" && sessions.has(sessionId)) {
-          await sessions.get(sessionId)!.transport.handleRequest(req, res);
+        const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
+        if (existing) {
+          existing.lastSeen = Date.now();
+          await existing.transport.handleRequest(req, res);
           return;
         }
 
-        // No (known) session: create a fresh transport + server pair. The
-        // transport itself rejects non-initialize requests without a session.
+        // No (known) session: a fresh transport + server pair is about to be
+        // created. Enforce the cap first — try reclaiming idle sessions, and if
+        // still full, refuse with 503 so a flood of initialize requests can't
+        // grow the map without bound.
+        if (sessions.size >= MAX_SESSIONS) {
+          evictIdleSessions(Date.now() - SESSION_IDLE_MS);
+          if (sessions.size >= MAX_SESSIONS) {
+            logger.warn("mcp_sessions_at_capacity", { sessions: sessions.size, max: MAX_SESSIONS });
+            res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "60" });
+            res.end(JSON.stringify({ error: "Server at session capacity, retry later" }));
+            return;
+          }
+        }
+
+        // Create a fresh transport + server pair. The transport itself rejects
+        // non-initialize requests without a session.
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           // Defense-in-depth against DNS rebinding: reject requests whose Host
@@ -205,7 +254,7 @@ async function main(): Promise<void> {
           allowedHosts: config.mcp.allowedHosts,
           allowedOrigins: config.mcp.allowedOrigins,
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport });
+            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now() });
             logger.info("mcp_session_started", { sessions: sessions.size });
           },
         });
@@ -267,6 +316,7 @@ async function main(): Promise<void> {
     );
     poller.start();
     closeTransports = async () => {
+      clearInterval(idleSweep);
       await Promise.allSettled([...sessions.values()].map((s) => s.server.close()));
       sessions.clear();
     };

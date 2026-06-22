@@ -107,14 +107,14 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         } else if (args.function) {
           script = buildGetValuesScript(`"${escapeHmScript(args.function)}"`, "function");
         } else {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: JSON.stringify({
-              error: "INVALID_INPUT",
-              message: "Provide either channels, room, or function parameter.",
-              hint: "At least one filter is required to avoid reading all devices.",
-            }) }],
-          };
+          // Route through CcuError like every other tool (the catch below maps
+          // it via toMcpError) instead of hand-building an isError result.
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: "Provide either channels, room, or function parameter.",
+            hint: "At least one filter is required to avoid reading all devices.",
+          });
         }
 
         await rateLimiter.acquire();
