@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
-import { CcuError } from "../middleware/error-mapper.js";
+import { runTool } from "../middleware/tool-handler.js";
 import { assertWritable } from "../ccu/target-registry.js";
 import { toolResult } from "../utils.js";
 
@@ -257,23 +257,14 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
         openWorldHint: true,
       },
     },
-    async (args) => {
-      const { session, rateLimiter, logger } = deps;
-      const start = Date.now();
+    async (args) => runTool("run_script", deps.logger, async () => {
+      const { session, rateLimiter } = deps;
+      assertWritable(deps.targets.active, args.confirm);
+      await rateLimiter.acquire();
+      // No retry — scripts are not idempotent
+      const result = await session.call("ReGa.runScript", { script: args.script }, deps.targets.active.profile.ccu.scriptTimeout);
 
-      try {
-        assertWritable(deps.targets.active, args.confirm);
-        await rateLimiter.acquire();
-        // No retry — scripts are not idempotent
-        const result = await session.call("ReGa.runScript", { script: args.script }, deps.targets.active.profile.ccu.scriptTimeout);
-
-        logger.info("tool_call", { tool: "run_script", duration_ms: Date.now() - start, status: "ok" });
-        return toolResult(result);
-      } catch (err) {
-        logger.info("tool_call", { tool: "run_script", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+      return toolResult(result);
+    }),
   );
 }
