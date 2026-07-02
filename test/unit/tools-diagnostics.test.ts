@@ -106,14 +106,21 @@ describe("acknowledge_service_messages handler", () => {
     cleanupDeps(deps);
   });
 
-  it("generates a script that confirms (AlConfirm) and escapes the requested id/address", async () => {
+  it("generates a script that confirms (AlReceipt) and escapes the requested id/address", async () => {
     const sessionCall = vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [{ id: "1", type: "x", address: 'A":0' }] }));
     const { server, deps } = createTestServer({ sessionCall });
 
     await callTool(server, "acknowledge_service_messages", { address: 'A":0' });
     const script = sessionCall.mock.calls[0][1].script as string;
-    expect(script).toContain("AlConfirm()");
+    // AlReceipt() is the real ReGa method (issue #74) — AlConfirm() does not
+    // exist and would abort the whole script at parse time with empty output.
+    expect(script).toContain("AlReceipt()");
+    expect(script).not.toContain("AlConfirm");
     expect(script).toContain("OT_ALARMDP");
+    // HM Script has no operator precedence: comparisons combined with && must
+    // be individually parenthesized or the condition mis-groups (issue #74).
+    expect(script).toContain('if ((wantId != "") && (sId == wantId))');
+    expect(script).toContain('if ((wantAddr != "") && (chAddr == wantAddr))');
     // the embedded address literal is escaped (quote -> \")
     expect(script).toContain('string wantAddr = "A\\":0";');
     cleanupDeps(deps);

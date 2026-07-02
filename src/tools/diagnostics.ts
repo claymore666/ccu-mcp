@@ -48,7 +48,10 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
             string sId;
             foreach(sId, svcs.EnumIDs()) {
               object svc = dom.GetObject(sId);
-              if (svc && svc.IsTypeOf(OT_ALARMDP) && svc.AlState() == asOncoming) {
+              ! HM Script has NO operator precedence (right-to-left evaluation,
+              ! see issue #74) — null-check first, parenthesize comparisons.
+              if (svc) {
+              if (svc.IsTypeOf(OT_ALARMDP) && (svc.AlState() == asOncoming)) {
                 if (!first) { Write(","); } first = false;
                 ! Parse address from alarm name: AL-<address>.<dpName>
                 string alName = svc.Name();
@@ -72,6 +75,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
                 Write(',"address":"' # chAddr # '"');
                 Write(',"timestamp":"' # svc.AlOccurrenceTime() # '"');
                 Write('}');
+              }
               }
             }
           }
@@ -161,9 +165,12 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
         }
 
         // Enumerate active alarms (same OT_ALARMDP objects get_service_messages
-        // lists), AlConfirm() the ones matching the requested id/address, and
+        // lists), AlReceipt() the ones matching the requested id/address, and
         // report what was confirmed. Confirming in ReGa avoids a second round
         // trip and means we only ever confirm currently-active alarms.
+        // AlReceipt() is what the WebUI itself uses (OCCU functions.fn::ReceiptAlarm);
+        // there is no AlConfirm() in ReGa — an unknown method aborts the whole
+        // script at parse time with EMPTY output (issue #74).
         const wantId = escapeHmScript(args.id ?? "");
         const wantAddr = escapeHmScript(args.address ?? "");
         const script = `
@@ -176,7 +183,11 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
             string sId;
             foreach(sId, svcs.EnumIDs()) {
               object svc = dom.GetObject(sId);
-              if (svc && svc.IsTypeOf(OT_ALARMDP) && svc.AlState() == asOncoming) {
+              ! HM Script has NO operator precedence (right-to-left evaluation,
+              ! see issue #74) — null-check first, parenthesize comparisons.
+              ! Unparenthesized 'a != "" && b == c' mis-groups and is ALWAYS true.
+              if (svc) {
+              if (svc.IsTypeOf(OT_ALARMDP) && (svc.AlState() == asOncoming)) {
                 string alName = svc.Name();
                 string chAddr = "";
                 string dpName = "";
@@ -190,16 +201,17 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
                   }
                 }
                 boolean match = false;
-                if (wantId != "" && sId == wantId) { match = true; }
-                if (wantAddr != "" && chAddr == wantAddr) { match = true; }
+                if ((wantId != "") && (sId == wantId)) { match = true; }
+                if ((wantAddr != "") && (chAddr == wantAddr)) { match = true; }
                 if (match) {
-                  svc.AlConfirm();
+                  svc.AlReceipt();
                   if (!first) { Write(","); } first = false;
                   ! JSON-escape user-controlled names (backslash first, then quote)
                   dpName = dpName.Replace("\\\\", "\\\\\\\\");
                   dpName = dpName.Replace("\\"", "\\\\\\"");
                   Write('{"id":"' # sId # '","type":"' # dpName # '","address":"' # chAddr # '"}');
                 }
+              }
               }
             }
           }
