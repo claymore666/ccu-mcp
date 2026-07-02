@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { createTestServer, callTool, parseToolResult, cleanupDeps } from "./_helpers.js";
 import type { ServerDeps } from "../../src/server.js";
 
@@ -117,5 +117,66 @@ describe("protected-target write guard (issue #69)", () => {
     const ok: any = await callTool(t.server, "set_value", { address: "ABC:1", valueKey: "STATE", value: true, interface: "X", type: "bool" });
     expect(ok.isError).toBeFalsy();
     expect(writes).toBe(1);
+  });
+});
+
+// Issue #72: run_script and delete_system_variable never ride on the session
+// unlock — these tests pin the TOOL-level wiring (assertWritable's
+// alwaysConfirm semantics themselves are covered in target-registry.test.ts).
+describe("per-call confirm for high-impact tools (issue #72)", () => {
+  let deps: ServerDeps;
+  afterEach(() => deps && cleanupDeps(deps));
+
+  async function unlockSession(server: any) {
+    // an ordinary confirmed write unlocks the session for typed tools
+    const ok: any = await callTool(server, "set_value", { address: "ABC:1", valueKey: "STATE", value: true, interface: "X", type: "bool", confirm: true });
+    expect(ok.isError).toBeFalsy();
+  }
+
+  it("run_script refuses without confirm even after the session is unlocked", async () => {
+    const sessionCall = vi.fn().mockResolvedValue("out");
+    const t = createTestServer({ protected: true, sessionCall });
+    deps = t.deps;
+    await unlockSession(t.server);
+
+    const refused: any = await callTool(t.server, "run_script", { script: 'Write("x");' });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("EVERY call");
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "ReGa.runScript")).toBe(false);
+
+    // with its own confirm it runs — and the NEXT call is gated again
+    const ok: any = await callTool(t.server, "run_script", { script: 'Write("x");', confirm: true });
+    expect(ok.isError).toBeFalsy();
+    const again: any = await callTool(t.server, "run_script", { script: 'Write("y");' });
+    expect(again.isError).toBe(true);
+  });
+
+  it("delete_system_variable refuses without confirm even after the session is unlocked", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) =>
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : null);
+    const t = createTestServer({ protected: true, sessionCall });
+    deps = t.deps;
+    await unlockSession(t.server);
+
+    const refused: any = await callTool(t.server, "delete_system_variable", { name: "Urlaub" });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused)).toContain("EVERY call");
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "SysVar.deleteSysVarByName")).toBe(false);
+
+    const ok: any = await callTool(t.server, "delete_system_variable", { name: "Urlaub", confirm: true });
+    expect(ok.isError).toBeFalsy();
+  });
+
+  it("a confirmed run_script does not unlock the session for typed writes", async () => {
+    const sessionCall = vi.fn().mockResolvedValue("out");
+    const t = createTestServer({ protected: true, sessionCall });
+    deps = t.deps;
+
+    const ok: any = await callTool(t.server, "run_script", { script: 'Write("x");', confirm: true });
+    expect(ok.isError).toBeFalsy();
+
+    const gated: any = await callTool(t.server, "set_value", { address: "ABC:1", valueKey: "STATE", value: true, interface: "X", type: "bool" });
+    expect(gated.isError).toBe(true);
+    expect(JSON.stringify(gated)).toContain("protected");
   });
 });
