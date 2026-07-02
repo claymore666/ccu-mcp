@@ -6,12 +6,12 @@
     "url": "https://github.com/claymore666/ccu-mcp",
     "source": "github"
   },
-  "version": "1.5.0",
+  "version": "1.6.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "ccu-mcp",
-      "version": "1.5.0",
+      "version": "1.6.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -68,6 +68,16 @@
         {
           "name": "MCP_ALLOWED_HOSTS",
           "description": "Extra Host header values accepted by DNS-rebinding protection (comma-separated host:port); add your hostname when behind a proxy or container DNS name",
+          "format": "string"
+        },
+        {
+          "name": "CCU_PROFILES",
+          "description": "Comma-separated names of multiple CCU targets (e.g. 'prod,dev'). Each profile takes the flat CCU_* settings prefixed CCU_<NAME>_ (CCU_PROD_HOST, ...), plus policy flags CCU_<NAME>_PROTECTED (writes need confirm:true) and CCU_<NAME>_READONLY. Unset = single default profile from the flat CCU_* vars",
+          "format": "string"
+        },
+        {
+          "name": "CCU_DEFAULT_PROFILE",
+          "description": "Which profile from CCU_PROFILES is active at startup (default: the first listed)",
           "format": "string"
         }
       ]

@@ -16,6 +16,18 @@ services:
       # - CCU_HTTPS=false
       # - CCU_USER=Admin
 
+      # === Multiple CCU targets (optional; see README "Multiple CCU targets") ===
+      # Named profiles instead of the flat CCU_* vars above. Per profile:
+      # CCU_<NAME>_HOST/USER/PASSWORD/PORT/HTTPS/..., plus policy flags.
+      # - CCU_PROFILES=prod,dev
+      # - CCU_DEFAULT_PROFILE=prod
+      # - CCU_PROD_HOST=192.168.x.x
+      # - CCU_PROD_PASSWORD=secret
+      # - CCU_PROD_PROTECTED=true   # writes need confirm:true (run_script/delete_system_variable: every call)
+      # - CCU_DEV_HOST=192.168.x.y
+      # - CCU_DEV_PASSWORD=secret2
+      # - CCU_DEV_READONLY=false
+
       # === MCP transport (optional) ===
       # - MCP_TRANSPORT=http
       # - MCP_PORT=3000
