@@ -3,8 +3,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
+import { runTool } from "../middleware/tool-handler.js";
 import { resolveTarget } from "../ccu/target-registry.js";
-import { toolResult, structuredResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
+import { structuredResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
 
 // Optional per-call target override for read tools: route this one read to a
 // named CCU without switching the active target (handy for prod-vs-dev compares).
@@ -39,33 +40,25 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (args) => {
+    async (args) => runTool("get_value", deps.logger, async (log) => {
       const { rateLimiter, logger } = deps;
-      const start = Date.now();
+      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
-      try {
-        const { session, resolver } = resolveTarget(deps.targets, args.target);
-        const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
+      await rateLimiter.acquire();
+      const value = await withRetry(
+        () => session.call("Interface.getValue", {
+          interface: iface,
+          address: args.address,
+          valueKey: args.valueKey,
+        }),
+        "Interface.getValue",
+        logger,
+      );
 
-        await rateLimiter.acquire();
-        const value = await withRetry(
-          () => session.call("Interface.getValue", {
-            interface: iface,
-            address: args.address,
-            valueKey: args.valueKey,
-          }),
-          "Interface.getValue",
-          logger,
-        );
-
-        logger.info("tool_call", { tool: "get_value", duration_ms: Date.now() - start, status: "ok", address: args.address });
-        return structuredResult({ address: args.address, valueKey: args.valueKey, value: parseValue(value) });
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_value", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+      log({ address: args.address });
+      return structuredResult({ address: args.address, valueKey: args.valueKey, value: parseValue(value) });
+    }),
   );
 }
 
@@ -88,52 +81,43 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (args) => {
+    async (args) => runTool("get_values", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const start = Date.now();
+      const t = resolveTarget(deps.targets, args.target);
+      const { session } = t;
+      // Build HM Script to collect values
+      let script: string;
 
-      try {
-        const t = resolveTarget(deps.targets, args.target);
-        const { session } = t;
-        // Build HM Script to collect values
-        let script: string;
-
-        if (args.channels && args.channels.length > 0) {
-          // Comma-delimited with sentinel commas for exact matching via Find()
-          const addrList = "," + args.channels.map((a) => escapeHmScript(a)).join(",") + ",";
-          script = buildGetValuesScript(`"${addrList}"`, "addresses");
-        } else if (args.room) {
-          script = buildGetValuesScript(`"${escapeHmScript(args.room)}"`, "room");
-        } else if (args.function) {
-          script = buildGetValuesScript(`"${escapeHmScript(args.function)}"`, "function");
-        } else {
-          return {
-            isError: true,
-            content: [{ type: "text" as const, text: JSON.stringify({
-              error: "INVALID_INPUT",
-              message: "Provide either channels, room, or function parameter.",
-              hint: "At least one filter is required to avoid reading all devices.",
-            }) }],
-          };
-        }
-
-        await rateLimiter.acquire();
-        const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
-          "ReGa.runScript",
-          logger,
-        );
-
-        logger.info("tool_call", { tool: "get_values", duration_ms: Date.now() - start, status: "ok" });
-        const data = typeof result === "string" ? tryParseJson(result) : result;
-        // Wrap the array for structuredContent; keep the bare array as the text block.
-        return structuredResult({ values: Array.isArray(data) ? data : [] }, data);
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_values", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
+      if (args.channels && args.channels.length > 0) {
+        // Comma-delimited with sentinel commas for exact matching via Find()
+        const addrList = "," + args.channels.map((a) => escapeHmScript(a)).join(",") + ",";
+        script = buildGetValuesScript(`"${addrList}"`, "addresses");
+      } else if (args.room) {
+        script = buildGetValuesScript(`"${escapeHmScript(args.room)}"`, "room");
+      } else if (args.function) {
+        script = buildGetValuesScript(`"${escapeHmScript(args.function)}"`, "function");
+      } else {
+        // Route through CcuError like every other tool (runTool maps it via
+        // toMcpError) instead of hand-building an isError result.
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: "Provide either channels, room, or function parameter.",
+          hint: "At least one filter is required to avoid reading all devices.",
+        });
       }
-    },
+
+      await rateLimiter.acquire();
+      const result = await withRetry(
+        () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
+        "ReGa.runScript",
+        logger,
+      );
+
+      const data = typeof result === "string" ? tryParseJson(result) : result;
+      // Wrap the array for structuredContent; keep the bare array as the text block.
+      return structuredResult({ values: Array.isArray(data) ? data : [] }, data);
+    }),
   );
 }
 
@@ -227,37 +211,28 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (args) => {
+    async (args) => runTool("get_paramset", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const start = Date.now();
+      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
-      try {
-        const { session, resolver } = resolveTarget(deps.targets, args.target);
-        const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
+      await rateLimiter.acquire();
+      const result = await withRetry(
+        () => session.call("Interface.getParamset", {
+          interface: iface,
+          address: args.address,
+          paramsetKey: args.paramsetKey,
+        }),
+        "Interface.getParamset",
+        logger,
+      );
 
-        await rateLimiter.acquire();
-        const result = await withRetry(
-          () => session.call("Interface.getParamset", {
-            interface: iface,
-            address: args.address,
-            paramsetKey: args.paramsetKey,
-          }),
-          "Interface.getParamset",
-          logger,
-        );
-
-        logger.info("tool_call", { tool: "get_paramset", duration_ms: Date.now() - start, status: "ok" });
-        // Parse values to native types if result is a flat object
-        const params = (typeof result === "object" && result !== null && !Array.isArray(result))
-          ? parseValues(result as Record<string, unknown>)
-          : result;
-        return structuredResult({ address: args.address, paramsetKey: args.paramsetKey, params });
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_paramset", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+      // Parse values to native types if result is a flat object
+      const params = (typeof result === "object" && result !== null && !Array.isArray(result))
+        ? parseValues(result as Record<string, unknown>)
+        : result;
+      return structuredResult({ address: args.address, paramsetKey: args.paramsetKey, params });
+    }),
   );
 }
 
