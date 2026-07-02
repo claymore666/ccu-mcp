@@ -113,7 +113,7 @@ describeIf("MCP tools against live CCU", () => {
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
 
-  // Exercises the real ReGa enumeration + AlConfirm path without mutating the
+  // Exercises the real ReGa enumeration + AlReceipt path without mutating the
   // user's CCU: a bogus id matches no active alarm → empty confirmed → NOT_FOUND.
   // We deliberately do NOT auto-confirm a real active alarm (it would silently
   // dismiss the user's warnings during a test run).
@@ -122,6 +122,51 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
+
+  // Full acknowledge round-trip against the real ReGa (issue #74): create a
+  // throwaway alarm datapoint, raise it to asOncoming, register it in
+  // ID_SERVICES, confirm it through the tool, then clean everything up. This
+  // is the test that would have caught AlConfirm(): ReGa aborts a script
+  // containing an unknown method at PARSE time with empty output, so the
+  // NOT_FOUND test above passes even when the script never ran.
+  it("acknowledge_service_messages confirms a synthetic alarm end-to-end (issue #74)", async () => {
+    const ALARM_NAME = "AL-MCP_LIVE_TEST:0.ISSUE_74";
+    const setup = parseToolResult(await callTool(server, "run_script", {
+      script: `
+        object al = dom.CreateObject(OT_ALARMDP, "${ALARM_NAME}");
+        al.ValueType(ivtBinary);
+        al.ValueSubType(istAlarm);
+        al.AlArm(true);
+        al.State(true);
+        dom.GetObject(ID_SERVICES).Add(al.ID());
+        Write('{"id":"' # al.ID() # '","state":' # al.AlState() # '}');
+      `,
+    })) as { id: string; state: number };
+    expect(setup.state).toBe(1); // asOncoming
+
+    try {
+      const result = parseToolResult(await callTool(server, "acknowledge_service_messages", {
+        id: setup.id,
+      })) as { confirmed: Array<{ id: string }>; count: number };
+      expect(result.count).toBe(1);
+      expect(result.confirmed[0].id).toBe(setup.id);
+
+      // the alarm must actually have left the asOncoming state
+      const after = parseToolResult(await callTool(server, "run_script", {
+        script: `Write(dom.GetObject("${setup.id}").AlState());`,
+      }));
+      expect(after).not.toBe("1");
+    } finally {
+      await callTool(server, "run_script", {
+        script: `
+          dom.GetObject(ID_SERVICES).Remove("${setup.id}");
+          dom.DeleteObject("${setup.id}");
+          object leftover = dom.GetObject("${ALARM_NAME}");
+          if (leftover) { Write("LEFTOVER"); } else { Write("clean"); }
+        `,
+      });
+    }
+  }, 60_000);
 
   it("acknowledge_service_messages rejects an empty request with INVALID_INPUT", async () => {
     const result: any = await callTool(server, "acknowledge_service_messages", {});
