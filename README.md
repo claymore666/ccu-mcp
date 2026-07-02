@@ -55,7 +55,7 @@ For Claude Code, create a `.mcp.json` file in your project directory (or any dir
 ```json
 {
   "mcpServers": {
-    "debmatic": {
+    "ccu-mcp": {
       "command": "npx",
       "args": ["ccu-mcp", "--stdio"],
       "env": {
@@ -69,12 +69,12 @@ For Claude Code, create a `.mcp.json` file in your project directory (or any dir
 
 Replace `your-ccu-hostname-or-ip` with your CCU's hostname (like `homematic-ccu3`) or IP (like `192.168.1.50`), and `your-ccu-admin-password` with the password you use to log into the CCU WebUI.
 
-Restart Claude Code. Run `/mcp` to check it connected. You should see `debmatic` in the list.
+Restart Claude Code. Run `/mcp` to check it connected. You should see `ccu-mcp` in the list.
 
 Alternatively, use the Claude Code CLI:
 
 ```bash
-claude mcp add debmatic -- npx ccu-mcp --stdio
+claude mcp add ccu-mcp -- npx ccu-mcp --stdio
 ```
 
 ### Option B: Docker (standalone HTTP server)
@@ -106,7 +106,7 @@ This prints something like `MCP_AUTH_TOKEN=e96suzi1iG0H-GPif6K2...`. The part af
 ```json
 {
   "mcpServers": {
-    "debmatic": {
+    "ccu-mcp": {
       "url": "http://your-server-ip:3000",
       "headers": {
         "Authorization": "Bearer PASTE-YOUR-TOKEN-HERE"
@@ -120,10 +120,10 @@ To inject the token automatically (requires `jq`):
 
 ```bash
 TOKEN=$(docker exec ccu-mcp grep MCP_AUTH_TOKEN /data/.env | cut -d= -f2)
-jq --arg t "$TOKEN" '.mcpServers.debmatic.headers.Authorization = "Bearer " + $t' .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
+jq --arg t "$TOKEN" '.mcpServers["ccu-mcp"].headers.Authorization = "Bearer " + $t' .mcp.json > .mcp.json.tmp && mv .mcp.json.tmp .mcp.json
 ```
 
-This only updates the `debmatic` entry — other servers in your `.mcp.json` are left alone.
+This only updates the `ccu-mcp` entry — other servers in your `.mcp.json` are left alone.
 
 **4. Check it's healthy:**
 
@@ -208,9 +208,76 @@ All configuration is via environment variables:
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
+### How to supply these (inline, `.env`, or export)
+
+The required `CCU_HOST` / `CCU_PASSWORD` (and everything else) are **environment
+variables**. Provide them in whichever of these you prefer — you need just one:
+
+- **Inline in `.mcp.json`** — the `env` block shown in [Option A](#option-a-stdio-direct-simplest)
+  above. Simplest; self-contained.
+- **Shell `export`** — as in [Quick start](#quick-start) above.
+- **A `.env` file** — keeps secrets out of `.mcp.json`. The server does not read
+  `.env` on its own, so load it with Node's built-in flag (Node ≥ 20.6):
+
+  ```json
+  {
+    "mcpServers": {
+      "ccu-mcp": {
+        "command": "node",
+        "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
+      }
+    }
+  }
+  ```
+
+  Copy [`.env.example`](.env.example) to `.env` and fill it in (it documents every
+  variable). Docker users can pass the same file with `docker run --env-file .env`
+  or compose's `env_file:`. Keep `.env` gitignored.
+
+### Multiple CCU targets (profiles)
+
+By default the `CCU_*` vars above configure a single CCU. To reach several CCUs
+(e.g. **prod + dev**) from one server, define named profiles instead. Set these
+the same way as any other config (inline, `.env`, or export — see above):
+
+```sh
+CCU_PROFILES=prod,dev
+CCU_DEFAULT_PROFILE=prod           # active at startup (defaults to the first listed)
+
+CCU_PROD_HOST=ccu.example
+CCU_PROD_USER=ai
+CCU_PROD_PASSWORD=...
+CCU_PROD_HTTPS=true
+CCU_PROD_PROTECTED=true            # writes need confirm:true
+
+CCU_DEV_HOST=127.0.0.1
+CCU_DEV_PORT=18080
+CCU_DEV_USER=Admin
+CCU_DEV_PASSWORD=                  # may be empty (e.g. an OpenCCU dev box)
+```
+
+Each profile takes the same settings as the flat vars, prefixed
+`CCU_<NAME>_` (name upper-cased, non-alphanumerics → `_`): `HOST` (required),
+`PASSWORD` (may be empty), `USER`, `PORT`, `HTTPS`, `TIMEOUT`, `SCRIPT_TIMEOUT`,
+`TLS_FINGERPRINT`, `CA_CERT`, `TLS_VERIFY` — plus two policy flags:
+
+- `CCU_<NAME>_PROTECTED=true` — write tools refuse unless called with
+  `confirm: true`, which unlocks writes to that target for the rest of the session.
+  Exception: `run_script` and `delete_system_variable` require `confirm: true` on
+  **every** call — they never ride on the session unlock (scripts bypass all
+  typed-tool guards; deletion is unrecoverable), and confirming them does not
+  unlock the session for other writes.
+- `CCU_<NAME>_READONLY=true` — write tools are refused outright.
+
+With `CCU_PROFILES` unset, the flat `CCU_*` vars are used as a single `default`
+profile (unchanged behavior). At runtime, `list_ccu_targets` shows the targets,
+`get_connection_info` reports the active one, and `use_ccu` switches it. Read
+tools also accept an optional `target` to read from another CCU for a single call
+without switching.
+
 ## Tools
 
-25 tools organized by what you'd actually want to do:
+28 tools organized by what you'd actually want to do:
 
 **Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `list_links`, `describe_device_type`
 
@@ -219,6 +286,8 @@ All configuration is via environment variables:
 **Change things** — `set_value`, `put_paramset`, `set_system_variable`, `create_system_variable`, `delete_system_variable`, `assign_channel`, `unassign_channel`, `execute_program`
 
 **Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_rssi`, `get_system_info`
+
+**Switch targets** — `list_ccu_targets`, `get_connection_info`, `use_ccu` (multi-CCU profiles; see above)
 
 **Other** — `help` (context-aware), `run_script` (raw HomeMatic Script for bulk operations, renaming devices/channels, querying room membership, or anything not covered by the other tools)
 
@@ -277,6 +346,10 @@ Other device types should work too — the server queries the CCU for parameter 
 - [debmatic](https://github.com/alexreinert/debmatic) — Run HomeMatic on Debian, Ubuntu, Raspberry Pi OS, Armbian
 - [OCCU](https://github.com/eq-3/occu) — eQ-3's original Open CCU SDK (the upstream HomeMatic software); now being superseded by the community-maintained [OpenCCU](https://github.com/OpenCCU/OpenCCU)
 - [MCP](https://modelcontextprotocol.io/) — Model Context Protocol specification
+- [ccu-ai-mcp](https://github.com/mdzio/ccu-ai-mcp) by **Mathias (mdzio)** — a
+  kindred MCP server for HomeMatic, taking a deliberately different, elegant
+  approach (a lean Go core with user-defined HM-Script tools). See his write-up
+  on the [HomeMatic forum](https://homematic-forum.de/forum/viewtopic.php?t=88226).
 
 ## License
 

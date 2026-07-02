@@ -4,7 +4,9 @@ import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
-import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION } from "../utils.js";
+import { runTool } from "../middleware/tool-handler.js";
+import { assertWritable } from "../ccu/target-registry.js";
+import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
@@ -29,11 +31,8 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
       outputSchema: { messages: z.array(z.unknown()).describe("Active alarms: {id, type, address, channelName, timestamp}") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
+    async () => runTool("get_service_messages", deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
-      const start = Date.now();
-
-      try {
         // Two single passes instead of a nested per-alarm channel scan: emit the
         // alarms first while collecting their addresses, then resolve channel
         // names in ONE sweep over all channels (sentinel-comma Find, as in
@@ -47,7 +46,10 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
             string sId;
             foreach(sId, svcs.EnumIDs()) {
               object svc = dom.GetObject(sId);
-              if (svc && svc.IsTypeOf(OT_ALARMDP) && svc.AlState() == asOncoming) {
+              ! HM Script has NO operator precedence (right-to-left evaluation,
+              ! see issue #74) — null-check first, parenthesize comparisons.
+              if (svc) {
+              if (svc.IsTypeOf(OT_ALARMDP) && (svc.AlState() == asOncoming)) {
                 if (!first) { Write(","); } first = false;
                 ! Parse address from alarm name: AL-<address>.<dpName>
                 string alName = svc.Name();
@@ -72,6 +74,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
                 Write(',"timestamp":"' # svc.AlOccurrenceTime() # '"');
                 Write('}');
               }
+              }
             }
           }
           Write('],"channelNames":{');
@@ -95,7 +98,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -113,14 +116,8 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
           }));
         }
 
-        logger.info("tool_call", { tool: "get_service_messages", duration_ms: Date.now() - start, status: "ok" });
         return structuredResult({ messages: Array.isArray(messages) ? messages : [] }, messages);
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_service_messages", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+    }),
   );
 }
 
@@ -136,6 +133,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
       inputSchema: {
         id: z.string().optional().describe("Alarm id from get_service_messages (confirm a single message)"),
         address: z.string().optional().describe("Channel address — confirm all active messages on this channel (e.g. '000A1BE9A71F15:0')"),
+        confirm: z.boolean().optional().describe("Set true to authorize this write against a protected CCU target (e.g. prod)."),
       },
       annotations: {
         destructiveHint: true,
@@ -143,11 +141,9 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
         openWorldHint: true,
       },
     },
-    async (args) => {
+    async (args) => runTool("acknowledge_service_messages", deps.logger, async (log) => {
       const { session, rateLimiter, logger } = deps;
-      const start = Date.now();
-
-      try {
+        assertWritable(deps.targets.active, args.confirm);
         if (!args.id && !args.address) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -158,9 +154,12 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
         }
 
         // Enumerate active alarms (same OT_ALARMDP objects get_service_messages
-        // lists), AlConfirm() the ones matching the requested id/address, and
+        // lists), AlReceipt() the ones matching the requested id/address, and
         // report what was confirmed. Confirming in ReGa avoids a second round
         // trip and means we only ever confirm currently-active alarms.
+        // AlReceipt() is what the WebUI itself uses (OCCU functions.fn::ReceiptAlarm);
+        // there is no AlConfirm() in ReGa — an unknown method aborts the whole
+        // script at parse time with EMPTY output (issue #74).
         const wantId = escapeHmScript(args.id ?? "");
         const wantAddr = escapeHmScript(args.address ?? "");
         const script = `
@@ -173,7 +172,11 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
             string sId;
             foreach(sId, svcs.EnumIDs()) {
               object svc = dom.GetObject(sId);
-              if (svc && svc.IsTypeOf(OT_ALARMDP) && svc.AlState() == asOncoming) {
+              ! HM Script has NO operator precedence (right-to-left evaluation,
+              ! see issue #74) — null-check first, parenthesize comparisons.
+              ! Unparenthesized 'a != "" && b == c' mis-groups and is ALWAYS true.
+              if (svc) {
+              if (svc.IsTypeOf(OT_ALARMDP) && (svc.AlState() == asOncoming)) {
                 string alName = svc.Name();
                 string chAddr = "";
                 string dpName = "";
@@ -187,16 +190,17 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
                   }
                 }
                 boolean match = false;
-                if (wantId != "" && sId == wantId) { match = true; }
-                if (wantAddr != "" && chAddr == wantAddr) { match = true; }
+                if ((wantId != "") && (sId == wantId)) { match = true; }
+                if ((wantAddr != "") && (chAddr == wantAddr)) { match = true; }
                 if (match) {
-                  svc.AlConfirm();
+                  svc.AlReceipt();
                   if (!first) { Write(","); } first = false;
                   ! JSON-escape user-controlled names (backslash first, then quote)
                   dpName = dpName.Replace("\\\\", "\\\\\\\\");
                   dpName = dpName.Replace("\\"", "\\\\\\"");
                   Write('{"id":"' # sId # '","type":"' # dpName # '","address":"' # chAddr # '"}');
                 }
+              }
               }
             }
           }
@@ -205,7 +209,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.config.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
@@ -227,14 +231,9 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
           });
         }
 
-        logger.info("tool_call", { tool: "acknowledge_service_messages", duration_ms: Date.now() - start, status: "ok", count: confirmed.length });
+        log({ count: confirmed.length });
         return toolResult({ confirmed, count: confirmed.length });
-      } catch (err) {
-        logger.info("tool_call", { tool: "acknowledge_service_messages", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+    }),
   );
 }
 
@@ -243,52 +242,87 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
     "get_system_info",
     {
       title: "Get System Info",
-      description: "Get CCU system information: firmware version, serial number, addresses.",
+      description:
+        "Get CCU system information: firmware version, serial number, addresses. Reports the active " +
+        "login user and inferred role (ADMIN/USER) — note that version/serial/address are ADMIN-only " +
+        "on the CCU, so they show \"N/A\" for a non-admin (USER) login. Also reports the running " +
+        "server's build identification (git branch/commit/tag and build time) under `build`.",
       outputSchema: {
         serverVersion: z.string().optional(),
-        version: z.unknown().optional(),
-        serial: z.unknown().optional(),
-        address: z.unknown().optional(),
-        hmipAddress: z.unknown().optional(),
+        target: z.string().optional().describe("Active CCU target name"),
+        user: z.string().optional().describe("Configured login user for the active target"),
+        role: z.enum(["ADMIN", "USER", "UNKNOWN"]).optional()
+          .describe("Access role inferred from which CCU methods answer: ADMIN if admin-only calls succeed, USER if logged in without admin rights, UNKNOWN if not connected"),
+        version: z.unknown().optional().describe("Firmware version, or \"N/A\" if unavailable (ADMIN-only)"),
+        serial: z.unknown().optional().describe("Serial number, or \"N/A\" if unavailable (ADMIN-only)"),
+        address: z.unknown().optional().describe("BidCos address, or \"N/A\" if unavailable (ADMIN-only)"),
+        hmipAddress: z.unknown().optional().describe("HmIP address, or \"N/A\" if unavailable (ADMIN-only)"),
+        accessNote: z.string().optional().describe("Present when ADMIN-only fields are unavailable, explaining why"),
         cacheTypes: z.number().optional(),
         cacheWarming: z.boolean().optional(),
+        build: z.object({
+          branch: z.string().nullable().describe("Git branch (null if detached or not a git checkout)"),
+          commit: z.string().nullable().describe("Short commit SHA"),
+          tag: z.string().nullable().describe("Tag if HEAD is exactly on one, else null"),
+          describe: z.string().nullable().describe("git describe --tags --dirty --always"),
+          dirty: z.boolean().nullable().describe("true if the working tree had uncommitted changes at build time"),
+          builtAt: z.string().nullable().describe("ISO timestamp of the build"),
+        }).optional().describe("Build identification of the running server (stamped at build time)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => {
-      const { session, rateLimiter, logger, deviceTypeCache } = deps;
-      const start = Date.now();
+    async () => runTool("get_system_info", deps.logger, async () => {
+      const { session, rateLimiter, deviceTypeCache } = deps;
+      const active = deps.targets.active;
+      const results: Record<string, unknown> = {
+        serverVersion: VERSION,
+        target: active.profile.name,
+        user: active.profile.ccu.user,
+      };
 
-      try {
-        const results: Record<string, unknown> = { serverVersion: VERSION };
+      // These four are LEVEL ADMIN on the CCU (verified in OCCU methods.conf),
+      // so they only return real values for an admin session. We use that as a
+      // capability probe: any non-empty result => the login has admin rights.
+      const calls: Array<{ key: string; method: string }> = [
+        { key: "version", method: "CCU.getVersion" },
+        { key: "serial", method: "CCU.getSerial" },
+        { key: "address", method: "CCU.getAddress" },
+        { key: "hmipAddress", method: "CCU.getHmIPAddress" },
+      ];
 
-        const calls: Array<{ key: string; method: string }> = [
-          { key: "version", method: "CCU.getVersion" },
-          { key: "serial", method: "CCU.getSerial" },
-          { key: "address", method: "CCU.getAddress" },
-          { key: "hmipAddress", method: "CCU.getHmIPAddress" },
-        ];
-
-        for (const { key, method } of calls) {
-          try {
-            await rateLimiter.acquire();
-            results[key] = await session.call(method);
-          } catch {
-            results[key] = null;
+      let anyAdminOk = false;
+      for (const { key, method } of calls) {
+        try {
+          await rateLimiter.acquire();
+          const value = await session.call(method);
+          if (value !== null && value !== undefined && value !== "") {
+            results[key] = value;
+            anyAdminOk = true;
+          } else {
+            results[key] = "N/A"; // empty/no value rather than null
           }
+        } catch {
+          results[key] = "N/A"; // permission denied or call failed
         }
-
-        results.cacheTypes = deviceTypeCache.size();
-        results.cacheWarming = deviceTypeCache.isWarming();
-
-        logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "ok" });
-        return structuredResult(results as Record<string, unknown>);
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_system_info", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
       }
-    },
+
+      // Infer role: admin-only calls answered => ADMIN; otherwise logged in but
+      // without those rights => USER; not logged in / unreachable => UNKNOWN.
+      const loggedIn = active.session.isLoggedIn();
+      results.role = anyAdminOk ? "ADMIN" : (loggedIn ? "USER" : "UNKNOWN");
+      if (!anyAdminOk && loggedIn) {
+        results.accessNote =
+          `Firmware version, serial and addresses are ADMIN-only on the CCU; ` +
+          `'${active.profile.ccu.user}' is a non-admin (USER) login, so those show "N/A". ` +
+          `Use an ADMIN account to see them.`;
+      }
+
+      results.cacheTypes = deviceTypeCache.size();
+      results.cacheWarming = deviceTypeCache.isWarming();
+      results.build = loadBuildInfo();
+
+      return structuredResult(results as Record<string, unknown>);
+    }),
   );
 }
 
@@ -311,11 +345,8 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (args) => {
+    async (args) => runTool("get_rssi", deps.logger, async (log) => {
       const { session, rateLimiter, logger } = deps;
-      const start = Date.now();
-
-      try {
         // Device list → address→{name,interface}. Same call list_devices uses;
         // also refresh the resolver so later interface lookups are warm.
         await rateLimiter.acquire();
@@ -440,14 +471,9 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           bidcosInterfaces = [];
         }
 
-        logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "ok", devices: deviceEntries.length });
+        log({ devices: deviceEntries.length });
         return structuredResult({ devices: deviceEntries, interfaces: bidcosInterfaces });
-      } catch (err) {
-        logger.info("tool_call", { tool: "get_rssi", duration_ms: Date.now() - start, status: "error" });
-        if (err instanceof CcuError) return err.toMcpError();
-        throw err;
-      }
-    },
+    }),
   );
 }
 

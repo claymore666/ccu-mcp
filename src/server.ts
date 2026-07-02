@@ -5,22 +5,32 @@ import type { RateLimiter } from "./middleware/rate-limiter.js";
 import type { Logger } from "./logger.js";
 import type { DeviceTypeCache } from "./cache/device-type-cache.js";
 import type { Resolver } from "./middleware/resolver.js";
+import type { TargetRegistry } from "./ccu/target-registry.js";
 import { registerDiscoveryTools } from "./tools/discovery.js";
 import { registerReadTools } from "./tools/read.js";
 import { registerControlTools } from "./tools/control.js";
 import { registerDiagnosticsTools } from "./tools/diagnostics.js";
 import { registerMetaTools } from "./tools/meta.js";
+import { registerTargetTools } from "./tools/targets.js";
 import { registerResources } from "./resources/registry.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { VERSION } from "./utils.js";
 
 export interface ServerDeps {
   config: AppConfig;
-  session: SessionManager;
+  /** All configured CCU targets and the active pointer. */
+  targets: TargetRegistry;
+  /**
+   * The ACTIVE target's session/resolver/device-type cache. These are getters
+   * (see index.ts / _helpers.ts) that resolve to `targets.active.*` on each
+   * access, so a use_ccu() switch is picked up by the next tool call without
+   * touching any tool that reads `deps.session` etc.
+   */
+  readonly session: SessionManager;
+  readonly resolver: Resolver;
+  readonly deviceTypeCache: DeviceTypeCache;
   rateLimiter: RateLimiter;
   logger: Logger;
-  deviceTypeCache: DeviceTypeCache;
-  resolver: Resolver;
 }
 
 export function createMcpServer(deps: ServerDeps): McpServer {
@@ -44,6 +54,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   registerControlTools(server, deps);
   registerDiagnosticsTools(server, deps);
   registerMetaTools(server, deps);
+  registerTargetTools(server, deps);
   registerResources(server, deps);
   registerPrompts(server);
 

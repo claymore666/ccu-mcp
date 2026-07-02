@@ -14,14 +14,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
-import { SessionManager } from "./ccu/session.js";
 import { RateLimiter } from "./middleware/rate-limiter.js";
-import { DeviceTypeCache } from "./cache/device-type-cache.js";
-import { Resolver } from "./middleware/resolver.js";
+import { TargetRegistry } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthTokens } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
-import { createMcpServer } from "./server.js";
+import { createMcpServer, type ServerDeps } from "./server.js";
 import { extractBearerToken, normalizeClientIp } from "./utils.js";
 
 async function main(): Promise<void> {
@@ -30,21 +28,25 @@ async function main(): Promise<void> {
 
   logger.info("starting", {
     transport: config.mcp.transport,
+    profiles: config.profiles.map((p) => p.name),
+    activeProfile: config.defaultProfile,
     ccuHost: config.ccu.host,
     ccuPort: config.ccu.port,
     https: config.ccu.https,
   });
 
-  // Initialize CCU session
-  const session = new SessionManager(config.ccu, logger, config.cache.dir);
+  // Initialize all configured CCU targets (issue #69). Each has its own session,
+  // resolver, and per-target caches; `active` is the startup default.
   const rateLimiter = new RateLimiter(config.rateLimiter.burst, config.rateLimiter.rate);
+  const targets = new TargetRegistry(config, logger, config.cache.dir);
 
   // A failed login must not kill the server: the MCP transport starts anyway
   // (tool registration needs no CCU) and the session retries lazily on the
   // first CCU call. This keeps the server alive through CCU outages and lets
-  // it start before the CCU is reachable.
+  // it start before the CCU is reachable. Only the active target logs in eagerly;
+  // others log in lazily on first use / switch.
   try {
-    await session.login();
+    await targets.loginActive();
   } catch (err) {
     logger.warn("startup_degraded", {
       error: (err as Error).message,
@@ -52,16 +54,24 @@ async function main(): Promise<void> {
     });
   }
 
-  // Initialize device type cache
-  const deviceTypeCache = new DeviceTypeCache(config.cache.dir, config.cache.ttl, logger);
-  await deviceTypeCache.loadFromDisk();
-  deviceTypeCache.warm(session, rateLimiter).catch((err) => {
+  // Load each target's device-type cache; warm only the active one in background.
+  await targets.loadCaches();
+  targets.warmActive(rateLimiter).catch((err) => {
     logger.error("cache_warm_background_error", { error: (err as Error).message });
   });
 
-  // Create resolver and shared tool dependencies
-  const resolver = new Resolver();
-  const deps = { config, session, rateLimiter, logger, deviceTypeCache, resolver };
+  // Shared tool dependencies. session/resolver/deviceTypeCache are getters that
+  // resolve to the ACTIVE target each access, so a use_ccu() switch is picked up
+  // by the next tool call without touching tools that read deps.session etc.
+  const deps: ServerDeps = {
+    config,
+    targets,
+    get session() { return targets.active.session; },
+    get resolver() { return targets.active.resolver; },
+    get deviceTypeCache() { return targets.active.deviceTypeCache; },
+    rateLimiter,
+    logger,
+  };
 
   let poller: ResourcePoller;
   let closeTransports: () => Promise<void>;
@@ -73,7 +83,7 @@ async function main(): Promise<void> {
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
       () => mcpServer.server.sendResourceListChanged(),
-      session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = () => mcpServer.close();
@@ -93,7 +103,39 @@ async function main(): Promise<void> {
       },
       logger,
     );
-    const sessions = new Map<string, { server: McpServer; transport: StreamableHTTPServerTransport }>();
+    // Bound the session map. Each MCP session pins a McpServer + transport that
+    // is removed only on transport.onclose (explicit DELETE / clean teardown).
+    // A client that initializes then drops its connection — or reconnects in a
+    // loop — would otherwise leak one pair per session forever. Cap the count
+    // and reclaim sessions idle past the timeout. Auth runs before session
+    // creation, so only valid-token holders reach here, but a single misbehaving
+    // authenticated client must still not grow this without bound.
+    const MAX_SESSIONS = 256;
+    const SESSION_IDLE_MS = 30 * 60_000; // 30 min without a request → reclaim
+    const sessions = new Map<
+      string,
+      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number }
+    >();
+
+    // Reclaim sessions whose last request predates `cutoff`. Returns how many
+    // were evicted. Shared by the periodic sweep and the at-capacity fast path.
+    const evictIdleSessions = (cutoff: number): number => {
+      let evicted = 0;
+      for (const [sid, s] of sessions) {
+        if (s.lastSeen < cutoff) {
+          sessions.delete(sid);
+          s.server.close().catch(() => {});
+          evicted++;
+        }
+      }
+      if (evicted > 0) logger.info("mcp_sessions_idle_evicted", { evicted, sessions: sessions.size });
+      return evicted;
+    };
+
+    // Periodic idle sweep. unref'd so it never holds the process open; cleared
+    // on shutdown via closeTransports.
+    const idleSweep = setInterval(() => evictIdleSessions(Date.now() - SESSION_IDLE_MS), 60_000);
+    idleSweep.unref();
 
     const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
@@ -136,7 +178,7 @@ async function main(): Promise<void> {
 
         // Health check endpoint
         if (req.url === "/health" && req.method === "GET") {
-          handleHealthRequest(req, res, { session, deviceTypeCache });
+          handleHealthRequest(req, res, { session: targets.active.session, deviceTypeCache: targets.active.deviceTypeCache });
           return;
         }
 
@@ -172,15 +214,32 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Existing session: route to its transport (POST, GET/SSE, DELETE)
+        // Existing session: route to its transport (POST, GET/SSE, DELETE) and
+        // mark it active so the idle sweep doesn't reclaim a session in use.
         const sessionId = req.headers["mcp-session-id"];
-        if (typeof sessionId === "string" && sessions.has(sessionId)) {
-          await sessions.get(sessionId)!.transport.handleRequest(req, res);
+        const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
+        if (existing) {
+          existing.lastSeen = Date.now();
+          await existing.transport.handleRequest(req, res);
           return;
         }
 
-        // No (known) session: create a fresh transport + server pair. The
-        // transport itself rejects non-initialize requests without a session.
+        // No (known) session: a fresh transport + server pair is about to be
+        // created. Enforce the cap first — try reclaiming idle sessions, and if
+        // still full, refuse with 503 so a flood of initialize requests can't
+        // grow the map without bound.
+        if (sessions.size >= MAX_SESSIONS) {
+          evictIdleSessions(Date.now() - SESSION_IDLE_MS);
+          if (sessions.size >= MAX_SESSIONS) {
+            logger.warn("mcp_sessions_at_capacity", { sessions: sessions.size, max: MAX_SESSIONS });
+            res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "60" });
+            res.end(JSON.stringify({ error: "Server at session capacity, retry later" }));
+            return;
+          }
+        }
+
+        // Create a fresh transport + server pair. The transport itself rejects
+        // non-initialize requests without a session.
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           // Defense-in-depth against DNS rebinding: reject requests whose Host
@@ -195,7 +254,7 @@ async function main(): Promise<void> {
           allowedHosts: config.mcp.allowedHosts,
           allowedOrigins: config.mcp.allowedOrigins,
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport });
+            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now() });
             logger.info("mcp_session_started", { sessions: sessions.size });
           },
         });
@@ -253,10 +312,11 @@ async function main(): Promise<void> {
           [...sessions.values()].map((s) => s.server.server.sendResourceListChanged()),
         );
       },
-      session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = async () => {
+      clearInterval(idleSweep);
       await Promise.allSettled([...sessions.values()].map((s) => s.server.close()));
       sessions.clear();
     };
@@ -287,9 +347,9 @@ async function main(): Promise<void> {
       poller.stop();
       rateLimiter.destroy();
       httpServer?.close();
-      await deviceTypeCache.saveToDisk();
-      await session.logout();
-      session.destroy();
+      await targets.saveCaches();
+      await targets.logoutAll();
+      targets.destroyAll();
       await closeTransports();
     } catch (err) {
       logger.error("shutdown_error", { error: (err as Error).message });

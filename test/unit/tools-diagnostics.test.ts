@@ -106,14 +106,21 @@ describe("acknowledge_service_messages handler", () => {
     cleanupDeps(deps);
   });
 
-  it("generates a script that confirms (AlConfirm) and escapes the requested id/address", async () => {
+  it("generates a script that confirms (AlReceipt) and escapes the requested id/address", async () => {
     const sessionCall = vi.fn().mockResolvedValue(JSON.stringify({ confirmed: [{ id: "1", type: "x", address: 'A":0' }] }));
     const { server, deps } = createTestServer({ sessionCall });
 
     await callTool(server, "acknowledge_service_messages", { address: 'A":0' });
     const script = sessionCall.mock.calls[0][1].script as string;
-    expect(script).toContain("AlConfirm()");
+    // AlReceipt() is the real ReGa method (issue #74) — AlConfirm() does not
+    // exist and would abort the whole script at parse time with empty output.
+    expect(script).toContain("AlReceipt()");
+    expect(script).not.toContain("AlConfirm");
     expect(script).toContain("OT_ALARMDP");
+    // HM Script has no operator precedence: comparisons combined with && must
+    // be individually parenthesized or the condition mis-groups (issue #74).
+    expect(script).toContain('if ((wantId != "") && (sId == wantId))');
+    expect(script).toContain('if ((wantAddr != "") && (chAddr == wantAddr))');
     // the embedded address literal is escaped (quote -> \")
     expect(script).toContain('string wantAddr = "A\\":0";');
     cleanupDeps(deps);
@@ -223,7 +230,21 @@ describe("get_system_info handler", () => {
     cleanupDeps(deps);
   });
 
-  it("returns null for individual call failures", async () => {
+  it("includes a build identification block", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue("ok"),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    // Shape is always present; values are null off a git checkout, populated on one.
+    expect(result.build).toBeTypeOf("object");
+    for (const key of ["branch", "commit", "tag", "describe", "dirty", "builtAt"]) {
+      expect(result.build).toHaveProperty(key);
+    }
+    cleanupDeps(deps);
+  });
+
+  it("shows N/A for individual call failures", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockImplementation(async (method: string) => {
         if (method === "CCU.getSerial") throw new Error("fail");
@@ -233,7 +254,35 @@ describe("get_system_info handler", () => {
 
     const result = parseToolResult(await callTool(server, "get_system_info")) as any;
     expect(result.version).toBe("ok");
-    expect(result.serial).toBe(null);
+    expect(result.serial).toBe("N/A");
+    cleanupDeps(deps);
+  });
+
+  it("reports user and ADMIN role when admin-only calls succeed", async () => {
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue("ok"),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    expect(result.user).toBe("Admin");
+    expect(result.role).toBe("ADMIN");
+    expect(result.accessNote).toBeUndefined();
+    cleanupDeps(deps);
+  });
+
+  it("reports USER role with N/A fields and an accessNote when admin-only calls are denied", async () => {
+    const { server, deps } = createTestServer({
+      // Every ADMIN-gated CCU.* call is denied — mimics a non-admin login.
+      sessionCall: vi.fn().mockRejectedValue(new Error("access denied")),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    expect(result.role).toBe("USER");
+    expect(result.version).toBe("N/A");
+    expect(result.serial).toBe("N/A");
+    expect(result.address).toBe("N/A");
+    expect(result.hmipAddress).toBe("N/A");
+    expect(result.accessNote).toMatch(/ADMIN-only/);
     cleanupDeps(deps);
   });
 });
@@ -248,8 +297,8 @@ describe("error and edge paths (coverage round)", () => {
     });
     const result = parseToolResult(await callTool(server, "get_system_info")) as any;
     expect(result.version).toBe("3.85.7");
-    expect(result.serial).toBeNull();
-    expect(result.hmipAddress).toBeNull();
+    expect(result.serial).toBe("N/A");
+    expect(result.hmipAddress).toBe("N/A");
     cleanupDeps(deps);
   });
 

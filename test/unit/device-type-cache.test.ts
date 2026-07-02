@@ -230,4 +230,30 @@ describe("warm edge cases (coverage round)", () => {
     expect(param).toMatchObject({ type: "FLOAT", operations: 7, min: 0, max: 1.01, unit: "%", valueList: ["a", "b"] });
     await new Promise((r) => setTimeout(r, 25)); // let background save finish
   });
+
+  // Issue #69: per-target caches must use distinct files so prod/dev don't mix.
+  it("uses a per-instance filename and keeps separate caches isolated on disk", async () => {
+    const prod = new DeviceTypeCache(tempDir, 86400, logger, "device-type-cache.prod.json");
+    const dev = new DeviceTypeCache(tempDir, 86400, logger, "device-type-cache.dev.json");
+
+    (prod as any).cache.set("HmIP-PROD", { interface: "HmIP-RF", channels: {} });
+    (dev as any).cache.set("HmIP-DEV", { interface: "HmIP-RF", channels: {} });
+    await prod.saveToDisk();
+    await dev.saveToDisk();
+
+    expect(JSON.parse(await readFile(join(tempDir, "device-type-cache.prod.json"), "utf-8")).types).toHaveProperty("HmIP-PROD");
+    expect(JSON.parse(await readFile(join(tempDir, "device-type-cache.dev.json"), "utf-8")).types).toHaveProperty("HmIP-DEV");
+
+    const prod2 = new DeviceTypeCache(tempDir, 86400, logger, "device-type-cache.prod.json");
+    await prod2.loadFromDisk();
+    expect(prod2.has("HmIP-PROD")).toBe(true);
+    expect(prod2.has("HmIP-DEV")).toBe(false);
+  });
+
+  it("defaults to the historical filename for back-compat", async () => {
+    const cache = new DeviceTypeCache(tempDir, 86400, logger);
+    (cache as any).cache.set("HmIP-X", { interface: "HmIP-RF", channels: {} });
+    await cache.saveToDisk();
+    expect(JSON.parse(await readFile(join(tempDir, "device-type-cache.json"), "utf-8")).types).toHaveProperty("HmIP-X");
+  });
 });

@@ -1,0 +1,206 @@
+import { createHash } from "node:crypto";
+import type { AppConfig } from "../config.js";
+import type { CcuProfile } from "./types.js";
+import type { Logger } from "../logger.js";
+import type { RateLimiter } from "../middleware/rate-limiter.js";
+import { SessionManager } from "./session.js";
+import { Resolver } from "../middleware/resolver.js";
+import { DeviceTypeCache } from "../cache/device-type-cache.js";
+import { CcuError } from "../middleware/error-mapper.js";
+
+/** Short-lived sysvar name→type cache (issue #9), now scoped per target. */
+export interface SysVarTypeCacheHolder {
+  entry: { ts: number; types: Map<string, string> } | null;
+}
+
+/**
+ * One connected CCU target: its profile (connection + policy), its own session,
+ * resolver, device-type cache, and sysvar-type cache. Caches are per-target so
+ * a dev and prod CCU never pollute each other.
+ */
+export interface Target {
+  profile: CcuProfile;
+  session: SessionManager;
+  resolver: Resolver;
+  deviceTypeCache: DeviceTypeCache;
+  sysVarTypeCache: SysVarTypeCacheHolder;
+  /**
+   * Writes to a `protected` target are unlocked for the rest of the session
+   * once the caller confirms once (the "ask once per session" model). Always
+   * false → no effect for non-protected targets.
+   */
+  unlocked: boolean;
+}
+
+// Filesystem-safe, collision-free per-target suffix for cache/session filenames.
+// The readable slug alone can collide for names that differ only in punctuation
+// ("my-ccu" vs "my.ccu" both slugify to "my-ccu"), which would make two distinct
+// targets share one on-disk session/device-type-cache file. Append a short hash
+// of the canonical (lowercased) name so distinct names always map to distinct
+// files, keeping the slug only for human readability. (The session file is also
+// host/port/user-guarded on restore, but the device-type cache file is not, so
+// the filename must carry the uniqueness.)
+function fileSuffix(name: string): string {
+  const canonical = name.toLowerCase();
+  const slug = canonical.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 8);
+  return slug ? `${slug}-${hash}` : hash;
+}
+
+/**
+ * Holds every configured CCU target and which one is active. Tools reach the
+ * active target via ServerDeps getters; an optional per-call `target` arg routes
+ * a single call elsewhere via resolveTarget().
+ */
+export class TargetRegistry {
+  private readonly targets = new Map<string, Target>(); // keyed by lowercased name
+  private readonly order: string[] = []; // actual names, config order
+  private activeKey: string;
+
+  constructor(config: AppConfig, logger: Logger, cacheDir: string) {
+    for (const profile of config.profiles) {
+      // The back-compat single "default" profile keeps the historical filenames
+      // so existing on-disk session/cache still load; named profiles get a suffix.
+      const suffix = profile.name === "default" ? "" : `.${fileSuffix(profile.name)}`;
+      const target: Target = {
+        profile,
+        session: new SessionManager(profile.ccu, logger, cacheDir, `session${suffix}.json`),
+        resolver: new Resolver(),
+        deviceTypeCache: new DeviceTypeCache(cacheDir, config.cache.ttl, logger, `device-type-cache${suffix}.json`),
+        sysVarTypeCache: { entry: null },
+        unlocked: false,
+      };
+      this.targets.set(profile.name.toLowerCase(), target);
+      this.order.push(profile.name);
+    }
+    this.activeKey = config.defaultProfile.toLowerCase();
+  }
+
+  get active(): Target {
+    return this.targets.get(this.activeKey)!;
+  }
+
+  getByName(name: string): Target | undefined {
+    return this.targets.get(name.toLowerCase());
+  }
+
+  has(name: string): boolean {
+    return this.targets.has(name.toLowerCase());
+  }
+
+  /** All targets in configured order. */
+  list(): Target[] {
+    return this.order.map((n) => this.targets.get(n.toLowerCase())!);
+  }
+
+  /** Switch the active target; throws NOT_FOUND on an unknown name. */
+  use(name: string): Target {
+    const t = this.getByName(name);
+    if (!t) {
+      throw new CcuError({
+        error: "NOT_FOUND",
+        code: 0,
+        message: `Unknown CCU target: ${name}`,
+        hint: `Configured targets: ${this.order.join(", ")}. Call list_ccu_targets.`,
+      });
+    }
+    this.activeKey = t.profile.name.toLowerCase();
+    return t;
+  }
+
+  /** Log in the active target (other targets log in lazily on first use). */
+  async loginActive(): Promise<void> {
+    await this.active.session.login();
+  }
+
+  /** Load each target's device-type cache from disk. */
+  async loadCaches(): Promise<void> {
+    await Promise.all(this.list().map((t) => t.deviceTypeCache.loadFromDisk()));
+  }
+
+  /** Warm only the active target's cache (others warm lazily on first query). */
+  warmActive(rateLimiter: RateLimiter): Promise<void> {
+    const t = this.active;
+    return t.deviceTypeCache.warm(t.session, rateLimiter);
+  }
+
+  async saveCaches(): Promise<void> {
+    await Promise.allSettled(this.list().map((t) => t.deviceTypeCache.saveToDisk()));
+  }
+
+  async logoutAll(): Promise<void> {
+    await Promise.allSettled(this.list().map((t) => t.session.logout()));
+  }
+
+  destroyAll(): void {
+    for (const t of this.list()) t.session.destroy();
+  }
+}
+
+/**
+ * Resolve the target for a tool call: the optional per-call `target` name, or
+ * the active target when omitted. Throws NOT_FOUND for an unknown name.
+ */
+export function resolveTarget(targets: TargetRegistry, name?: string): Target {
+  if (!name) return targets.active;
+  const t = targets.getByName(name);
+  if (!t) {
+    throw new CcuError({
+      error: "NOT_FOUND",
+      code: 0,
+      message: `Unknown CCU target: ${name}`,
+      hint: "Call list_ccu_targets to see configured targets.",
+    });
+  }
+  return t;
+}
+
+/**
+ * Gate a write against a target's policy. `readonly` targets always refuse;
+ * `protected` targets refuse until the caller passes confirm:true once, which
+ * unlocks writes to that target for the rest of the session.
+ *
+ * `alwaysConfirm` marks a high-blast-radius tool (run_script,
+ * delete_system_variable): the session unlock never applies — every call
+ * needs its own confirm:true, and a confirmed call does NOT unlock the
+ * session for other writes (issue #72). run_script bypasses all value/type
+ * guards the typed tools enforce, so it must not ride on a confirmation that
+ * was given for a harmless set_value.
+ */
+export function assertWritable(
+  target: Target,
+  confirm: boolean | undefined,
+  opts?: { alwaysConfirm?: boolean },
+): void {
+  if (target.profile.readonly) {
+    throw new CcuError({
+      error: "INVALID_INPUT",
+      code: 0,
+      message: `CCU target "${target.profile.name}" is read-only; writes are refused.`,
+      hint: "Switch to a writable target with use_ccu, or clear its readonly flag in config.",
+    });
+  }
+  if (!target.profile.protected) return;
+  if (opts?.alwaysConfirm) {
+    if (confirm !== true) {
+      throw new CcuError({
+        error: "INVALID_INPUT",
+        code: 0,
+        message: `CCU target "${target.profile.name}" is protected. This tool requires confirm:true on EVERY call — the session unlock does not apply to it.`,
+        hint: "High-impact operation on a protected CCU. Pass confirm:true with this call to proceed.",
+      });
+    }
+    return; // per-call authorization only — never unlocks the session
+  }
+  if (!target.unlocked) {
+    if (confirm !== true) {
+      throw new CcuError({
+        error: "INVALID_INPUT",
+        code: 0,
+        message: `CCU target "${target.profile.name}" is protected. Re-issue with confirm:true to authorize writes for this session.`,
+        hint: "Safety gate on a production CCU. Pass confirm:true to proceed; later writes this session won't need it (except run_script and delete_system_variable, which confirm every call).",
+      });
+    }
+    target.unlocked = true;
+  }
+}

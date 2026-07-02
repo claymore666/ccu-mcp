@@ -34,7 +34,11 @@ export class ResourcePoller {
     // Called when a polled resource changed. In stdio mode this notifies the
     // single server; in HTTP mode it fans out to all active MCP sessions.
     private readonly notifyChanged: () => Promise<void>,
-    private readonly session: SessionManager,
+    // Resolves the ACTIVE target's session on every cycle (not captured once),
+    // so the poller follows a use_ccu() switch — matching how the resources
+    // themselves read deps.session per-call. Capturing the startup session here
+    // would leave the poller watching the startup CCU after a switch.
+    private readonly getSession: () => SessionManager,
     private readonly rateLimiter: RateLimiter,
     private readonly logger: Logger,
     private readonly intervalMs: number,
@@ -75,7 +79,7 @@ export class ResourcePoller {
       try {
         await this.rateLimiter.acquire();
         const data = await withRetry(
-          () => this.session.call(resource.method),
+          () => this.getSession().call(resource.method),
           resource.method,
           this.logger,
         );

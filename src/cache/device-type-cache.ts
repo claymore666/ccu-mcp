@@ -6,7 +6,7 @@ import type { Logger } from "../logger.js";
 import type { CachedDeviceType, CachedParamDescription, DeviceTypeCacheFile } from "./types.js";
 import { CACHE_VERSION } from "./types.js";
 
-const CACHE_FILENAME = "device-type-cache.json";
+const DEFAULT_CACHE_FILENAME = "device-type-cache.json";
 
 // Device types warmed in parallel; per-request pacing stays with the rate limiter
 const WARM_CONCURRENCY = 3;
@@ -37,13 +37,17 @@ export class DeviceTypeCache {
   private readonly cacheDir: string;
   private readonly ttl: number;
   private readonly logger: Logger;
+  private readonly fileName: string;
   private warming = false;
   private inflightQueries = new Map<string, Promise<CachedDeviceType | undefined>>();
 
-  constructor(cacheDir: string, ttl: number, logger: Logger) {
+  constructor(cacheDir: string, ttl: number, logger: Logger, fileName?: string) {
     this.cacheDir = cacheDir;
     this.ttl = ttl;
     this.logger = logger;
+    // Per-target cache file so different CCUs don't pollute each other's schema
+    // cache (default keeps the historical single-file name for back-compat).
+    this.fileName = fileName || DEFAULT_CACHE_FILENAME;
   }
 
   get(deviceType: string): CachedDeviceType | undefined {
@@ -64,7 +68,7 @@ export class DeviceTypeCache {
 
   /** Load cache from disk. Returns true if valid cache was loaded. */
   async loadFromDisk(): Promise<boolean> {
-    const filePath = join(this.cacheDir, CACHE_FILENAME);
+    const filePath = join(this.cacheDir, this.fileName);
     try {
       const data = await readFile(filePath, "utf-8");
       const parsed = JSON.parse(data) as DeviceTypeCacheFile;
@@ -89,7 +93,7 @@ export class DeviceTypeCache {
 
   /** Atomic write: serialize → tmp file → rename */
   async saveToDisk(): Promise<void> {
-    const filePath = join(this.cacheDir, CACHE_FILENAME);
+    const filePath = join(this.cacheDir, this.fileName);
     const tmpPath = filePath + ".tmp";
 
     const data: DeviceTypeCacheFile = {

@@ -1,15 +1,24 @@
+import { CcuError } from "./error-mapper.js";
+
 export class RateLimiter {
   private tokens: number;
   private readonly maxTokens: number;
   private readonly refillRate: number; // tokens per second
+  private readonly maxQueue: number;
   private lastRefill: number;
   private waitQueue: Array<() => void> = [];
   private refillTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(maxBurst: number = 20, refillRate: number = 10) {
+  constructor(maxBurst: number = 20, refillRate: number = 10, maxQueue: number = 1000) {
     this.maxTokens = maxBurst;
     this.tokens = maxBurst;
     this.refillRate = refillRate;
+    // Backpressure bound: callers waiting on a token queue here. Without a cap a
+    // sustained flood (faster than refillRate) grows the queue — and the pending
+    // promises behind it — without limit. The cap is deliberately generous (a
+    // backstop, not normal-load shaping); past it acquire() rejects so a caller
+    // fails fast with a clear error instead of parking on an ever-growing queue.
+    this.maxQueue = maxQueue;
     this.lastRefill = Date.now();
 
     // Start refill timer only when there are queued requests
@@ -49,6 +58,18 @@ export class RateLimiter {
     if (this.tokens >= 1) {
       this.tokens -= 1;
       return;
+    }
+
+    // At capacity — refuse rather than queue unboundedly. RATE_LIMITED is not
+    // retriable (see retry.ts), so a flooded caller fails fast instead of
+    // looping back into the same full queue.
+    if (this.waitQueue.length >= this.maxQueue) {
+      throw new CcuError({
+        error: "RATE_LIMITED",
+        code: 0,
+        message: "Too many requests queued for the CCU; the server is overloaded.",
+        hint: "Reduce concurrent calls and retry shortly. Raise CCU_RATE_LIMIT_BURST/RATE if this is sustained legitimate load.",
+      });
     }
 
     // Wait for a token to become available

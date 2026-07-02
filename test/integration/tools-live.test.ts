@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { SessionManager } from "../../src/ccu/session.js";
 import { RateLimiter } from "../../src/middleware/rate-limiter.js";
-import { DeviceTypeCache } from "../../src/cache/device-type-cache.js";
-import { Resolver } from "../../src/middleware/resolver.js";
+import { TargetRegistry } from "../../src/ccu/target-registry.js";
 import { createLogger } from "../../src/logger.js";
 import { createMcpServer, type ServerDeps } from "../../src/server.js";
+import type { AppConfig } from "../../src/config.js";
 import { escapeHmScript } from "../../src/utils.js";
 import { callTool, parseToolResult } from "../unit/_helpers.js";
 import type { CcuConfig } from "../../src/ccu/types.js";
@@ -32,35 +31,39 @@ describeIf("MCP tools against live CCU", () => {
   };
 
   const logger = createLogger();
-  let session: SessionManager;
+  let targets: TargetRegistry;
   let server: McpServer;
   let deps: ServerDeps;
   let tempDir: string;
 
   beforeAll(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "debmatic-tools-live-"));
-    session = new SessionManager(config, logger, tempDir);
-    await session.login();
+    const appConfig: AppConfig = {
+      ccu: config,
+      profiles: [{ name: "default", protected: false, readonly: false, ccu: config }],
+      defaultProfile: "default",
+      mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
+      cache: { dir: tempDir, ttl: 86400 },
+      rateLimiter: { burst: 20, rate: 10 },
+      resourcePollInterval: 3600,
+    };
+    targets = new TargetRegistry(appConfig, logger, tempDir);
+    await targets.loginActive();
     deps = {
-      config: {
-        ccu: config,
-        mcp: { transport: "stdio", port: 3000, allowedOrigins: [], allowedHosts: [], allowPlaintext: false, authTokenGraceMs: 86400000 },
-        cache: { dir: tempDir, ttl: 86400 },
-        rateLimiter: { burst: 20, rate: 10 },
-        resourcePollInterval: 3600,
-      },
-      session,
+      config: appConfig,
+      targets,
+      get session() { return targets.active.session; },
+      get resolver() { return targets.active.resolver; },
+      get deviceTypeCache() { return targets.active.deviceTypeCache; },
       rateLimiter: new RateLimiter(20, 10),
       logger,
-      deviceTypeCache: new DeviceTypeCache(tempDir, 86400, logger),
-      resolver: new Resolver(),
     };
     server = createMcpServer(deps);
   }, 30_000);
 
   afterAll(async () => {
-    await session.logout();
-    session.destroy();
+    await targets.logoutAll();
+    targets.destroyAll();
     deps.rateLimiter.destroy();
     await rm(tempDir, { recursive: true, force: true });
   });
@@ -110,7 +113,7 @@ describeIf("MCP tools against live CCU", () => {
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
 
-  // Exercises the real ReGa enumeration + AlConfirm path without mutating the
+  // Exercises the real ReGa enumeration + AlReceipt path without mutating the
   // user's CCU: a bogus id matches no active alarm → empty confirmed → NOT_FOUND.
   // We deliberately do NOT auto-confirm a real active alarm (it would silently
   // dismiss the user's warnings during a test run).
@@ -119,6 +122,51 @@ describeIf("MCP tools against live CCU", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
   }, 30_000);
+
+  // Full acknowledge round-trip against the real ReGa (issue #74): create a
+  // throwaway alarm datapoint, raise it to asOncoming, register it in
+  // ID_SERVICES, confirm it through the tool, then clean everything up. This
+  // is the test that would have caught AlConfirm(): ReGa aborts a script
+  // containing an unknown method at PARSE time with empty output, so the
+  // NOT_FOUND test above passes even when the script never ran.
+  it("acknowledge_service_messages confirms a synthetic alarm end-to-end (issue #74)", async () => {
+    const ALARM_NAME = "AL-MCP_LIVE_TEST:0.ISSUE_74";
+    const setup = parseToolResult(await callTool(server, "run_script", {
+      script: `
+        object al = dom.CreateObject(OT_ALARMDP, "${ALARM_NAME}");
+        al.ValueType(ivtBinary);
+        al.ValueSubType(istAlarm);
+        al.AlArm(true);
+        al.State(true);
+        dom.GetObject(ID_SERVICES).Add(al.ID());
+        Write('{"id":"' # al.ID() # '","state":' # al.AlState() # '}');
+      `,
+    })) as { id: string; state: number };
+    expect(setup.state).toBe(1); // asOncoming
+
+    try {
+      const result = parseToolResult(await callTool(server, "acknowledge_service_messages", {
+        id: setup.id,
+      })) as { confirmed: Array<{ id: string }>; count: number };
+      expect(result.count).toBe(1);
+      expect(result.confirmed[0].id).toBe(setup.id);
+
+      // the alarm must actually have left the asOncoming state
+      const after = parseToolResult(await callTool(server, "run_script", {
+        script: `Write(dom.GetObject("${setup.id}").AlState());`,
+      }));
+      expect(after).not.toBe("1");
+    } finally {
+      await callTool(server, "run_script", {
+        script: `
+          dom.GetObject(ID_SERVICES).Remove("${setup.id}");
+          dom.DeleteObject("${setup.id}");
+          object leftover = dom.GetObject("${ALARM_NAME}");
+          if (leftover) { Write("LEFTOVER"); } else { Write("clean"); }
+        `,
+      });
+    }
+  }, 60_000);
 
   it("acknowledge_service_messages rejects an empty request with INVALID_INPUT", async () => {
     const result: any = await callTool(server, "acknowledge_service_messages", {});

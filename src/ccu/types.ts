@@ -143,6 +143,26 @@ export interface ParamDescription {
 }
 
 // Config
+/**
+ * A named CCU target (e.g. `prod`, `dev`). Profiles let one server reach
+ * several CCUs; the connection details live in `ccu`, and the two policy flags
+ * gate writes. Built from env in config.ts.
+ */
+export interface CcuProfile {
+  /** Profile name as used by use_ccu / the optional per-call `target` arg. */
+  name: string;
+  /**
+   * Production seatbelt: when true, write tools refuse unless the caller passes
+   * `confirm:true` (which unlocks writes to this target for the rest of the
+   * session). Declared explicitly per profile — never inferred from the name.
+   */
+  protected: boolean;
+  /** When true, write tools are refused outright (even with confirm). */
+  readonly: boolean;
+  /** Connection details for this target. */
+  ccu: CcuConfig;
+}
+
 export interface CcuConfig {
   host: string;
   port: number;
