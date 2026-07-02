@@ -159,8 +159,19 @@ export function resolveTarget(targets: TargetRegistry, name?: string): Target {
  * Gate a write against a target's policy. `readonly` targets always refuse;
  * `protected` targets refuse until the caller passes confirm:true once, which
  * unlocks writes to that target for the rest of the session.
+ *
+ * `alwaysConfirm` marks a high-blast-radius tool (run_script,
+ * delete_system_variable): the session unlock never applies — every call
+ * needs its own confirm:true, and a confirmed call does NOT unlock the
+ * session for other writes (issue #72). run_script bypasses all value/type
+ * guards the typed tools enforce, so it must not ride on a confirmation that
+ * was given for a harmless set_value.
  */
-export function assertWritable(target: Target, confirm: boolean | undefined): void {
+export function assertWritable(
+  target: Target,
+  confirm: boolean | undefined,
+  opts?: { alwaysConfirm?: boolean },
+): void {
   if (target.profile.readonly) {
     throw new CcuError({
       error: "INVALID_INPUT",
@@ -169,13 +180,25 @@ export function assertWritable(target: Target, confirm: boolean | undefined): vo
       hint: "Switch to a writable target with use_ccu, or clear its readonly flag in config.",
     });
   }
-  if (target.profile.protected && !target.unlocked) {
+  if (!target.profile.protected) return;
+  if (opts?.alwaysConfirm) {
+    if (confirm !== true) {
+      throw new CcuError({
+        error: "INVALID_INPUT",
+        code: 0,
+        message: `CCU target "${target.profile.name}" is protected. This tool requires confirm:true on EVERY call — the session unlock does not apply to it.`,
+        hint: "High-impact operation on a protected CCU. Pass confirm:true with this call to proceed.",
+      });
+    }
+    return; // per-call authorization only — never unlocks the session
+  }
+  if (!target.unlocked) {
     if (confirm !== true) {
       throw new CcuError({
         error: "INVALID_INPUT",
         code: 0,
         message: `CCU target "${target.profile.name}" is protected. Re-issue with confirm:true to authorize writes for this session.`,
-        hint: "Safety gate on a production CCU. Pass confirm:true to proceed; later writes this session won't need it.",
+        hint: "Safety gate on a production CCU. Pass confirm:true to proceed; later writes this session won't need it (except run_script and delete_system_variable, which confirm every call).",
       });
     }
     target.unlocked = true;
