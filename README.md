@@ -263,6 +263,10 @@ Each profile takes the same settings as the flat vars, prefixed
 
 - `CCU_<NAME>_PROTECTED=true` — write tools refuse unless called with
   `confirm: true`, which unlocks writes to that target for the rest of the session.
+  Exception: `run_script` and `delete_system_variable` require `confirm: true` on
+  **every** call — they never ride on the session unlock (scripts bypass all
+  typed-tool guards; deletion is unrecoverable), and confirming them does not
+  unlock the session for other writes.
 - `CCU_<NAME>_READONLY=true` — write tools are refused outright.
 
 With `CCU_PROFILES` unset, the flat `CCU_*` vars are used as a single `default`
@@ -273,7 +277,7 @@ without switching.
 
 ## Tools
 
-25 tools organized by what you'd actually want to do:
+28 tools organized by what you'd actually want to do:
 
 **Find things** — `list_devices`, `list_rooms`, `list_functions`, `list_interfaces`, `list_programs`, `list_system_variables`, `list_links`, `describe_device_type`
 
@@ -282,6 +286,8 @@ without switching.
 **Change things** — `set_value`, `put_paramset`, `set_system_variable`, `create_system_variable`, `delete_system_variable`, `assign_channel`, `unassign_channel`, `execute_program`
 
 **Check health** — `get_service_messages`, `acknowledge_service_messages`, `get_rssi`, `get_system_info`
+
+**Switch targets** — `list_ccu_targets`, `get_connection_info`, `use_ccu` (multi-CCU profiles; see above)
 
 **Other** — `help` (context-aware), `run_script` (raw HomeMatic Script for bulk operations, renaming devices/channels, querying room membership, or anything not covered by the other tools)
 
