@@ -150,4 +150,29 @@ describe("assertWritable", () => {
     // subsequent writes no longer need confirm
     expect(() => assertWritable(t, undefined)).not.toThrow();
   });
+
+  // Issue #72: high-blast-radius tools (run_script, delete_system_variable)
+  // never ride on the session unlock — every call needs its own confirm.
+  it("alwaysConfirm ignores the session unlock: each call needs confirm:true", () => {
+    const t = target({ protected: true });
+    assertWritable(t, true); // ordinary write unlocks the session
+    expect(t.unlocked).toBe(true);
+    // ...but an alwaysConfirm tool still refuses without its own confirm
+    expect(() => assertWritable(t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
+    expect(() => assertWritable(t, true, { alwaysConfirm: true })).not.toThrow();
+    // and refuses again on the next call — no per-call carryover
+    expect(() => assertWritable(t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
+  });
+
+  it("a confirmed alwaysConfirm call does not unlock the session for other writes", () => {
+    const t = target({ protected: true });
+    expect(() => assertWritable(t, true, { alwaysConfirm: true })).not.toThrow();
+    expect(t.unlocked).toBe(false);
+    expect(() => assertWritable(t, undefined)).toThrowError(/protected/);
+  });
+
+  it("alwaysConfirm is a no-op gate on unprotected targets and still refuses readonly", () => {
+    expect(() => assertWritable(target(), undefined, { alwaysConfirm: true })).not.toThrow();
+    expect(() => assertWritable(target({ readonly: true }), true, { alwaysConfirm: true })).toThrowError(/read-only/);
+  });
 });

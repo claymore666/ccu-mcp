@@ -47,6 +47,10 @@ This server can be configured with several named CCU targets (profiles). One is
   call without switching (e.g. compare prod vs dev).
 - A \`protected\` target (e.g. prod) refuses writes unless you pass \`confirm: true\`
   once — that unlocks writes to it for the rest of the session.
+- Exception: \`run_script\` and \`delete_system_variable\` require \`confirm: true\`
+  on EVERY call against a protected target. They never ride on the session
+  unlock (scripts bypass all typed-tool guards; deletion is unrecoverable),
+  and confirming them does not unlock the session for other writes.
 
 ## Tips
 - Use \`list_devices\` with room/function filters to reduce output
@@ -139,7 +143,7 @@ Returns: {name, type, created: true}
 INVALID_INPUT if the name already exists (or enum without values). Use set_system_variable to write it.`,
 
   delete_system_variable: `Delete a system variable by name.
-Args: name (string, exact match)
+Args: name (string, exact match), confirm (REQUIRED true on every call against a protected target — never rides on the session unlock)
 Returns: {name, deleted: true}
 NOT_FOUND if the name doesn't exist.`,
 
@@ -176,7 +180,7 @@ Returns: {devices: [{address, name, interface, links: [{peer, peerName, rssiDevi
 rssiDevice/rssiPeer are dBm (higher = better); null means no measurement. Use to diagnose flaky devices.`,
 
   run_script: `Execute arbitrary HomeMatic Script. NOT idempotent — never auto-retried.
-Args: script (string), confirm? (true to write to a protected target)
+Args: script (string), confirm (REQUIRED true on every call against a protected target — scripts bypass all typed-tool guards and never ride on the session unlock)
 Returns: Script output`,
 
   list_ccu_targets: `List configured CCU targets (profiles) you can switch between.
@@ -247,10 +251,11 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
       description:
         "Execute arbitrary HomeMatic Script on the CCU. " +
         "NOT idempotent — will not be auto-retried. " +
-        "Use for anything the other tools don't cover.",
+        "Use for anything the other tools don't cover. " +
+        "On a protected target, EVERY call needs confirm:true — the session unlock from other write tools does not apply.",
       inputSchema: {
         script: z.string().describe("HomeMatic Script to execute"),
-        confirm: z.boolean().optional().describe("Set true to authorize this script against a protected CCU target (e.g. prod)."),
+        confirm: z.boolean().optional().describe("Required true on EVERY call against a protected CCU target (e.g. prod) — scripts never ride on the session unlock."),
       },
       annotations: {
         destructiveHint: true,
@@ -259,7 +264,8 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("run_script", deps.logger, async () => {
       const { session, rateLimiter } = deps;
-      assertWritable(deps.targets.active, args.confirm);
+      // Scripts bypass every guard the typed tools enforce — per-call confirm (#72)
+      assertWritable(deps.targets.active, args.confirm, { alwaysConfirm: true });
       await rateLimiter.acquire();
       // No retry — scripts are not idempotent
       const result = await session.call("ReGa.runScript", { script: args.script }, deps.targets.active.profile.ccu.scriptTimeout);

@@ -401,10 +401,11 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
     "delete_system_variable",
     {
       title: "Delete System Variable",
-      description: "Delete a system variable by name. Use list_system_variables to see existing names.",
+      description: "Delete a system variable by name. Use list_system_variables to see existing names. " +
+        "On a protected target, EVERY call needs confirm:true — the session unlock from other write tools does not apply.",
       inputSchema: {
         name: z.string().describe("Variable name (exact match)"),
-        confirm: confirmField,
+        confirm: z.boolean().optional().describe("Required true on EVERY call against a protected CCU target (e.g. prod) — deletion never rides on the session unlock."),
       },
       annotations: {
         destructiveHint: true,
@@ -415,7 +416,8 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
     async (args) => runTool("delete_system_variable", deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
       const typeCacheHolder = deps.targets.active.sysVarTypeCache;
-      assertWritable(deps.targets.active, args.confirm);
+      // Destructive and unrecoverable — per-call confirm (#72)
+      assertWritable(deps.targets.active, args.confirm, { alwaysConfirm: true });
       // Validate existence so an unknown name is a clean NOT_FOUND rather than
       // a silent no-op (deleteSysVarByName doesn't report a missing name).
       await rateLimiter.acquire();
