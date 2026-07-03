@@ -227,8 +227,9 @@ function registerHelp(server: McpServer, deps: ServerDeps): void {
         return toolResult(CONCEPTUAL_GUIDE);
       }
 
-      // Check if it's a tool name
-      if (args.topic in TOOL_HELP) {
+      // Check if it's a tool name (hasOwn: `in` would match Object.prototype
+      // keys, so help("constructor") would print native-code source)
+      if (Object.hasOwn(TOOL_HELP, args.topic)) {
         return toolResult(`# ${args.topic}\n\n${TOOL_HELP[args.topic]}`);
       }
 

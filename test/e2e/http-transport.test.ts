@@ -14,6 +14,21 @@ import { AddressInfo } from "node:net";
 
 const DIST = join(__dirname, "../../dist/index.js");
 const AUTH_TOKEN = "e2e-test-token";
+
+/**
+ * process.env with every server config var scrubbed. The e2e children must be
+ * driven ONLY by the vars each test sets: an ambient CCU_PROFILES would make
+ * the child ignore the injected mock CCU_HOST (and hit a real CCU!), and
+ * ambient CCU_TLS_x / CCU_DEFAULT_PROFILE would trip config validation and
+ * kill the child with an opaque "server did not start" timeout.
+ */
+function cleanEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(CCU_|MCP_|CACHE_|RESOURCE_POLL_INTERVAL$|LOG_LEVEL$)/.test(key)) delete env[key];
+  }
+  return env;
+}
 // Origin on the allowlist for the CORS-enabled describe block below.
 const ALLOWED_ORIGIN = "http://localhost:6274";
 
@@ -86,7 +101,7 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: "9", // discard port — nothing listens, connection refused
         CCU_HTTPS: "false",
@@ -167,7 +182,7 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",
@@ -437,7 +452,7 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",
@@ -572,7 +587,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",

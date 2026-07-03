@@ -30,7 +30,7 @@ The MCP server handles device discovery, type resolution, session management, an
 
 - A running HomeMatic CCU (debmatic, CCU3, or OpenCCU — formerly RaspberryMatic) reachable on your network
 - The CCU's admin username and password (the same credentials you use to log into the WebUI)
-- Node.js 22+ (for running from source or stdio mode) or Docker
+- Node.js 24+ (for running from source or stdio mode) or Docker
 
 ## Quick start
 
@@ -84,14 +84,24 @@ Use this if you want the server running independently — for example on a home 
 **1. Start the container:**
 
 ```bash
+git clone https://github.com/claymore666/ccu-mcp.git && cd ccu-mcp
+docker build -t ccu-mcp .
 docker run -d \
   --name ccu-mcp \
   -e CCU_HOST=your-ccu-hostname-or-ip \
   -e CCU_PASSWORD=your-ccu-admin-password \
+  -e MCP_ALLOWED_HOSTS=your-server-ip:3000 \
   -v ccu-data:/data \
   -p 3000:3000 \
   ccu-mcp
 ```
+
+> **`MCP_ALLOWED_HOSTS` is required for remote clients.** The server's
+> DNS-rebinding protection rejects any request whose `Host` header isn't on
+> the allowlist — by default only `localhost`/`127.0.0.1`/`[::1]` on the MCP
+> port. Set it to every name/IP clients will use to reach the server
+> (comma-separated, `host:port`). Without it, the local health check works
+> but every remote MCP request gets **403 Invalid Host header**.
 
 **2. Get the auth token.** The server generates a random bearer token on first startup and saves it inside the container's data volume. You need this token to authenticate your MCP client. Grab it with:
 
