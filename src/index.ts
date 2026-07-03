@@ -85,12 +85,15 @@ async function main(): Promise<void> {
   let httpServer: HttpServer | HttpsServer | null = null;
 
   if (config.mcp.transport === "stdio") {
-    const mcpServer = createMcpServer(makeDeps());
+    // stdio has exactly one MCP session; the poller follows ITS selection so a
+    // use_ccu switch moves change-detection along with the resource reads.
+    const stdioDeps = makeDeps();
+    const mcpServer = createMcpServer(stdioDeps);
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
       () => mcpServer.server.sendResourceListChanged(),
-      () => targets.default.session, rateLimiter, logger, config.resourcePollInterval,
+      () => stdioDeps.selection.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = () => mcpServer.close();

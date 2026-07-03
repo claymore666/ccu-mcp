@@ -71,74 +71,77 @@ This server can be configured with several named CCU targets (profiles). One is
 
 const TOOL_HELP: Record<string, string> = {
   list_devices: `List all devices with channels, types, and addresses.
-Args: room? (string), function? (string), type? (string), name? (string)
+Args: room? (string), function? (string), type? (string, EXACT match), name? (string, substring), target? (CCU target name)
+Room + function together filter as AND (channels in that room AND that function).
 Returns compact summary when unfiltered (address, name, type, channel names only).
 Returns full details (all channel properties) when any filter is applied.
 Related: describe_device_type, get_value`,
 
   list_interfaces: `List available communication interfaces.
-Args: none
+Args: target? (CCU target name)
 Returns: Array of {name, port, info}`,
 
   list_rooms: `List all rooms with assigned channel IDs.
-Args: none
+Args: target? (CCU target name)
 Returns: Array of rooms`,
 
   list_functions: `List all function groups with assigned channel IDs.
-Args: none
+Args: target? (CCU target name)
 Returns: Array of function groups`,
 
   list_programs: `List automation programs.
-Args: name? (substring filter)
+Args: name? (substring filter), target? (CCU target name)
 Returns: Array of programs with id, name, active state`,
 
   list_system_variables: `List system variables with current values.
-Args: name? (substring filter)
+Args: name? (substring filter), target? (CCU target name)
 Returns: Array of variables with id, name, value, type, min, max`,
 
   describe_device_type: `Get channel/datapoint schema for a device type (from cache).
-Args: deviceType (string, e.g. "HmIP-eTRV-2")
+Args: deviceType (string, e.g. "HmIP-eTRV-2"), target? (CCU target name)
 Returns: Channels with paramsets, datapoint types, ranges, operations`,
 
   list_links: `List direct device links (Direktverknüpfungen) — sender→receiver channel pairings that work without the CCU.
-Args: address? (device or channel address filter, e.g. "000A1BE9A71F15" or "000A1BE9A71F15:1")
+Args: address? (device or channel address filter, e.g. "000A1BE9A71F15" or "000A1BE9A71F15:1"), target? (CCU target name)
 Returns: Array of {sender, senderName, receiver, receiverName, name, description, flags, interface}
 Read-only; answers "what directly controls this?". Link creation/removal is out of scope.`,
 
   get_value: `Read a single datapoint value.
-Args: address (string), valueKey (string), interface? (auto-resolved)
+Args: address (string), valueKey (string), interface? (auto-resolved), target? (CCU target name)
 Returns: {address, valueKey, value}
 Idempotent: yes`,
 
   get_values: `Bulk read datapoints for multiple channels.
-Args: channels? (string[]), room? (string), function? (string)
+Args: channels? (string[]), room? (string), function? (string), target? (CCU target name)
 Returns: Array of {address, name, datapoints}
 Idempotent: yes`,
 
   get_paramset: `Read all parameters for a channel.
-Args: address (string), paramsetKey ("VALUES"|"MASTER"|"LINK"), interface? (auto-resolved)
+Args: address (string), paramsetKey ("VALUES"|"MASTER"|"LINK"), interface? (auto-resolved), target? (CCU target name)
 Returns: {address, paramsetKey, params}
 Idempotent: yes`,
 
   set_value: `Set a single datapoint value. Returns previous value for undo.
-Args: address (string), valueKey (string), value (string|number|boolean), interface? (auto), type? (auto)
+Args: address (string), valueKey (string), value (string|number|boolean), interface? (auto), type? (auto), confirm? (true to authorize on a protected target)
 Returns: {previousValue, newValue, address, valueKey}
 Idempotent: yes`,
 
   put_paramset: `Write multiple parameters at once.
-Args: address (string), paramsetKey ("VALUES"|"MASTER"), set (object with key:value pairs, e.g. {"TEMPERATURE_WINDOW_OPEN": 5.0}), interface? (auto)
+Args: address (string), paramsetKey ("VALUES"|"MASTER"), set (object with key:value pairs, e.g. {"TEMPERATURE_WINDOW_OPEN": 5.0}), interface? (auto), confirm? (true to authorize on a protected target)
 The set object uses simple key:value format — types are auto-resolved from the device type cache. Values are converted to strings internally.
 Returns: {address, paramsetKey, written}
 Idempotent: yes`,
 
   set_system_variable: `Set a system variable (type auto-detected).
-Args: name (string), value (string|number|boolean)
+Args: name (string), value (string|number|boolean), confirm? (true to authorize on a protected target)
+Enum (LIST) variables accept a 0-based index or one of the enum's labels.
 Returns: {name, value, method}
 Idempotent: yes`,
 
   create_system_variable: `Create a new system variable.
 Args: name (string), type ("bool"|"float"|"enum"|"string"), description? (string),
-  unit?/min?/max? (float only), values? (string[], required for enum)
+  unit?/min?/max? (float only), values? (string[], required for enum; labels must not contain ";"),
+  confirm? (true to authorize on a protected target)
 Returns: {name, type, created: true}
 INVALID_INPUT if the name already exists (or enum without values). Use set_system_variable to write it.`,
 
@@ -148,34 +151,36 @@ Returns: {name, deleted: true}
 NOT_FOUND if the name doesn't exist.`,
 
   assign_channel: `Assign a channel to a room and/or function group.
-Args: channel (address), room? (name), function? (name) — at least one of room/function
+Args: channel (address), room? (name), function? (name) — at least one of room/function; confirm? (true to authorize on a protected target)
 Returns: {channel, assignedTo: [{kind, name}]}
 NOT_FOUND (with valid names) for unknown channel/room/function.`,
 
   unassign_channel: `Remove a channel from a room and/or function group.
-Args: channel (address), room? (name), function? (name) — at least one of room/function
+Args: channel (address), room? (name), function? (name) — at least one of room/function; confirm? (true to authorize on a protected target)
 Returns: {channel, removedFrom: [{kind, name}]}
 NOT_FOUND (with valid names) for unknown channel/room/function.`,
 
   execute_program: `Trigger an automation program. NOT idempotent — never auto-retried.
-Args: id (string)
+Args: id (string), confirm? (true to authorize on a protected target)
 Returns: {id, executed}`,
 
   get_service_messages: `Get active service messages (low battery, unreachable, etc.).
-Args: none
-Returns: Array of {id, name, address, channelName, timestamp}`,
+Args: target? (CCU target name)
+Returns: Array of {id, type, address, channelName, timestamp} — type is the alarm datapoint name (e.g. LOWBAT, UNREACH)`,
 
   acknowledge_service_messages: `Confirm/dismiss active service messages (e.g. clear a low-battery warning).
-Args: id (single alarm id from get_service_messages) OR address (all active messages on a channel) — at least one required
+Args: id (single alarm id from get_service_messages) OR address (all active messages on a channel) — at least one required; confirm? (true to authorize on a protected target)
 Returns: {confirmed: Array of {id, type, address}, count}
 NOT_FOUND if no active message matches; the warning reappears if its condition persists.`,
 
-  get_system_info: `Get CCU system info: firmware, serial, addresses, cache status.
-Args: none
-Returns: {version, serial, address, hmipAddress, cacheTypes, cacheWarming}`,
+  get_system_info: `Get CCU system info plus server identity: active target, login user, inferred role, build.
+Args: target? (CCU target name)
+Returns: {serverVersion, target, user, role (ADMIN|USER|UNKNOWN), version, serial, address, hmipAddress,
+  accessNote? (present when ADMIN-only fields are unavailable), cacheTypes, cacheWarming, build {branch, commit, tag, describe, dirty, builtAt}}
+version/serial/address/hmipAddress are ADMIN-only on the CCU and show "N/A" for a USER-level login.`,
 
   get_rssi: `Radio link quality (RSSI, dBm) per device, plus BidCos interface health.
-Args: name (optional substring filter on device name/address)
+Args: name? (substring filter on device name/address), target? (CCU target name)
 Returns: {devices: [{address, name, interface, links: [{peer, peerName, rssiDevice, rssiPeer}]}], interfaces}
 rssiDevice/rssiPeer are dBm (higher = better); null means no measurement. Use to diagnose flaky devices.`,
 

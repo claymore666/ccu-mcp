@@ -6,7 +6,7 @@ export class RateLimiter {
   private readonly refillRate: number; // tokens per second
   private readonly maxQueue: number;
   private lastRefill: number;
-  private waitQueue: Array<() => void> = [];
+  private waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
   private refillTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(maxBurst: number = 20, refillRate: number = 10, maxQueue: number = 1000) {
@@ -47,8 +47,8 @@ export class RateLimiter {
     // Wake up waiting requests
     while (this.waitQueue.length > 0 && this.tokens >= 1) {
       this.tokens -= 1;
-      const resolve = this.waitQueue.shift()!;
-      resolve();
+      const waiter = this.waitQueue.shift()!;
+      waiter.resolve();
     }
   }
 
@@ -73,8 +73,8 @@ export class RateLimiter {
     }
 
     // Wait for a token to become available
-    return new Promise<void>((resolve) => {
-      this.waitQueue.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      this.waitQueue.push({ resolve, reject });
       this.ensureRefillTimer();
     });
   }
@@ -84,9 +84,17 @@ export class RateLimiter {
       clearInterval(this.refillTimer);
       this.refillTimer = null;
     }
-    // Release any waiting requests
-    for (const resolve of this.waitQueue) {
-      resolve();
+    // REJECT waiting requests instead of releasing them: destroy() runs during
+    // shutdown, and an unthrottled release would fire the queued CCU calls
+    // into a session that is being logged out — confusing AUTH/UNREACHABLE
+    // errors instead of a clean "shutting down" failure.
+    for (const waiter of this.waitQueue) {
+      waiter.reject(new CcuError({
+        error: "CCU_ERROR",
+        code: 0,
+        message: "Server is shutting down; the queued request was cancelled.",
+        hint: "Retry after the server restarts.",
+      }));
     }
     this.waitQueue = [];
   }
