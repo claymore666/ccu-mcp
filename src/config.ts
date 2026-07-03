@@ -27,7 +27,8 @@ export interface AppConfig {
      * Lifetime of the AUTO-GENERATED bearer token in ms (`MCP_AUTH_TOKEN_TTL_DAYS`,
      * fractional days allowed). Unset ⇒ the generated token never expires (the
      * historical default). Does not apply to an explicit `MCP_AUTH_TOKEN`, which
-     * the operator owns. On startup past expiry the token auto-rotates.
+     * the operator owns. The token auto-rotates AT RUNTIME shortly before
+     * expiry (and on startup if it expired while the server was down).
      */
     authTokenTtlMs?: number;
     /**

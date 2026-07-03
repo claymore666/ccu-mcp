@@ -209,6 +209,7 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         sysVar = typeCacheHolder.entry.types.get(args.name);
       }
       if (sysVar === undefined) {
+        const genBefore = typeCacheHolder.gen;
         await rateLimiter.acquire();
         const allVars = await withRetry(
           () => session.call("SysVar.getAll"),
@@ -216,11 +217,14 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
           logger,
           { rateLimiter },
         ).then((r) => expectArray<{ name: string; type: string; valueList?: string }>(r));
-        typeCacheHolder.entry = {
-          ts: Date.now(),
-          types: new Map(allVars.map((v) => [v.name, { type: v.type, valueList: v.valueList }])),
-        };
-        sysVar = typeCacheHolder.entry.types.get(args.name);
+        const types = new Map(allVars.map((v) => [v.name, { type: v.type, valueList: v.valueList }]));
+        // Only cache the snapshot if no create/delete invalidated the holder
+        // while we were fetching — installing it would resurrect a pre-delete
+        // view for the next 30s. The snapshot still serves THIS call.
+        if (typeCacheHolder.gen === genBefore) {
+          typeCacheHolder.entry = { ts: Date.now(), types };
+        }
+        sysVar = types.get(args.name);
       }
 
       if (sysVar === undefined) {
@@ -531,7 +535,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
         });
       }
 
-      typeCacheHolder.entry = null; // new variable must be visible to the next set
+      typeCacheHolder.entry = null; typeCacheHolder.gen++; // new variable must be visible to the next set
       log({ type: args.type });
       return toolResult({ name: actualName, type: args.type, created: true });
     }),
@@ -589,7 +593,7 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
         { rateLimiter },
       );
 
-      typeCacheHolder.entry = null; // removed variable must not linger in the cache
+      typeCacheHolder.entry = null; typeCacheHolder.gen++; // removed variable must not linger in the cache
       return toolResult({ name: args.name, deleted: true });
     }),
   );

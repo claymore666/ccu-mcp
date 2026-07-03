@@ -11,6 +11,12 @@ import { CcuError } from "../middleware/error-mapper.js";
 /** Short-lived sysvar name→type(+enum labels) cache (issue #9), scoped per target. */
 export interface SysVarTypeCacheHolder {
   entry: { ts: number; types: Map<string, { type: string; valueList?: string }> } | null;
+  /**
+   * Bumped on every invalidation (create/delete). A writer that fetched
+   * SysVar.getAll BEFORE an invalidation must not install its now-stale
+   * snapshot AFTER it — it compares this counter around the await.
+   */
+  gen: number;
 }
 
 /**
@@ -63,7 +69,7 @@ export class TargetRegistry {
         session: new SessionManager(profile.ccu, logger, cacheDir, `session${suffix}.json`),
         resolver: new Resolver(),
         deviceTypeCache: new DeviceTypeCache(cacheDir, config.cache.ttl, logger, `device-type-cache${suffix}.json`),
-        sysVarTypeCache: { entry: null },
+        sysVarTypeCache: { entry: null, gen: 0 },
       };
       this.targets.set(profile.name.toLowerCase(), target);
       this.order.push(profile.name);

@@ -41,7 +41,7 @@ function makeTarget(spec: TargetSpec): Target {
     session: makeSession(spec.sessionCall),
     resolver: new Resolver(),
     deviceTypeCache: new DeviceTypeCache("/tmp/nonexistent-test", 86400, new Logger("error"), `device-type-cache.${name}.json`),
-    sysVarTypeCache: { entry: null },
+    sysVarTypeCache: { entry: null, gen: 0 },
   };
 }
 
