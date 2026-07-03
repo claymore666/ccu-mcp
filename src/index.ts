@@ -83,12 +83,14 @@ async function main(): Promise<void> {
   let poller: ResourcePoller;
   let closeTransports: () => Promise<void>;
   let httpServer: HttpServer | HttpsServer | null = null;
+  let stdioServer: McpServer | null = null;
 
   if (config.mcp.transport === "stdio") {
     // stdio has exactly one MCP session; the poller follows ITS selection so a
     // use_ccu switch moves change-detection along with the resource reads.
     const stdioDeps = makeDeps();
     const mcpServer = createMcpServer(stdioDeps);
+    stdioServer = mcpServer;
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
@@ -203,7 +205,8 @@ async function main(): Promise<void> {
         // Health check endpoint (tolerate cache-busting query strings that
         // uptime monitors append — req.url includes the query part)
         if ((req.url === "/health" || req.url?.startsWith("/health?")) && req.method === "GET") {
-          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache });
+          const detailed = authTokens.verify(extractBearerToken(req.headers.authorization ?? ""));
+          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache }, detailed);
           return;
         }
 
@@ -432,6 +435,17 @@ async function main(): Promise<void> {
 
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
+
+  // stdio: the client usually terminates by closing the pipe (stdin EOF),
+  // not by signaling. Without this, the process would exit via event-loop
+  // drain with no Session.logout (leaking a CCU session toward "too many
+  // sessions") and no cache save. shutdown() is re-entrancy-guarded, so the
+  // close event fired by our own closeTransports() is harmless.
+  if (stdioServer) {
+    stdioServer.server.onclose = () => {
+      void shutdown("stdio-closed");
+    };
+  }
 }
 
 main().catch((err) => {

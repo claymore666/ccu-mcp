@@ -88,28 +88,34 @@ export interface CcuFunction {
   channelIds: string[];
 }
 
-// CCU program types
+// CCU program types (fields per occu program/getall.tcl — there is NO
+// description field in the response)
 export interface CcuProgram {
   id: string;
   name: string;
-  description: string;
   isActive: boolean;
   isInternal: boolean;
   lastExecuteTime: string;
 }
 
-// CCU system variable types
+// CCU system variable types (fields per occu sysvar/getall.tcl: no
+// description; valueList only for LIST, minValue/maxValue only for NUMBER,
+// valueName0/1 only for LOGIC/ALARM)
 export interface CcuSysVar {
   id: string;
   name: string;
-  description: string;
   type: string;
   value: string;
-  valueList: string;
-  minValue: string;
-  maxValue: string;
   unit: string;
+  channelId: string;
+  isVisible: boolean;
+  isInternal: boolean;
   isLogged: boolean;
+  valueList?: string;
+  minValue?: string;
+  maxValue?: string;
+  valueName0?: string;
+  valueName1?: string;
 }
 
 // CCU interface info

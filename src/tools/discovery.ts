@@ -147,8 +147,11 @@ function registerListInterfaces(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger, { rateLimiter });
-      return structuredResult({ interfaces: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger, { rateLimiter }),
+        "Interface.listInterfaces",
+      );
+      return structuredResult({ interfaces: result }, result);
     }),
   );
 }
@@ -167,8 +170,11 @@ function registerListRooms(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger, { rateLimiter });
-      return structuredResult({ rooms: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger, { rateLimiter }),
+        "Room.getAll",
+      );
+      return structuredResult({ rooms: result }, result);
     }),
   );
 }
@@ -187,8 +193,11 @@ function registerListFunctions(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger, { rateLimiter });
-      return structuredResult({ functions: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger, { rateLimiter }),
+        "Subsection.getAll",
+      );
+      return structuredResult({ functions: result }, result);
     }),
   );
 }

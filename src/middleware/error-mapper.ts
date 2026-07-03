@@ -27,7 +27,27 @@ export function mapCcuError(ccuError: CcuRpcError, ccuMethod: string): Structure
 }
 
 export function mapNetworkError(err: Error, ccuMethod: string): StructuredError {
-  if (err.name === "AbortError" || err.message.includes("timeout")) {
+  // undici's fetch wraps every dispatch/connect failure in a generic
+  // TypeError("fetch failed") with the real error on `cause` — without
+  // unwrapping it, a TLS fingerprint mismatch (an active-MITM / cert-rotation
+  // signal!) is indistinguishable from an unplugged CCU.
+  const cause = (err as Error & { cause?: unknown }).cause;
+  const causeMsg = cause instanceof Error ? cause.message : "";
+
+  if (causeMsg.includes("fingerprint mismatch")) {
+    return {
+      error: "UNREACHABLE",
+      code: 0,
+      message: `CCU TLS certificate verification failed: ${causeMsg}`,
+      hint:
+        "The CCU presented a DIFFERENT certificate than the pinned one. If the CCU's " +
+        "certificate was legitimately renewed, refresh CCU_TLS_FINGERPRINT; otherwise " +
+        "treat this as a possible interception attempt.",
+      ccuMethod,
+    };
+  }
+
+  if (err.name === "AbortError" || /timeout/i.test(err.message) || /timeout/i.test(causeMsg)) {
     return {
       error: "TIMEOUT",
       code: 0,
@@ -40,7 +60,7 @@ export function mapNetworkError(err: Error, ccuMethod: string): StructuredError 
   return {
     error: "UNREACHABLE",
     code: 0,
-    message: `Cannot connect to CCU: ${err.message}`,
+    message: `Cannot connect to CCU: ${causeMsg ? `${err.message} (${causeMsg})` : err.message}`,
     hint: "Check that the CCU is running and reachable at the configured host/port.",
     ccuMethod,
   };

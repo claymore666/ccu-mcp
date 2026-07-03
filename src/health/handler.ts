@@ -7,7 +7,16 @@ export interface HealthDeps {
   deviceTypeCache: DeviceTypeCache;
 }
 
-export function handleHealthRequest(req: IncomingMessage, res: ServerResponse, deps: HealthDeps): void {
+export function handleHealthRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HealthDeps,
+  // Detailed checks only for authenticated callers: pre-auth, session_valid
+  // would tell an unauthenticated scanner whether the configured CCU admin
+  // credentials currently work (and fingerprint the service). Status alone
+  // is all an uptime monitor needs.
+  detailed: boolean = false,
+): void {
   const { session, deviceTypeCache } = deps;
 
   const checks = {
@@ -21,5 +30,5 @@ export function handleHealthRequest(req: IncomingMessage, res: ServerResponse, d
   const httpStatus = status === "healthy" ? 200 : 503;
 
   res.writeHead(httpStatus, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ status, checks }));
+  res.end(JSON.stringify(detailed ? { status, checks } : { status }));
 }

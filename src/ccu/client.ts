@@ -25,8 +25,11 @@ export class CcuClient {
     if (config.https) {
       this.dispatcher = new Agent({
         connect: this.buildConnect(config, logger),
+        // pipelining: 0 also disables HTTP keep-alive in undici — every
+        // request gets a fresh connection (and, with the pinning connector's
+        // maxCachedSessions: 0, a full TLS handshake). Deliberate: the cert
+        // must be present to pin on every connection.
         pipelining: 0,
-        keepAliveTimeout: 1000,
       });
     }
   }
@@ -138,8 +141,11 @@ export class CcuClient {
       if (err instanceof CcuError) throw err;
 
       const duration = Date.now() - start;
-      this.logger.error("ccu_request_failed", { method, duration_ms: duration, error: (err as Error).message });
-      throw new CcuError(mapNetworkError(err as Error, method));
+      // Log the MAPPED message: it unwraps undici's generic "fetch failed"
+      // wrapper to the real cause (TLS pin mismatch, ECONNREFUSED, ...).
+      const structured = mapNetworkError(err as Error, method);
+      this.logger.error("ccu_request_failed", { method, duration_ms: duration, error: structured.message });
+      throw new CcuError(structured);
     }
 
     const duration = Date.now() - start;
