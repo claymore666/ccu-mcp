@@ -117,7 +117,7 @@ function serialize(state: PersistedToken): string {
 // belongs to the operator and must survive a rewrite.
 const MANAGED_KEY_RE = /^MCP_AUTH_TOKEN(_ISSUED|_PREVIOUS|_PREVIOUS_EXPIRES)?=/;
 
-async function persist(dataDir: string, state: PersistedToken, logger: Logger): Promise<void> {
+async function persist(dataDir: string, state: PersistedToken, logger: Logger): Promise<boolean> {
   const envPath = join(dataDir, ENV_FILENAME);
   try {
     await mkdir(dataDir, { recursive: true });
@@ -136,8 +136,10 @@ async function persist(dataDir: string, state: PersistedToken, logger: Logger): 
     // 0600: file contains the bearer token(s) for the HTTP transport
     await writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
     await rename(tmpPath, envPath);
+    return true;
   } catch (err) {
     logger.error("auth_token_save_failed", { error: (err as Error).message });
+    return false;
   }
 }
 
@@ -193,6 +195,7 @@ export async function resolveAuthTokens(
   let changed = false;
   let minted = false; // brand-new token this run (generate or rotate) → announce
   let rotated = false;
+  const preRotationState: PersistedToken = { ...state };
 
   if (!state.token) {
     // 3. No usable token — generate.
@@ -232,7 +235,19 @@ export async function resolveAuthTokens(
     changed = true;
   }
 
-  if (changed) await persist(dataDir, state, logger);
+  if (changed) {
+    const saved = await persist(dataDir, state, logger);
+    if (!saved && rotated) {
+      // A rotation that can't be persisted must not take effect: the next
+      // check would re-read the unchanged file and rotate AGAIN, minting and
+      // announcing a fresh token every interval (each invalidating the last).
+      // Keep the pre-rotation state; auth_token_save_failed points the
+      // operator at the real problem (unwritable data dir).
+      state = preRotationState;
+      minted = false;
+      rotated = false;
+    }
+  }
   if (minted) announce(state.token!, dataDir, rotated);
 
   const entries: TokenEntry[] = [
@@ -271,13 +286,18 @@ export function startAutoRotation(
   logger: Logger,
   intervalMs: number = ROTATION_CHECK_INTERVAL_MS,
 ): () => void {
-  const timer = setInterval(() => {
+  const tick = (): void => {
     resolveAuthTokens(opts, logger, Date.now() + intervalMs)
       .then((fresh) => tokens.replaceWith(fresh))
       .catch((err: unknown) => {
         logger.error("auth_token_rotation_failed", { error: (err as Error).message });
       });
-  }, intervalMs);
+  };
+  // Run once immediately: a token expiring within the FIRST interval after
+  // startup would otherwise 401 until the first timer tick (the startup
+  // resolve has no lookahead).
+  tick();
+  const timer = setInterval(tick, intervalMs);
   timer.unref();
   return () => clearInterval(timer);
 }

@@ -241,6 +241,11 @@ async function main(): Promise<void> {
           if (req.method === "GET") {
             // GET opens the long-lived SSE notification stream; hold the
             // session out of idle eviction until the connection closes.
+            // TCP keep-alive makes the OS probe the peer so a half-open
+            // stream (client died without FIN/RST) still fires 'close' and
+            // releases the slot — otherwise a wedged stream would pin the
+            // session forever and eventually 503 the server at capacity.
+            req.socket.setKeepAlive(true, 60_000);
             existing.openStreams++;
             res.on("close", () => {
               existing.openStreams--;

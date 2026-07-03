@@ -141,11 +141,15 @@ export class SessionManager {
         // The CCU answers 400 "access denied" both for an expired session and
         // for a valid session whose user lacks the method's privilege level.
         // Re-login distinguishes them: if it comes back with the SAME session
-        // id, the session was never invalid — the 400 was a permission denial
-        // and retrying would fail identically.
-        const staleSid = this.sessionId;
+        // id THE FAILED REQUEST USED, that session was never invalid — the 400
+        // was a permission denial and retrying would fail identically. Compare
+        // against the id the request carried (not this.sessionId at catch
+        // time): a concurrent re-login may already have swapped in a new id,
+        // and then the right move is to retry with it, not to report a
+        // privilege problem.
+        const usedSid = paramsWithSession._session_id_;
         await this.login();
-        if (this.sessionId !== null && this.sessionId === staleSid) {
+        if (this.sessionId !== null && this.sessionId === usedSid) {
           throw new CcuError({
             error: "AUTH",
             code: err.structured.code,

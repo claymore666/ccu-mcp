@@ -268,12 +268,16 @@ function registerRunScript(server: McpServer, deps: ServerDeps): void {
       },
     },
     async (args) => runTool("run_script", deps.logger, async () => {
-      const { session, rateLimiter } = deps;
+      const { rateLimiter } = deps;
+      // Pin the target once so a concurrent use_ccu can't split the guard,
+      // session, and timeout across different targets mid-handler.
+      const active = deps.selection.active;
+      const { session } = active;
       // Scripts bypass every guard the typed tools enforce — per-call confirm (#72)
-      assertWritable(deps.selection, deps.selection.active, args.confirm, { alwaysConfirm: true });
+      assertWritable(deps.selection, active, args.confirm, { alwaysConfirm: true });
       await rateLimiter.acquire();
       // No retry — scripts are not idempotent
-      const result = await session.call("ReGa.runScript", { script: args.script }, deps.selection.active.profile.ccu.scriptTimeout);
+      const result = await session.call("ReGa.runScript", { script: args.script }, active.profile.ccu.scriptTimeout);
 
       return toolResult(result);
     }),

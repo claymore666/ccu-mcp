@@ -13,8 +13,41 @@ const WARM_CONCURRENCY = 3;
 
 type RawParamDesc = {
   ID: string; TYPE: string; OPERATIONS: string;
-  MIN?: string; MAX?: string; DEFAULT?: string; UNIT?: string; VALUE_LIST?: string[];
+  MIN?: string; MAX?: string; DEFAULT?: string; UNIT?: string; VALUE_LIST?: string[] | string;
 };
+
+/**
+ * getparamsetdescription.tcl pushes VALUE_LIST through json_toString, which
+ * serializes the TCL list as ONE space-joined string, brace-wrapping entries
+ * that contain spaces ('{Party Mode} Off'). Tokenize it back into labels so
+ * enum indexes line up with the real value list.
+ */
+function parseTclList(input: string): string[] {
+  const items: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (input[i] === " ") i++;
+    if (i >= input.length) break;
+    if (input[i] === "{") {
+      let depth = 1;
+      let j = i + 1;
+      const start = j;
+      while (j < input.length && depth > 0) {
+        if (input[j] === "{") depth++;
+        else if (input[j] === "}") depth--;
+        j++;
+      }
+      items.push(input.slice(start, depth === 0 ? j - 1 : j));
+      i = j;
+    } else {
+      let j = i;
+      while (j < input.length && input[j] !== " ") j++;
+      items.push(input.slice(i, j));
+      i = j;
+    }
+  }
+  return items;
+}
 
 function parseParamDescriptions(descArray: RawParamDesc[]): Record<string, CachedParamDescription> {
   const params: Record<string, CachedParamDescription> = {};
@@ -26,7 +59,9 @@ function parseParamDescriptions(descArray: RawParamDesc[]): Record<string, Cache
       ...(p.MAX !== undefined && { max: Number(p.MAX) }),
       ...(p.DEFAULT !== undefined && { default: p.DEFAULT }),
       ...(p.UNIT && { unit: p.UNIT }),
-      ...(p.VALUE_LIST && { valueList: p.VALUE_LIST }),
+      ...(p.VALUE_LIST && {
+        valueList: Array.isArray(p.VALUE_LIST) ? p.VALUE_LIST : parseTclList(p.VALUE_LIST),
+      }),
     };
   }
   return params;

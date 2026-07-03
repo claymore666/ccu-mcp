@@ -54,6 +54,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         }),
         "Interface.getValue",
         logger,
+        { rateLimiter },
       );
 
       log({ address: args.address });
@@ -112,6 +113,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
         "ReGa.runScript",
         logger,
+        { rateLimiter },
       );
 
       const data = typeof result === "string" ? tryParseJson(result) : result;
@@ -244,6 +246,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         }),
         "Interface.getParamset",
         logger,
+        { rateLimiter },
       );
 
       // Parse values to native types if result is a flat object

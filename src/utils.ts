@@ -116,7 +116,12 @@ export function parseValue(val: unknown): unknown {
   if (s === "") return null;
   if (s === "true") return true;
   if (s === "false") return false;
-  if (DECIMAL_RE.test(s)) return Number(s);
+  if (DECIMAL_RE.test(s)) {
+    // Precision guard: Number() silently rounds past ~15 significant digits,
+    // so a long numeric ID stored in a STRING datapoint would be corrupted.
+    const significant = s.replace(/[-.]/g, "").replace(/^0+/, "");
+    if (significant.length <= 15) return Number(s);
+  }
   return s;
 }
 

@@ -43,11 +43,14 @@ export class Resolver {
    * The parameter's RAW paramset TYPE (BOOL, ACTION, FLOAT, ...) from the
    * device-type cache, or undefined when unknown. ACTION identifies one-shot
    * trigger datapoints (button press, stop) that must never be auto-retried.
+   * `paramsetKey` selects which paramset to consult — MASTER params live in
+   * their own schema, so a MASTER write must not be resolved against VALUES.
    */
   resolveRawParamType(
     address: string,
     valueKey: string,
     cache: DeviceTypeCache,
+    paramsetKey: string = "VALUES",
   ): string | undefined {
     const deviceAddress = address.includes(":") ? address.split(":")[0]! : address;
     const channelIndex = address.includes(":") ? address.split(":")[1]! : "0";
@@ -61,15 +64,16 @@ export class Resolver {
     const channel = cached.channels[channelIndex];
     if (!channel) return undefined;
 
-    return channel.paramsets["VALUES"]?.[valueKey]?.type;
+    return channel.paramsets[paramsetKey]?.[valueKey]?.type;
   }
 
   resolveType(
     address: string,
     valueKey: string,
     cache: DeviceTypeCache,
+    paramsetKey: string = "VALUES",
   ): string | undefined {
-    const rawType = this.resolveRawParamType(address, valueKey, cache);
+    const rawType = this.resolveRawParamType(address, valueKey, cache, paramsetKey);
     if (!rawType) return undefined;
 
     const typeMap: Record<string, string> = {
@@ -127,6 +131,7 @@ export class Resolver {
       () => session.call("Device.listAllDetail"),
       "Device.listAllDetail",
       logger,
+      { rateLimiter },
     ) as CcuDevice[];
 
     this.updateDeviceList(devices);

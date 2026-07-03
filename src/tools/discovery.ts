@@ -49,6 +49,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
         () => session.call("Device.listAllDetail"),
         "Device.listAllDetail",
         logger,
+        { rateLimiter },
       );
 
       let devices = result as CcuDevice[];
@@ -68,6 +69,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             () => session.call("Room.getAll"),
             "Room.getAll",
             logger,
+            { rateLimiter },
           ) as Array<{ id: string; name: string; channelIds: string[] }>;
           const room = rooms.find((r) => r.name === args.room);
           filterSets.push(new Set(room?.channelIds ?? []));
@@ -79,6 +81,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             () => session.call("Subsection.getAll"),
             "Subsection.getAll",
             logger,
+            { rateLimiter },
           ) as Array<{ id: string; name: string; channelIds: string[] }>;
           const func = functions.find((f) => f.name === args.function);
           filterSets.push(new Set(func?.channelIds ?? []));
@@ -144,7 +147,7 @@ function registerListInterfaces(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger);
+      const result = await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger, { rateLimiter });
       return structuredResult({ interfaces: Array.isArray(result) ? result : [] }, result);
     }),
   );
@@ -164,7 +167,7 @@ function registerListRooms(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger);
+      const result = await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger, { rateLimiter });
       return structuredResult({ rooms: Array.isArray(result) ? result : [] }, result);
     }),
   );
@@ -184,7 +187,7 @@ function registerListFunctions(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger);
+      const result = await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger, { rateLimiter });
       return structuredResult({ functions: Array.isArray(result) ? result : [] }, result);
     }),
   );
@@ -207,7 +210,7 @@ function registerListPrograms(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger) as Array<{ name: string }>;
+      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger, { rateLimiter }) as Array<{ name: string }>;
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -236,7 +239,7 @@ function registerListSystemVariables(server: McpServer, deps: ServerDeps): void 
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger) as Array<{ name: string }>;
+      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger, { rateLimiter }) as Array<{ name: string }>;
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -331,6 +334,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         () => session.call("Device.listAllDetail"),
         "Device.listAllDetail",
         logger,
+        { rateLimiter },
       ) as CcuDevice[];
       resolver.updateDeviceList(devices);
       const channelName = new Map<string, string>();
@@ -342,6 +346,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         () => session.call("Interface.listInterfaces"),
         "Interface.listInterfaces",
         logger,
+        { rateLimiter },
       ) as Array<{ name: string }>;
 
       // Match a channel address against the filter: exact channel, or any
@@ -360,6 +365,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
             () => session.call("Interface.getLinks", { interface: iface.name, address: args.address ?? "", flags: 0 }),
             "Interface.getLinks",
             logger,
+            { rateLimiter },
           );
         } catch {
           continue; // interface doesn't expose getLinks

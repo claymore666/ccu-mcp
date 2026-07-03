@@ -113,6 +113,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
           () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
+          { rateLimiter },
         );
 
         const parsed = typeof result === "string" ? tryParseJson(result) : result;
@@ -167,8 +168,11 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
       },
     },
     async (args) => runTool("acknowledge_service_messages", deps.logger, async (log) => {
-      const { session, rateLimiter, logger } = deps;
-        assertWritable(deps.selection, deps.selection.active, args.confirm);
+      const { rateLimiter, logger } = deps;
+      // Pin the target once (see control.ts set_value).
+      const active = deps.selection.active;
+      const { session } = active;
+        assertWritable(deps.selection, active, args.confirm);
         if (!args.id && !args.address) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -234,9 +238,10 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.selection.active.profile.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
+          { rateLimiter },
         );
 
         const parsed = typeof result === "string" ? tryParseJson(result) : result;
@@ -395,6 +400,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           () => session.call("Device.listAllDetail"),
           "Device.listAllDetail",
           logger,
+          { rateLimiter },
         ) as CcuDevice[];
         resolver.updateDeviceList(devices);
         const nameByAddress = new Map<string, string>();
@@ -415,6 +421,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           () => session.call("Interface.listInterfaces"),
           "Interface.listInterfaces",
           logger,
+          { rateLimiter },
         ) as Array<{ name: string }>;
 
         const needle = args.name?.toLowerCase();
@@ -429,6 +436,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
               () => session.call("Interface.rssiInfo", { interface: iface.name }),
               "Interface.rssiInfo",
               logger,
+              { rateLimiter },
             ) as RssiEntry[];
           } catch {
             // Interfaces without RF (e.g. VirtualDevices) don't support rssiInfo.
@@ -482,6 +490,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
               () => session.call("Interface.getParamset", { interface: d.interface, address: maint.address, paramsetKey: "VALUES" }),
               "Interface.getParamset",
               logger,
+              { rateLimiter },
             ) as Record<string, unknown>;
             const rssiDevice = dbm(vals?.RSSI_DEVICE);
             const rssiPeer = dbm(vals?.RSSI_PEER);
@@ -507,6 +516,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
             () => session.call("Interface.listBidcosInterfaces"),
             "Interface.listBidcosInterfaces",
             logger,
+            { rateLimiter },
           );
         } catch {
           bidcosInterfaces = [];
