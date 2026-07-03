@@ -108,6 +108,14 @@ instead of looping through re-login.
 - `set_system_variable` verifies bool/float/enum writes found their target
   (one extra read per write): the CCU's setters report success even for a
   variable deleted moments earlier.
+- `get_values` now returns datapoint values as native types (bool/number/
+  null/string) like the single `get_value` and `get_paramset` do — previously
+  the bulk read handed back the raw quoted strings the HM-script emits
+  (`"true"`, `"19.000000"`), so the same datapoint read two ways gave
+  different types.
+- The CCU-backed resources (`homematic://devices`, `rooms`, …) surface a
+  malformed/`null` CCU result as an error like the sibling `list_*` tools,
+  instead of serving a subscriber the literal text `"null"`.
 
 - Device-type cache format is v2 (enum `valueList` is now a proper label
   array); the old cache is discarded and re-warmed once after upgrade.

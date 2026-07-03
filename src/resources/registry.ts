@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import { withRetry } from "../middleware/retry.js";
-import { VERSION } from "../utils.js";
+import { VERSION, expectArray } from "../utils.js";
 
 // CCU-backed list resources: one JSON-RPC method each; polled for change
 // notifications (see poller.ts POLLABLE).
@@ -39,9 +39,13 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
   };
 
   for (const r of CCU_LIST_RESOURCES) {
-    server.registerResource(r.name, r.uri, { description: r.description }, async () => ({
-      contents: [{ uri: r.uri, text: JSON.stringify(await ccuRead(r.method), null, 2), mimeType: "application/json" }],
-    }));
+    server.registerResource(r.name, r.uri, { description: r.description }, async () => {
+      // Guard like the sibling list_* tools: a malformed CCU/proxy result
+      // (result:null) must surface as an error, not be handed to a subscriber
+      // as the literal text "null" indistinguishable from an empty payload.
+      const list = expectArray(await ccuRead(r.method), r.method);
+      return { contents: [{ uri: r.uri, text: JSON.stringify(list, null, 2), mimeType: "application/json" }] };
+    });
   }
 
   // The two non-polled resources: subscriptions are accepted but change

@@ -70,7 +70,7 @@ describeIf("MCP tools against live CCU", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  it("get_values by room returns parsed channel data (live ReGa script)", async () => {
+  it("get_values by room returns channel data with native-typed datapoints (live ReGa script)", async () => {
     const rooms = parseToolResult(await callTool(server, "list_rooms")) as Array<{ name: string }>;
     expect(rooms.length).toBeGreaterThan(0);
 

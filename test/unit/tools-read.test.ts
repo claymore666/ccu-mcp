@@ -186,12 +186,25 @@ describe("error and edge paths (coverage round)", () => {
     cleanupDeps(deps);
   });
 
-  it("get_values returns object results from the CCU as-is", async () => {
+  it("get_values returns object results from the CCU (datapoints untouched when absent)", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockResolvedValue([{ already: "parsed" }]),
     });
     const result = parseToolResult(await callTool(server, "get_values", { channels: ["AAA:1"] })) as any;
     expect(result).toEqual([{ already: "parsed" }]);
+    cleanupDeps(deps);
+  });
+
+  it("get_values parses datapoint values to native types (matches get_value)", async () => {
+    // The HM-script emits every value as a quoted string; the tool must parse
+    // them so a value read in bulk matches what the single get_value returns.
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue(
+        '[{"address":"A:1","name":"Ch","datapoints":{"STATE":"true","ACTUAL_TEMPERATURE":"19.000000","NOTE":"hi","EMPTY":""}}]',
+      ),
+    });
+    const result = parseToolResult(await callTool(server, "get_values", { channels: ["A:1"] })) as any;
+    expect(result[0].datapoints).toEqual({ STATE: true, ACTUAL_TEMPERATURE: 19, NOTE: "hi", EMPTY: null });
     cleanupDeps(deps);
   });
 });

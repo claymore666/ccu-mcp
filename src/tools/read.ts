@@ -128,6 +128,18 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
           hint: "The CCU's script engine failed (busy or errored). Try again; if it persists, check the CCU's ReGa state.",
         });
       }
+      // Parse each datapoint value to a native type, so a value read via the
+      // bulk get_values matches what the single get_value / get_paramset
+      // return (the HM-script emits every value as a quoted string for safe
+      // JSON; without this, STATE would be "true" here but boolean true there).
+      for (const entry of data) {
+        if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+          const dps = (entry as Record<string, unknown>).datapoints;
+          if (dps && typeof dps === "object" && !Array.isArray(dps)) {
+            (entry as Record<string, unknown>).datapoints = parseValues(dps as Record<string, unknown>);
+          }
+        }
+      }
       // Wrap the array for structuredContent; keep the bare array as the text block.
       return structuredResult({ values: data }, data);
     }),
