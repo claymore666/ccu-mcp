@@ -40,6 +40,12 @@ export class DeviceTypeCache {
   private readonly fileName: string;
   private warming = false;
   private inflightQueries = new Map<string, Promise<CachedDeviceType | undefined>>();
+  // True until a load proves fresh or a warm completes: expired-on-disk data is
+  // still loaded as a fallback, but callers can see it needs a refresh.
+  private stale = true;
+  // Serializes saveToDisk calls: concurrent saves share one fixed .tmp path, so
+  // interleaved write/rename pairs could drop a save or keep the older snapshot.
+  private savePromise: Promise<void> = Promise.resolve();
 
   constructor(cacheDir: string, ttl: number, logger: Logger, fileName?: string) {
     this.cacheDir = cacheDir;
@@ -82,6 +88,7 @@ export class DeviceTypeCache {
       const expired = age > this.ttl;
 
       this.cache = new Map(Object.entries(parsed.types));
+      this.stale = expired;
       this.logger.info("cache_loaded", { types: this.cache.size, age_seconds: Math.round(age), expired });
 
       return !expired;
@@ -91,8 +98,15 @@ export class DeviceTypeCache {
     }
   }
 
-  /** Atomic write: serialize → tmp file → rename */
-  async saveToDisk(): Promise<void> {
+  /** Atomic write: serialize → tmp file → rename. Calls are queued so two
+   *  concurrent saves (background warm + a live-query save) can't interleave
+   *  on the shared .tmp path. */
+  saveToDisk(): Promise<void> {
+    this.savePromise = this.savePromise.then(() => this.doSaveToDisk());
+    return this.savePromise;
+  }
+
+  private async doSaveToDisk(): Promise<void> {
     const filePath = join(this.cacheDir, this.fileName);
     const tmpPath = filePath + ".tmp";
 
@@ -223,6 +237,7 @@ export class DeviceTypeCache {
       await Promise.all(workers);
 
       await this.saveToDisk();
+      this.stale = false;
 
       const duration = Date.now() - start;
       this.logger.info("cache_warm_done", { types: this.cache.size, duration_ms: duration });
@@ -297,5 +312,10 @@ export class DeviceTypeCache {
 
   isWarming(): boolean {
     return this.warming;
+  }
+
+  /** True when the cached schemas are older than the TTL (or never loaded). */
+  isStale(): boolean {
+    return this.stale;
   }
 }

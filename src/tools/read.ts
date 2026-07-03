@@ -42,7 +42,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_value", deps.logger, async (log) => {
       const { rateLimiter, logger } = deps;
-      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       await rateLimiter.acquire();
@@ -83,7 +83,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_values", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const t = resolveTarget(deps.targets, args.target);
+      const t = resolveTarget(deps.selection, args.target);
       const { session } = t;
       // Build HM Script to collect values
       let script: string;
@@ -115,21 +115,37 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
       );
 
       const data = typeof result === "string" ? tryParseJson(result) : result;
+      // A non-array here means the ReGa script FAILED (runscript returns ""
+      // on any script error) or emitted broken JSON — answering with an empty
+      // success would be indistinguishable from "no matching channels".
+      if (!Array.isArray(data)) {
+        throw new CcuError({
+          error: "CCU_ERROR",
+          code: 0,
+          message: "The CCU script for get_values returned no parseable output",
+          hint: "The CCU's script engine failed (busy or errored). Try again; if it persists, check the CCU's ReGa state.",
+        });
+      }
       // Wrap the array for structuredContent; keep the bare array as the text block.
-      return structuredResult({ values: Array.isArray(data) ? data : [] }, data);
+      return structuredResult({ values: data }, data);
     }),
   );
 }
 
 // Helper HM Script fragment: write channel datapoints as JSON object
 // Quote all values as JSON strings for safety — empty values, special chars, enums all handled.
-// Names and values are JSON-escaped (backslash first, then quote) since channel names and
-// STRING datapoints are user-controlled; addresses and HssType are CCU identifiers and safe.
+// Names and values are JSON-escaped (backslash first, then quote, then the control
+// characters JSON forbids raw — tab/newline/CR reachable via user-renamed channels and
+// STRING datapoints) since both are user-controlled; addresses and HssType are CCU
+// identifiers and safe. The "\t"/"\n"/"\r" literals are real ReGa string escapes.
 const WRITE_CHANNEL_DPS = `
           if (!first) { Write(","); } first = false;
           string chNameEsc = ch.Name();
           chNameEsc = chNameEsc.Replace("\\\\", "\\\\\\\\");
           chNameEsc = chNameEsc.Replace("\\"", "\\\\\\"");
+          chNameEsc = chNameEsc.Replace("\\t", "\\\\t");
+          chNameEsc = chNameEsc.Replace("\\r", "\\\\r");
+          chNameEsc = chNameEsc.Replace("\\n", "\\\\n");
           Write('{"address":"' # ch.Address() # '","name":"' # chNameEsc # '","datapoints":{');
           boolean firstDp = true;
           string dpId;
@@ -140,6 +156,9 @@ const WRITE_CHANNEL_DPS = `
               string dpValEsc = "" # dp.Value();
               dpValEsc = dpValEsc.Replace("\\\\", "\\\\\\\\");
               dpValEsc = dpValEsc.Replace("\\"", "\\\\\\"");
+              dpValEsc = dpValEsc.Replace("\\t", "\\\\t");
+              dpValEsc = dpValEsc.Replace("\\r", "\\\\r");
+              dpValEsc = dpValEsc.Replace("\\n", "\\\\n");
               Write('"' # dp.HssType() # '":"' # dpValEsc # '"');
             }
           }
@@ -213,7 +232,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_paramset", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       await rateLimiter.acquire();

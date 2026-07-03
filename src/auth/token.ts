@@ -25,7 +25,16 @@ interface TokenEntry {
  * lapses — no restart or background timer needed.
  */
 export class AuthTokens {
-  constructor(private readonly entries: TokenEntry[]) {}
+  constructor(private entries: TokenEntry[]) {}
+
+  /**
+   * Swap in the entries of a freshly-resolved set. Used by runtime rotation:
+   * requests hold a reference to ONE AuthTokens instance, so rotation must
+   * mutate it in place rather than build a new object nobody consults.
+   */
+  replaceWith(other: AuthTokens): void {
+    this.entries = other.entries;
+  }
 
   /**
    * Timing-safe check of a presented token against every entry. Compares against
@@ -104,13 +113,28 @@ function serialize(state: PersistedToken): string {
   return lines.join("\n") + "\n";
 }
 
+// The keys this module owns inside the .env file. Everything else in the file
+// belongs to the operator and must survive a rewrite.
+const MANAGED_KEY_RE = /^MCP_AUTH_TOKEN(_ISSUED|_PREVIOUS|_PREVIOUS_EXPIRES)?=/;
+
 async function persist(dataDir: string, state: PersistedToken, logger: Logger): Promise<void> {
   const envPath = join(dataDir, ENV_FILENAME);
   try {
     await mkdir(dataDir, { recursive: true });
+    // Preserve operator-added lines (it's a normal dotenv file and the announce
+    // message points operators at it) — only the managed token keys are replaced.
+    let foreign: string[] = [];
+    try {
+      foreign = (await readFile(envPath, "utf-8"))
+        .split(/\r?\n/)
+        .filter((line) => line.trim() !== "" && !MANAGED_KEY_RE.test(line));
+    } catch {
+      // No existing file — nothing to preserve.
+    }
+    const content = serialize(state) + (foreign.length > 0 ? foreign.join("\n") + "\n" : "");
     const tmpPath = envPath + ".tmp";
     // 0600: file contains the bearer token(s) for the HTTP transport
-    await writeFile(tmpPath, serialize(state), { encoding: "utf-8", mode: 0o600 });
+    await writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
     await rename(tmpPath, envPath);
   } catch (err) {
     logger.error("auth_token_save_failed", { error: (err as Error).message });
@@ -226,4 +250,34 @@ export async function resolveAuthTokens(
     });
   }
   return new AuthTokens(entries);
+}
+
+const ROTATION_CHECK_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Keep the auto-generated token rotating while the server RUNS. `verify()`
+ * enforces expiry live, but without this the replacement token would only be
+ * minted at the next restart — a server up past the TTL would 401 every client
+ * permanently. Re-resolves the persisted state periodically; the `now`
+ * lookahead of one interval rotates just BEFORE the hard expiry, so there is
+ * no 401 window (the outgoing token stays valid through the grace overlap).
+ *
+ * Only meaningful for the file-backed token path with a TTL; do not call for
+ * operator-managed env tokens. Returns a stop function for shutdown.
+ */
+export function startAutoRotation(
+  tokens: AuthTokens,
+  opts: ResolveAuthTokensOptions,
+  logger: Logger,
+  intervalMs: number = ROTATION_CHECK_INTERVAL_MS,
+): () => void {
+  const timer = setInterval(() => {
+    resolveAuthTokens(opts, logger, Date.now() + intervalMs)
+      .then((fresh) => tokens.replaceWith(fresh))
+      .catch((err: unknown) => {
+        logger.error("auth_token_rotation_failed", { error: (err as Error).message });
+      });
+  }, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 }

@@ -179,21 +179,46 @@ describe("SessionManager", () => {
       session.destroy();
     });
 
-    it("re-logins and retries on AUTH error", async () => {
+    it("re-logins and retries on AUTH error when the session is truly expired", async () => {
       const client = createMockClient();
       const authError = new CcuError({ error: "AUTH", code: 400, message: "access denied", hint: "" });
 
       client.call
         .mockResolvedValueOnce("old-sess")     // login
         .mockRejectedValueOnce(authError)       // first call fails
-        .mockResolvedValueOnce("new-sess")      // re-login
+        .mockRejectedValueOnce(authError)       // in-memory Session.renew fails → truly expired
+        .mockResolvedValueOnce("new-sess")      // fresh re-login
         .mockResolvedValueOnce("success");      // retry
 
       const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
       await session.login();
       const result = await session.call("Interface.getValue", {});
 
       expect(result).toBe("success");
+      session.destroy();
+    });
+
+    // CCU 400 "access denied" also fires for a VALID session whose user lacks
+    // the method's privilege level — that must not loop through re-login+retry.
+    it("maps a 400 on a still-valid session to a privilege error without a doomed retry", async () => {
+      const client = createMockClient();
+      const authError = new CcuError({ error: "AUTH", code: 400, message: "access denied", hint: "" });
+
+      client.call
+        .mockResolvedValueOnce("sess-1")        // login
+        .mockRejectedValueOnce(authError)       // ADMIN-only method denied
+        .mockResolvedValueOnce(true);           // in-memory Session.renew SUCCEEDS → session valid
+
+      const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+      await session.login();
+
+      await expect(session.call("ReGa.runScript", {})).rejects.toThrow(/privilege level/);
+      // login + denied call + renew — the denied method is NOT re-sent
+      expect(client.call.mock.calls.length).toBe(3);
+      // the still-valid session is kept (no leaked re-login)
+      expect(session.getSessionId()).toBe("sess-1");
       session.destroy();
     });
 
@@ -414,7 +439,10 @@ describe("renewal double failure (coverage round)", () => {
     await vi.advanceTimersByTimeAsync(60_000); // renew fails
     await vi.advanceTimersByTimeAsync(15_000); // login retries exhaust without throwing out of the timer
 
-    expect(session.isLoggedIn()).toBe(true); // old session id kept; no crash
+    // The dead session id is cleared (renew AND re-login failed), so /health
+    // reports degraded instead of healthy through a total CCU outage; the next
+    // call() lazily re-attempts login. No crash either way.
+    expect(session.isLoggedIn()).toBe(false);
     session.destroy();
     vi.useRealTimers();
   });

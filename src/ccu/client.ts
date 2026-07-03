@@ -99,13 +99,13 @@ export class CcuClient {
 
     const start = Date.now();
     let response: CcuRpcResponse;
+    let httpStatus = 0;
 
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
       let text: string;
-      let httpStatus = 0;
       try {
         const httpResponse = await undiciFetch(this.baseUrl, {
           method: "POST",
@@ -147,6 +147,20 @@ export class CcuClient {
     if (response.error) {
       this.logger.debug("ccu_response_error", { method, duration_ms: duration, code: response.error.code });
       throw new CcuError(mapCcuError(response.error, method));
+    }
+
+    // A non-2xx status whose body parses as JSON but carries no CCU error object
+    // is NOT a CCU response (reverse proxy / gateway error page). Treating it as
+    // success would make write tools report success for a request that never
+    // reached the CCU.
+    if (httpStatus < 200 || httpStatus >= 300) {
+      throw new CcuError({
+        error: "CCU_ERROR",
+        code: 0,
+        message: `Unexpected HTTP ${httpStatus} from CCU endpoint (no JSON-RPC error in body)`,
+        hint: "The response did not come from the CCU JSON-RPC API — check proxies or the CCU's web server.",
+        ccuMethod: method,
+      });
     }
 
     this.logger.debug("ccu_response_ok", { method, duration_ms: duration });

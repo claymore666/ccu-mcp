@@ -39,7 +39,12 @@ export class Resolver {
     return iface;
   }
 
-  resolveType(
+  /**
+   * The parameter's RAW paramset TYPE (BOOL, ACTION, FLOAT, ...) from the
+   * device-type cache, or undefined when unknown. ACTION identifies one-shot
+   * trigger datapoints (button press, stop) that must never be auto-retried.
+   */
+  resolveRawParamType(
     address: string,
     valueKey: string,
     cache: DeviceTypeCache,
@@ -56,8 +61,16 @@ export class Resolver {
     const channel = cached.channels[channelIndex];
     if (!channel) return undefined;
 
-    const param = channel.paramsets["VALUES"]?.[valueKey];
-    if (!param) return undefined;
+    return channel.paramsets["VALUES"]?.[valueKey]?.type;
+  }
+
+  resolveType(
+    address: string,
+    valueKey: string,
+    cache: DeviceTypeCache,
+  ): string | undefined {
+    const rawType = this.resolveRawParamType(address, valueKey, cache);
+    if (!rawType) return undefined;
 
     const typeMap: Record<string, string> = {
       BOOL: "bool",
@@ -68,7 +81,7 @@ export class Resolver {
       STRING: "string",
     };
 
-    return typeMap[param.type] || "string";
+    return typeMap[rawType] || "string";
   }
 
   getDeviceType(address: string): string | undefined {

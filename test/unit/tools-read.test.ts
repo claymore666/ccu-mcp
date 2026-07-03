@@ -72,13 +72,16 @@ describe("get_values handler", () => {
     cleanupDeps(deps);
   });
 
-  it("returns raw string when result is not JSON", async () => {
+  it("reports CCU_ERROR when the script output is not parseable (ReGa failure)", async () => {
+    // runscript returns "" (or garbage) whenever the ReGa script fails; that
+    // must NOT read as a successful empty result.
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockResolvedValue("raw output"),
     });
 
-    const result = parseToolResult(await callTool(server, "get_values", { channels: ["A:1"] }));
-    expect(result).toBe("raw output");
+    const result: any = await callTool(server, "get_values", { channels: ["A:1"] });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("CCU_ERROR");
     cleanupDeps(deps);
   });
 });

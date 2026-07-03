@@ -12,7 +12,7 @@ export function registerTargetTools(server: McpServer, deps: ServerDeps): void {
 }
 
 // Identity view of a target — NEVER includes the password.
-function targetInfo(t: Target, activeName: string) {
+function targetInfo(t: Target, activeName: string, unlocked: boolean) {
   return {
     name: t.profile.name,
     host: t.profile.ccu.host,
@@ -23,7 +23,7 @@ function targetInfo(t: Target, activeName: string) {
     readonly: t.profile.readonly,
     active: t.profile.name === activeName,
     loggedIn: t.session.isLoggedIn(),
-    writesUnlocked: t.unlocked,
+    writesUnlocked: unlocked,
   };
 }
 
@@ -43,8 +43,8 @@ function registerListTargets(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
-      const activeName = deps.targets.active.profile.name;
-      const targets = deps.targets.list().map((t) => targetInfo(t, activeName));
+      const activeName = deps.selection.active.profile.name;
+      const targets = deps.targets.list().map((t) => targetInfo(t, activeName, deps.selection.isUnlocked(t)));
       return structuredResult({ targets, active: activeName }, { targets, active: activeName });
     },
   );
@@ -73,8 +73,8 @@ function registerGetConnectionInfo(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async () => {
-      const active = deps.targets.active;
-      return structuredResult(targetInfo(active, active.profile.name));
+      const active = deps.selection.active;
+      return structuredResult(targetInfo(active, active.profile.name, deps.selection.isUnlocked(active)));
     },
   );
 }
@@ -107,9 +107,17 @@ function registerUseCcu(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => {
       try {
-        const t = deps.targets.use(args.profile);
+        const t = deps.selection.use(args.profile);
         deps.logger.info("ccu_target_switched", { target: t.profile.name });
-        return structuredResult(targetInfo(t, t.profile.name));
+        // The switched-to target may only have an expired on-disk schema cache
+        // (only the default target warms at startup) — refresh it in the
+        // background so type resolution doesn't serve stale schemas forever.
+        if (t.deviceTypeCache.isStale() && !t.deviceTypeCache.isWarming()) {
+          t.deviceTypeCache.warm(t.session, deps.rateLimiter).catch((err) => {
+            deps.logger.error("cache_warm_background_error", { error: (err as Error).message });
+          });
+        }
+        return structuredResult(targetInfo(t, t.profile.name, deps.selection.isUnlocked(t)));
       } catch (err) {
         if (err instanceof CcuError) return err.toMcpError();
         throw err;

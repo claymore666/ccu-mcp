@@ -5,7 +5,7 @@ import type { RateLimiter } from "./middleware/rate-limiter.js";
 import type { Logger } from "./logger.js";
 import type { DeviceTypeCache } from "./cache/device-type-cache.js";
 import type { Resolver } from "./middleware/resolver.js";
-import type { TargetRegistry } from "./ccu/target-registry.js";
+import type { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { registerDiscoveryTools } from "./tools/discovery.js";
 import { registerReadTools } from "./tools/read.js";
 import { registerControlTools } from "./tools/control.js";
@@ -18,13 +18,19 @@ import { VERSION } from "./utils.js";
 
 export interface ServerDeps {
   config: AppConfig;
-  /** All configured CCU targets and the active pointer. */
+  /** All configured CCU targets (shared across MCP sessions). */
   targets: TargetRegistry;
   /**
-   * The ACTIVE target's session/resolver/device-type cache. These are getters
-   * (see index.ts / _helpers.ts) that resolve to `targets.active.*` on each
-   * access, so a use_ccu() switch is picked up by the next tool call without
-   * touching any tool that reads `deps.session` etc.
+   * THIS MCP session's active-target pointer + protected-target unlocks.
+   * One per McpServer instance so concurrent HTTP clients can't retarget or
+   * de-gate each other.
+   */
+  selection: TargetSelection;
+  /**
+   * The session-active target's session/resolver/device-type cache. These are
+   * getters (see index.ts / _helpers.ts) that resolve to `selection.active.*`
+   * on each access, so a use_ccu() switch is picked up by the next tool call
+   * without touching any tool that reads `deps.session` etc.
    */
   readonly session: SessionManager;
   readonly resolver: Resolver;
@@ -42,7 +48,10 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     {
       capabilities: {
         tools: {},
-        resources: { subscribe: true },
+        // listChanged is what the poller actually emits. Do NOT advertise
+        // `subscribe`: the SDK McpServer registers no resources/subscribe
+        // handler, so a client trusting that capability gets "Method not found".
+        resources: { listChanged: true },
         prompts: {},
         logging: {},
       },

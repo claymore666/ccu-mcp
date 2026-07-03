@@ -49,7 +49,7 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("set_value", deps.logger, async (log) => {
       const { session, rateLimiter, logger, deviceTypeCache } = deps;
-      assertWritable(deps.targets.active, args.confirm);
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
       const valueType = args.type ?? deps.resolver.resolveType(args.address, args.valueKey, deviceTypeCache) ?? inferType(args.value);
 
@@ -66,19 +66,23 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
         // Pre-read failed — continue with write
       }
 
-      // Write new value
+      // Write new value. An ACTION datapoint (PRESS_SHORT, STOP, ...) is a
+      // one-shot trigger: a timed-out request may still have been delivered,
+      // so auto-retry could fire it twice — send those exactly once.
+      const rawParamType = deps.resolver.resolveRawParamType(args.address, args.valueKey, deviceTypeCache);
+      const doSetValue = () => session.call("Interface.setValue", {
+        interface: iface,
+        address: args.address,
+        valueKey: args.valueKey,
+        type: valueType,
+        value: args.value,
+      });
       await rateLimiter.acquire();
-      await withRetry(
-        () => session.call("Interface.setValue", {
-          interface: iface,
-          address: args.address,
-          valueKey: args.valueKey,
-          type: valueType,
-          value: args.value,
-        }),
-        "Interface.setValue",
-        logger,
-      );
+      if (rawParamType === "ACTION") {
+        await doSetValue();
+      } else {
+        await withRetry(doSetValue, "Interface.setValue", logger);
+      }
 
       log({ address: args.address });
       return toolResult({
@@ -117,7 +121,7 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("put_paramset", deps.logger, async () => {
       const { session, rateLimiter, logger, deviceTypeCache } = deps;
-      assertWritable(deps.targets.active, args.confirm);
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       const iface = args.interface ?? await deps.resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       // CCU expects set as array of {name, type, value} objects
@@ -128,17 +132,23 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
         return { name, type, value: String(value) };
       });
 
-      await rateLimiter.acquire();
-      await withRetry(
-        () => session.call("Interface.putParamset", {
-          interface: iface,
-          address: args.address,
-          paramsetKey: args.paramsetKey,
-          set: paramArray,
-        }),
-        "Interface.putParamset",
-        logger,
+      // If any written key is a one-shot ACTION trigger, the request must not
+      // be auto-retried — a timeout after delivery would re-fire the trigger.
+      const containsAction = Object.keys(args.set).some(
+        (name) => deps.resolver.resolveRawParamType(args.address, name, deviceTypeCache) === "ACTION",
       );
+      const doPutParamset = () => session.call("Interface.putParamset", {
+        interface: iface,
+        address: args.address,
+        paramsetKey: args.paramsetKey,
+        set: paramArray,
+      });
+      await rateLimiter.acquire();
+      if (containsAction) {
+        await doPutParamset();
+      } else {
+        await withRetry(doPutParamset, "Interface.putParamset", logger);
+      }
 
       return toolResult({ address: args.address, paramsetKey: args.paramsetKey, written: args.set });
     }),
@@ -171,56 +181,29 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("set_system_variable", deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
-      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
-      assertWritable(deps.targets.active, args.confirm);
+      const typeCacheHolder = deps.selection.active.sysVarTypeCache;
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       // Look up variable type (cached) to choose correct setter
       let method: string;
-      let sysVarType: string | undefined;
+      let sysVar: { type: string; valueList?: string } | undefined;
       if (typeCacheHolder.entry && Date.now() - typeCacheHolder.entry.ts < SYSVAR_TYPE_TTL_MS) {
-        sysVarType = typeCacheHolder.entry.types.get(args.name);
+        sysVar = typeCacheHolder.entry.types.get(args.name);
       }
-      if (sysVarType === undefined) {
+      if (sysVar === undefined) {
         await rateLimiter.acquire();
         const allVars = await withRetry(
           () => session.call("SysVar.getAll"),
           "SysVar.getAll",
           logger,
-        ) as Array<{ name: string; type: string }>;
-        typeCacheHolder.entry = { ts: Date.now(), types: new Map(allVars.map((v) => [v.name, v.type])) };
-        sysVarType = typeCacheHolder.entry.types.get(args.name);
+        ) as Array<{ name: string; type: string; valueList?: string }>;
+        typeCacheHolder.entry = {
+          ts: Date.now(),
+          types: new Map(allVars.map((v) => [v.name, { type: v.type, valueList: v.valueList }])),
+        };
+        sysVar = typeCacheHolder.entry.types.get(args.name);
       }
 
-      if (sysVarType !== undefined) {
-        const varType = sysVarType.toUpperCase();
-        if (varType.includes("BOOL") || varType.includes("ALARM")) {
-          method = "SysVar.setBool";
-        } else if (varType.includes("FLOAT") || varType.includes("NUMBER") || varType.includes("INTEGER")) {
-          method = "SysVar.setFloat";
-        } else if (varType.includes("ENUM") || varType.includes("LIST")) {
-          method = "SysVar.setFloat"; // Enums use numeric index
-        } else if (varType.includes("STRING")) {
-          // String variables: use ReGa.runScript as there's no SysVar.setString API
-          await rateLimiter.acquire();
-          const escapedName = escapeHmScript(String(args.name));
-          const escapedValue = escapeHmScript(String(args.value));
-          await withRetry(
-            () => session.call("ReGa.runScript", {
-              script: `var sv = dom.GetObject("${escapedName}"); if (sv) { sv.State("${escapedValue}"); }`,
-            }, deps.targets.active.profile.ccu.scriptTimeout),
-            "ReGa.runScript",
-            logger,
-          );
-          return toolResult({ name: args.name, value: args.value, method: "ReGa.runScript (string)" });
-        } else {
-          logger.warn("sysvar_unknown_type", { name: args.name, type: sysVarType });
-          throw new CcuError({
-            error: "INVALID_INPUT",
-            code: 0,
-            message: `System variable "${args.name}" has unsupported type: ${sysVarType}`,
-            hint: "Supported types are bool/alarm, float/integer, enum/list, and string.",
-          });
-        }
-      } else {
+      if (sysVar === undefined) {
         logger.warn("sysvar_not_found", { name: args.name });
         throw new CcuError({
           error: "NOT_FOUND",
@@ -230,14 +213,103 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         });
       }
 
+      // SysVar.getAll reports exactly LOGIC / ALARM / LIST / NUMBER / STRING
+      // (occu getall.tcl); the extra aliases keep any older/other firmware
+      // spellings working.
+      const varType = sysVar.type.toUpperCase();
+      let rpcValue: string | number | boolean = args.value;
+      if (varType.includes("LOGIC") || varType.includes("BOOL") || varType.includes("ALARM")) {
+        method = "SysVar.setBool";
+        // setbool.tcl compares non-0/1 values as STRINGS ("false" >= 1 is a
+        // lexicographic compare that yields true), so a JSON boolean false
+        // would be stored as 1. Normalize to numeric 0/1 and reject anything
+        // that isn't clearly a boolean.
+        if (args.value === true || args.value === "true" || args.value === 1 || args.value === "1") {
+          rpcValue = 1;
+        } else if (args.value === false || args.value === "false" || args.value === 0 || args.value === "0") {
+          rpcValue = 0;
+        } else {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `System variable "${args.name}" is boolean; got: ${JSON.stringify(args.value)}`,
+            hint: "Pass true/false (or 0/1).",
+          });
+        }
+      } else if (varType.includes("FLOAT") || varType.includes("NUMBER") || varType.includes("INTEGER")) {
+        method = "SysVar.setFloat";
+      } else if (varType.includes("ENUM") || varType.includes("LIST")) {
+        method = "SysVar.setFloat"; // Enums use numeric index
+        // Accept either a 0-based index or one of the enum's labels; anything
+        // else would be forwarded unchecked to sv.State() and store garbage
+        // while the tool reports success.
+        const labels = (sysVar.valueList ?? "").split(";");
+        const asLabel = labels.indexOf(String(args.value));
+        const index = asLabel >= 0
+          ? asLabel
+          : (typeof args.value === "number" || /^\d+$/.test(String(args.value)) ? Number(args.value) : NaN);
+        if (!Number.isInteger(index) || index < 0 || index >= labels.length) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `Invalid value for enum variable "${args.name}": ${JSON.stringify(args.value)}`,
+            hint: `Pass an index 0-${labels.length - 1} or one of: ${labels.join(", ")}`,
+          });
+        }
+        rpcValue = index;
+      } else if (varType.includes("STRING")) {
+        // String variables: use ReGa.runScript as there's no SysVar.setString API.
+        // Scope the lookup to the sysvar list (a global dom.GetObject name match
+        // could hit a channel/program of the same name) and verify the script
+        // actually ran — empty output means ReGa failed, not success.
+        await rateLimiter.acquire();
+        const escapedName = escapeHmScript(String(args.name));
+        const escapedValue = escapeHmScript(String(args.value));
+        const output = await withRetry(
+          () => session.call("ReGa.runScript", {
+            script:
+              `object sv = dom.GetObject(ID_SYSTEM_VARIABLES).Get("${escapedName}");\n` +
+              `if (sv) { sv.State("${escapedValue}"); WriteLine("OK"); } else { WriteLine("NOT_FOUND"); }`,
+          }, deps.selection.active.profile.ccu.scriptTimeout),
+          "ReGa.runScript",
+          logger,
+        );
+        const outcome = typeof output === "string" ? output.trim() : "";
+        if (outcome === "NOT_FOUND") {
+          throw new CcuError({
+            error: "NOT_FOUND",
+            code: 0,
+            message: `System variable not found: ${args.name}`,
+            hint: "The variable disappeared between lookup and write. Call list_system_variables.",
+          });
+        }
+        if (outcome !== "OK") {
+          throw new CcuError({
+            error: "CCU_ERROR",
+            code: 0,
+            message: `ReGa script produced no confirmation while setting "${args.name}" — the write may not have happened`,
+            hint: "The CCU's script engine likely failed (busy or errored). Verify with get_value / list_system_variables and retry.",
+          });
+        }
+        return toolResult({ name: args.name, value: args.value, method: "ReGa.runScript (string)" });
+      } else {
+        logger.warn("sysvar_unknown_type", { name: args.name, type: sysVar.type });
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: `System variable "${args.name}" has unsupported type: ${sysVar.type}`,
+          hint: "Supported types are logic/alarm, number, list, and string.",
+        });
+      }
+
       await rateLimiter.acquire();
       await withRetry(
-        () => session.call(method, { name: args.name, value: args.value }),
+        () => session.call(method, { name: args.name, value: rpcValue }),
         method,
         logger,
       );
 
-      return toolResult({ name: args.name, value: args.value, method });
+      return toolResult({ name: args.name, value: rpcValue, method });
     }),
   );
 }
@@ -268,8 +340,8 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
     },
     async (args) => runTool("create_system_variable", deps.logger, async (log) => {
       const { session, rateLimiter, logger } = deps;
-      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
-      assertWritable(deps.targets.active, args.confirm);
+      const typeCacheHolder = deps.selection.active.sysVarTypeCache;
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       if (args.type === "enum" && (!args.values || args.values.length === 0)) {
         throw new CcuError({
           error: "INVALID_INPUT",
@@ -277,6 +349,19 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
           message: "An enum system variable requires a non-empty 'values' list.",
           hint: "Pass values, e.g. [\"off\", \"low\", \"high\"].",
         });
+      }
+      // ";" is the CCU's in-band ValueList separator: a label containing it
+      // would silently split into extra enum states and shift every index
+      // after it. escapeHmScript can't help — the separator is data, not syntax.
+      for (const label of args.values ?? []) {
+        if (label.includes(";")) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `Enum label ${JSON.stringify(label)} contains ";", the CCU's value-list separator.`,
+            hint: "Rename the label without a semicolon — the CCU cannot represent one inside an enum state name.",
+          });
+        }
       }
 
       // Reject duplicates up front (creating over an existing name corrupts it).
@@ -316,8 +401,8 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
             'sv.State(false);';
           break;
         case "float": {
-          const min = Number.isFinite(args.min) ? args.min : 0;
-          const max = Number.isFinite(args.max) ? args.max : 100;
+          const min = hmNumberLiteral(Number.isFinite(args.min) ? args.min! : 0, "min");
+          const max = hmNumberLiteral(Number.isFinite(args.max) ? args.max! : 100, "max");
           typeSetup =
             'sv.ValueType(ivtFloat);\n' +
             `sv.Name("${name}");\n` +
@@ -363,19 +448,29 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
 
       await rateLimiter.acquire();
       const createResult = await withRetry(
-        () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
+        () => session.call("ReGa.runScript", { script }, deps.selection.active.profile.ccu.scriptTimeout),
         "ReGa.runScript",
         logger,
       );
 
-      // The script echoes the ACTUAL stored name. The CCU silently dedups a
-      // requested name against existing similar names (e.g. "X" becomes "X 1"
-      // when an "X 2" already exists), which the exact-match pre-check above
-      // can't see. If we didn't get the name we asked for, undo it and report
-      // the collision rather than leaving a surprise variable behind.
-      const actualName = typeof createResult === "string" && createResult.trim()
-        ? createResult.trim()
-        : args.name;
+      // The script echoes the ACTUAL stored name. Empty output means the ReGa
+      // script itself failed (hmscript.tcl returns "" on any script error) —
+      // treating that as "created" would report success for a create that
+      // never happened.
+      const actualName = typeof createResult === "string" ? createResult.trim() : "";
+      if (!actualName) {
+        throw new CcuError({
+          error: "CCU_ERROR",
+          code: 0,
+          message: `Create script for "${args.name}" produced no output — the variable was most likely NOT created`,
+          hint: "The CCU's script engine failed (busy or script error). Check with list_system_variables and retry.",
+        });
+      }
+      // The CCU silently dedups a requested name against existing similar names
+      // (e.g. "X" becomes "X 1" when an "X 2" already exists), which the
+      // exact-match pre-check above can't see. If we didn't get the name we
+      // asked for, undo it and report the collision rather than leaving a
+      // surprise variable behind.
       if (actualName !== args.name) {
         try {
           await rateLimiter.acquire();
@@ -415,9 +510,9 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
     },
     async (args) => runTool("delete_system_variable", deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
-      const typeCacheHolder = deps.targets.active.sysVarTypeCache;
+      const typeCacheHolder = deps.selection.active.sysVarTypeCache;
       // Destructive and unrecoverable — per-call confirm (#72)
-      assertWritable(deps.targets.active, args.confirm, { alwaysConfirm: true });
+      assertWritable(deps.selection, deps.selection.active, args.confirm, { alwaysConfirm: true });
       // Validate existence so an unknown name is a clean NOT_FOUND rather than
       // a silent no-op (deleteSysVarByName doesn't report a missing name).
       await rateLimiter.acquire();
@@ -475,7 +570,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
     },
     async (args) => runTool(toolName, deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
-      assertWritable(deps.targets.active, args.confirm);
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       if (!args.room && !args.function) {
         throw new CcuError({
           error: "INVALID_INPUT",
@@ -586,7 +681,7 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("execute_program", deps.logger, async () => {
       const { session, rateLimiter, logger } = deps;
-      assertWritable(deps.targets.active, args.confirm);
+      assertWritable(deps.selection, deps.selection.active, args.confirm);
       // The CCU's Program.execute reports success even for nonexistent IDs
       // (issue #18) — validate against the program list first.
       await rateLimiter.acquire();
@@ -613,6 +708,25 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
       return toolResult({ id: args.id, name: program.name, executed: true });
     }),
   );
+}
+
+/**
+ * Render a number as a HomeMatic Script numeric literal. JS stringification
+ * uses exponent notation for extreme magnitudes ("1e-7", "1e+21"), which ReGa
+ * cannot parse — the whole script would fail. Reject those instead of emitting
+ * a broken script.
+ */
+function hmNumberLiteral(n: number, field: string): string {
+  const s = String(n);
+  if (!/^-?\d+(\.\d+)?$/.test(s)) {
+    throw new CcuError({
+      error: "INVALID_INPUT",
+      code: 0,
+      message: `Value for "${field}" (${s}) cannot be written as a HomeMatic Script number literal`,
+      hint: "Use a plain decimal magnitude (no exponent notation).",
+    });
+  }
+  return s;
 }
 
 export function inferType(value: unknown): string {

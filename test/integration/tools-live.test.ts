@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { RateLimiter } from "../../src/middleware/rate-limiter.js";
-import { TargetRegistry } from "../../src/ccu/target-registry.js";
+import { TargetRegistry, TargetSelection } from "../../src/ccu/target-registry.js";
 import { createLogger } from "../../src/logger.js";
 import { createMcpServer, type ServerDeps } from "../../src/server.js";
 import type { AppConfig } from "../../src/config.js";
@@ -48,13 +48,15 @@ describeIf("MCP tools against live CCU", () => {
       resourcePollInterval: 3600,
     };
     targets = new TargetRegistry(appConfig, logger, tempDir);
-    await targets.loginActive();
+    await targets.loginDefault();
+    const selection = new TargetSelection(targets);
     deps = {
       config: appConfig,
       targets,
-      get session() { return targets.active.session; },
-      get resolver() { return targets.active.resolver; },
-      get deviceTypeCache() { return targets.active.deviceTypeCache; },
+      selection,
+      get session() { return selection.active.session; },
+      get resolver() { return selection.active.resolver; },
+      get deviceTypeCache() { return selection.active.deviceTypeCache; },
       rateLimiter: new RateLimiter(20, 10),
       logger,
     };

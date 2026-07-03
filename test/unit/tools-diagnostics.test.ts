@@ -47,13 +47,14 @@ describe("get_service_messages handler", () => {
     cleanupDeps(deps);
   });
 
-  it("returns raw string when script output is not JSON", async () => {
+  it("reports CCU_ERROR when script output is not parseable — never a fake 'no alarms'", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockResolvedValue("raw output"),
     });
 
-    const result = parseToolResult(await callTool(server, "get_service_messages"));
-    expect(result).toBe("raw output");
+    const result: any = await callTool(server, "get_service_messages");
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("CCU_ERROR");
     cleanupDeps(deps);
   });
 });

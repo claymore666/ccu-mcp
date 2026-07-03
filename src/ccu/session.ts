@@ -44,7 +44,21 @@ export class SessionManager {
   }
 
   private async doLogin(): Promise<void> {
-    // Try to reuse a persisted session first
+    // Reuse the in-memory session if the CCU still accepts it. This matters
+    // when re-login was triggered by a 400 that was really a privilege denial
+    // (the session is fine, the user just may not call that method): minting a
+    // fresh session would leak the old one and drive the CCU toward its
+    // session limit. A dead session is cleared so /health reflects reality.
+    if (this.sessionId) {
+      try {
+        await this.client.call("Session.renew", { _session_id_: this.sessionId });
+        return;
+      } catch {
+        this.sessionId = null;
+      }
+    }
+
+    // Try to reuse a persisted session next
     const restored = await this.tryRestoreSession();
     if (restored) return;
 
@@ -68,6 +82,18 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, LOGIN_RETRY_DELAY));
             continue;
           }
+          // Out of retries. The CCU returns this single 501 message for BOTH
+          // wrong credentials and session exhaustion (occu login.tcl), so
+          // surface it as an auth problem instead of "CCU internal error. Try
+          // again" — a mistyped password must not read as a transient fault.
+          throw new CcuError({
+            ...err.structured,
+            error: "AUTH",
+            hint:
+              "The CCU reports one error for both invalid credentials and too many sessions. " +
+              "Verify CCU_USER/CCU_PASSWORD first; if they are correct, wait a few minutes " +
+              "for stale CCU sessions to expire and try again.",
+          });
         }
         throw err;
       }
@@ -112,8 +138,26 @@ export class SessionManager {
       return await this.client.call(method, paramsWithSession, timeout);
     } catch (err) {
       if (err instanceof CcuError && err.structured.error === "AUTH") {
-        this.logger.warn("session_expired", { method });
+        // The CCU answers 400 "access denied" both for an expired session and
+        // for a valid session whose user lacks the method's privilege level.
+        // Re-login distinguishes them: if it comes back with the SAME session
+        // id, the session was never invalid — the 400 was a permission denial
+        // and retrying would fail identically.
+        const staleSid = this.sessionId;
         await this.login();
+        if (this.sessionId !== null && this.sessionId === staleSid) {
+          throw new CcuError({
+            error: "AUTH",
+            code: err.structured.code,
+            message: `Access denied for ${method}: the CCU user lacks the required privilege level`,
+            hint:
+              "The session is valid but the configured CCU user may not call this method " +
+              "(e.g. script execution needs an ADMIN-level user). Configure a user with " +
+              "sufficient rights or avoid this tool.",
+            ccuMethod: method,
+          });
+        }
+        this.logger.warn("session_expired", { method });
         const retryParams = { ...params, _session_id_: this.getSessionId() };
         return this.client.call(method, retryParams, timeout);
       }

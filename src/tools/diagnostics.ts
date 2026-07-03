@@ -5,7 +5,7 @@ import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
-import { assertWritable } from "../ccu/target-registry.js";
+import { assertWritable, resolveTarget } from "../ccu/target-registry.js";
 import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
@@ -28,11 +28,16 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
       title: "Get Service Messages",
       description:
         "Get all active service messages (low battery, unreachable, etc.) with device details and timestamps.",
+      inputSchema: {
+        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
+      },
       outputSchema: { messages: z.array(z.unknown()).describe("Active alarms: {id, type, address, channelName, timestamp}") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => runTool("get_service_messages", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+    async (args) => runTool("get_service_messages", deps.logger, async () => {
+      const { rateLimiter, logger } = deps;
+      const t = resolveTarget(deps.selection, args.target);
+      const { session } = t;
         // Two single passes instead of a nested per-alarm channel scan: emit the
         // alarms first while collecting their addresses, then resolve channel
         // names in ONE sweep over all channels (sentinel-comma Find, as in
@@ -65,9 +70,13 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
                   }
                 }
                 if (chAddr != "") { addrList = addrList # chAddr # ","; }
-                ! JSON-escape user-controlled names (backslash first, then quote)
+                ! JSON-escape user-controlled names (backslash first, then quote,
+                ! then raw control chars JSON forbids)
                 dpName = dpName.Replace("\\\\", "\\\\\\\\");
                 dpName = dpName.Replace("\\"", "\\\\\\"");
+                dpName = dpName.Replace("\\t", "\\\\t");
+                dpName = dpName.Replace("\\r", "\\\\r");
+                dpName = dpName.Replace("\\n", "\\\\n");
                 Write('{"id":"' # sId # '"');
                 Write(',"type":"' # dpName # '"');
                 Write(',"address":"' # chAddr # '"');
@@ -89,6 +98,9 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
                 string cName = c.Name();
                 cName = cName.Replace("\\\\", "\\\\\\\\");
                 cName = cName.Replace("\\"", "\\\\\\"");
+                cName = cName.Replace("\\t", "\\\\t");
+                cName = cName.Replace("\\r", "\\\\r");
+                cName = cName.Replace("\\n", "\\\\n");
                 Write('"' # c.Address() # '":"' # cName # '"');
               }
             }
@@ -98,15 +110,16 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
 
         const parsed = typeof result === "string" ? tryParseJson(result) : result;
 
-        // Merge channel names into the alarms (same output shape as before)
-        let messages: unknown = parsed;
+        // Merge channel names into the alarms (same output shape as before).
+        // A bare array (the pre-#8 script format) is accepted as-is.
+        let messages: unknown = Array.isArray(parsed) ? parsed : null;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
             && Array.isArray((parsed as Record<string, unknown>).alarms)) {
           const names = ((parsed as Record<string, unknown>).channelNames ?? {}) as Record<string, string>;
@@ -116,7 +129,19 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
           }));
         }
 
-        return structuredResult({ messages: Array.isArray(messages) ? messages : [] }, messages);
+        // Unparseable/empty script output must NOT read as "zero alarms" —
+        // that is a monitoring-grade false negative while LOWBAT/UNREACH may
+        // be active. runscript returns "" whenever the ReGa script fails.
+        if (!Array.isArray(messages)) {
+          throw new CcuError({
+            error: "CCU_ERROR",
+            code: 0,
+            message: "The CCU script for get_service_messages returned no parseable output",
+            hint: "The CCU's script engine failed (busy or errored). Try again — do not treat this as 'no service messages'.",
+          });
+        }
+
+        return structuredResult({ messages }, messages);
     }),
   );
 }
@@ -143,7 +168,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
     },
     async (args) => runTool("acknowledge_service_messages", deps.logger, async (log) => {
       const { session, rateLimiter, logger } = deps;
-        assertWritable(deps.targets.active, args.confirm);
+        assertWritable(deps.selection, deps.selection.active, args.confirm);
         if (!args.id && !args.address) {
           throw new CcuError({
             error: "INVALID_INPUT",
@@ -209,16 +234,26 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
 
         await rateLimiter.acquire();
         const result = await withRetry(
-          () => session.call("ReGa.runScript", { script }, deps.targets.active.profile.ccu.scriptTimeout),
+          () => session.call("ReGa.runScript", { script }, deps.selection.active.profile.ccu.scriptTimeout),
           "ReGa.runScript",
           logger,
         );
 
         const parsed = typeof result === "string" ? tryParseJson(result) : result;
-        const confirmed = (parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          && Array.isArray((parsed as Record<string, unknown>).confirmed))
-          ? (parsed as Record<string, unknown>).confirmed as Array<Record<string, unknown>>
-          : [];
+        const isShapeOk = Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          && Array.isArray((parsed as Record<string, unknown>).confirmed));
+        // Distinguish "script ran, nothing matched" (NOT_FOUND below) from
+        // "script failed / output corrupted" — in the latter case AlReceipt may
+        // or may not have run, so claiming NOT_FOUND would be a lie either way.
+        if (!isShapeOk) {
+          throw new CcuError({
+            error: "CCU_ERROR",
+            code: 0,
+            message: "The CCU script for acknowledge_service_messages returned no parseable output",
+            hint: "The ReGa engine failed or its output was corrupted; the acknowledgement may or may not have happened. Call get_service_messages to check the current state.",
+          });
+        }
+        const confirmed = (parsed as Record<string, unknown>).confirmed as Array<Record<string, unknown>>;
 
         if (confirmed.length === 0) {
           throw new CcuError({
@@ -247,6 +282,9 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         "login user and inferred role (ADMIN/USER) — note that version/serial/address are ADMIN-only " +
         "on the CCU, so they show \"N/A\" for a non-admin (USER) login. Also reports the running " +
         "server's build identification (git branch/commit/tag and build time) under `build`.",
+      inputSchema: {
+        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
+      },
       outputSchema: {
         serverVersion: z.string().optional(),
         target: z.string().optional().describe("Active CCU target name"),
@@ -271,9 +309,10 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => runTool("get_system_info", deps.logger, async () => {
-      const { session, rateLimiter, deviceTypeCache } = deps;
-      const active = deps.targets.active;
+    async (args) => runTool("get_system_info", deps.logger, async () => {
+      const { rateLimiter } = deps;
+      const active = resolveTarget(deps.selection, args.target);
+      const { session, deviceTypeCache } = active;
       const results: Record<string, unknown> = {
         serverVersion: VERSION,
         target: active.profile.name,
@@ -338,6 +377,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
         "Use to answer 'why is this sensor flaky?'. Higher (closer to 0) dBm is better; null = no measurement.",
       inputSchema: {
         name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
+        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
       },
       outputSchema: {
         devices: z.array(z.unknown()).describe("Per device: {address, name, interface, links:[{peer, rssiDevice, rssiPeer}]}"),
@@ -346,7 +386,8 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => runTool("get_rssi", deps.logger, async (log) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
         // Device list → address→{name,interface}. Same call list_devices uses;
         // also refresh the resolver so later interface lookups are warm.
         await rateLimiter.acquire();
@@ -355,7 +396,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           "Device.listAllDetail",
           logger,
         ) as CcuDevice[];
-        deps.resolver.updateDeviceList(devices);
+        resolver.updateDeviceList(devices);
         const nameByAddress = new Map<string, string>();
         const ifaceByAddress = new Map<string, string>();
         for (const d of devices) {

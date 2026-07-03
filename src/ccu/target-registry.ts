@@ -8,9 +8,9 @@ import { Resolver } from "../middleware/resolver.js";
 import { DeviceTypeCache } from "../cache/device-type-cache.js";
 import { CcuError } from "../middleware/error-mapper.js";
 
-/** Short-lived sysvar name→type cache (issue #9), now scoped per target. */
+/** Short-lived sysvar name→type(+enum labels) cache (issue #9), scoped per target. */
 export interface SysVarTypeCacheHolder {
-  entry: { ts: number; types: Map<string, string> } | null;
+  entry: { ts: number; types: Map<string, { type: string; valueList?: string }> } | null;
 }
 
 /**
@@ -24,12 +24,6 @@ export interface Target {
   resolver: Resolver;
   deviceTypeCache: DeviceTypeCache;
   sysVarTypeCache: SysVarTypeCacheHolder;
-  /**
-   * Writes to a `protected` target are unlocked for the rest of the session
-   * once the caller confirms once (the "ask once per session" model). Always
-   * false → no effect for non-protected targets.
-   */
-  unlocked: boolean;
 }
 
 // Filesystem-safe, collision-free per-target suffix for cache/session filenames.
@@ -48,14 +42,16 @@ function fileSuffix(name: string): string {
 }
 
 /**
- * Holds every configured CCU target and which one is active. Tools reach the
- * active target via ServerDeps getters; an optional per-call `target` arg routes
- * a single call elsewhere via resolveTarget().
+ * Holds every configured CCU target (shared, process-wide). WHICH target is
+ * active — and which protected targets are unlocked — is per-MCP-session state
+ * and lives in TargetSelection, so in HTTP mode one client's use_ccu/confirm
+ * cannot retarget or de-gate another client's calls.
  */
 export class TargetRegistry {
   private readonly targets = new Map<string, Target>(); // keyed by lowercased name
   private readonly order: string[] = []; // actual names, config order
-  private activeKey: string;
+  /** Lowercased name of the startup-default target. */
+  readonly defaultKey: string;
 
   constructor(config: AppConfig, logger: Logger, cacheDir: string) {
     for (const profile of config.profiles) {
@@ -68,16 +64,16 @@ export class TargetRegistry {
         resolver: new Resolver(),
         deviceTypeCache: new DeviceTypeCache(cacheDir, config.cache.ttl, logger, `device-type-cache${suffix}.json`),
         sysVarTypeCache: { entry: null },
-        unlocked: false,
       };
       this.targets.set(profile.name.toLowerCase(), target);
       this.order.push(profile.name);
     }
-    this.activeKey = config.defaultProfile.toLowerCase();
+    this.defaultKey = config.defaultProfile.toLowerCase();
   }
 
-  get active(): Target {
-    return this.targets.get(this.activeKey)!;
+  /** The startup-default target (process-level consumers: health, poller). */
+  get default(): Target {
+    return this.targets.get(this.defaultKey)!;
   }
 
   getByName(name: string): Target | undefined {
@@ -93,24 +89,14 @@ export class TargetRegistry {
     return this.order.map((n) => this.targets.get(n.toLowerCase())!);
   }
 
-  /** Switch the active target; throws NOT_FOUND on an unknown name. */
-  use(name: string): Target {
-    const t = this.getByName(name);
-    if (!t) {
-      throw new CcuError({
-        error: "NOT_FOUND",
-        code: 0,
-        message: `Unknown CCU target: ${name}`,
-        hint: `Configured targets: ${this.order.join(", ")}. Call list_ccu_targets.`,
-      });
-    }
-    this.activeKey = t.profile.name.toLowerCase();
-    return t;
+  /** All configured target names, config order (for error hints). */
+  names(): string[] {
+    return [...this.order];
   }
 
-  /** Log in the active target (other targets log in lazily on first use). */
-  async loginActive(): Promise<void> {
-    await this.active.session.login();
+  /** Log in the default target (others log in lazily on first use). */
+  async loginDefault(): Promise<void> {
+    await this.default.session.login();
   }
 
   /** Load each target's device-type cache from disk. */
@@ -118,9 +104,9 @@ export class TargetRegistry {
     await Promise.all(this.list().map((t) => t.deviceTypeCache.loadFromDisk()));
   }
 
-  /** Warm only the active target's cache (others warm lazily on first query). */
-  warmActive(rateLimiter: RateLimiter): Promise<void> {
-    const t = this.active;
+  /** Warm only the default target's cache (others warm lazily on switch). */
+  warmDefault(rateLimiter: RateLimiter): Promise<void> {
+    const t = this.default;
     return t.deviceTypeCache.warm(t.session, rateLimiter);
   }
 
@@ -138,12 +124,59 @@ export class TargetRegistry {
 }
 
 /**
- * Resolve the target for a tool call: the optional per-call `target` name, or
- * the active target when omitted. Throws NOT_FOUND for an unknown name.
+ * Per-MCP-session view onto the registry: which target is active for THIS
+ * client, and which protected targets THIS client has unlocked. One instance
+ * per McpServer (stdio has exactly one; HTTP mode one per Mcp-Session-Id), so
+ * neither use_ccu switches nor confirm-unlocks leak across clients.
  */
-export function resolveTarget(targets: TargetRegistry, name?: string): Target {
-  if (!name) return targets.active;
-  const t = targets.getByName(name);
+export class TargetSelection {
+  private activeKey: string;
+  private readonly unlockedKeys = new Set<string>();
+
+  constructor(private readonly registry: TargetRegistry) {
+    this.activeKey = registry.defaultKey;
+  }
+
+  get active(): Target {
+    return this.registry.getByName(this.activeKey)!;
+  }
+
+  /** Switch this session's active target; throws NOT_FOUND on an unknown name. */
+  use(name: string): Target {
+    const t = this.registry.getByName(name);
+    if (!t) {
+      throw new CcuError({
+        error: "NOT_FOUND",
+        code: 0,
+        message: `Unknown CCU target: ${name}`,
+        hint: `Configured targets: ${this.registry.names().join(", ")}. Call list_ccu_targets.`,
+      });
+    }
+    this.activeKey = t.profile.name.toLowerCase();
+    return t;
+  }
+
+  isUnlocked(target: Target): boolean {
+    return this.unlockedKeys.has(target.profile.name.toLowerCase());
+  }
+
+  unlock(target: Target): void {
+    this.unlockedKeys.add(target.profile.name.toLowerCase());
+  }
+
+  /** Lookup a target by name in the shared registry (used by resolveTarget). */
+  registryLookup(name: string): Target | undefined {
+    return this.registry.getByName(name);
+  }
+}
+
+/**
+ * Resolve the target for a tool call: the optional per-call `target` name, or
+ * this session's active target when omitted. Throws NOT_FOUND for an unknown name.
+ */
+export function resolveTarget(selection: TargetSelection, name?: string): Target {
+  if (!name) return selection.active;
+  const t = selection.registryLookup(name);
   if (!t) {
     throw new CcuError({
       error: "NOT_FOUND",
@@ -168,6 +201,7 @@ export function resolveTarget(targets: TargetRegistry, name?: string): Target {
  * was given for a harmless set_value.
  */
 export function assertWritable(
+  selection: TargetSelection,
   target: Target,
   confirm: boolean | undefined,
   opts?: { alwaysConfirm?: boolean },
@@ -192,7 +226,7 @@ export function assertWritable(
     }
     return; // per-call authorization only — never unlocks the session
   }
-  if (!target.unlocked) {
+  if (!selection.isUnlocked(target)) {
     if (confirm !== true) {
       throw new CcuError({
         error: "INVALID_INPUT",
@@ -201,6 +235,6 @@ export function assertWritable(
         hint: "Safety gate on a production CCU. Pass confirm:true to proceed; later writes this session won't need it (except run_script and delete_system_variable, which confirm every call).",
       });
     }
-    target.unlocked = true;
+    selection.unlock(target);
   }
 }

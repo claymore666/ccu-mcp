@@ -15,9 +15,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { RateLimiter } from "./middleware/rate-limiter.js";
-import { TargetRegistry } from "./ccu/target-registry.js";
+import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
-import { resolveAuthTokens } from "./auth/token.js";
+import { resolveAuthTokens, startAutoRotation } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
 import { createMcpServer, type ServerDeps } from "./server.js";
 import { extractBearerToken, normalizeClientIp } from "./utils.js";
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   // it start before the CCU is reachable. Only the active target logs in eagerly;
   // others log in lazily on first use / switch.
   try {
-    await targets.loginActive();
+    await targets.loginDefault();
   } catch (err) {
     logger.warn("startup_degraded", {
       error: (err as Error).message,
@@ -54,23 +54,30 @@ async function main(): Promise<void> {
     });
   }
 
-  // Load each target's device-type cache; warm only the active one in background.
+  // Load each target's device-type cache; warm only the default one in background.
   await targets.loadCaches();
-  targets.warmActive(rateLimiter).catch((err) => {
+  targets.warmDefault(rateLimiter).catch((err) => {
     logger.error("cache_warm_background_error", { error: (err as Error).message });
   });
 
-  // Shared tool dependencies. session/resolver/deviceTypeCache are getters that
-  // resolve to the ACTIVE target each access, so a use_ccu() switch is picked up
-  // by the next tool call without touching tools that read deps.session etc.
-  const deps: ServerDeps = {
-    config,
-    targets,
-    get session() { return targets.active.session; },
-    get resolver() { return targets.active.resolver; },
-    get deviceTypeCache() { return targets.active.deviceTypeCache; },
-    rateLimiter,
-    logger,
+  // Per-MCP-session tool dependencies: each McpServer gets its OWN
+  // TargetSelection (active-target pointer + protected-target unlocks), so in
+  // HTTP mode one client's use_ccu/confirm can't affect another client.
+  // session/resolver/deviceTypeCache are getters that resolve to the
+  // selection's active target on each access, so a use_ccu() switch is picked
+  // up by the next tool call without touching tools that read deps.session etc.
+  const makeDeps = (): ServerDeps => {
+    const selection = new TargetSelection(targets);
+    return {
+      config,
+      targets,
+      selection,
+      get session() { return selection.active.session; },
+      get resolver() { return selection.active.resolver; },
+      get deviceTypeCache() { return selection.active.deviceTypeCache; },
+      rateLimiter,
+      logger,
+    };
   };
 
   let poller: ResourcePoller;
@@ -78,12 +85,12 @@ async function main(): Promise<void> {
   let httpServer: HttpServer | HttpsServer | null = null;
 
   if (config.mcp.transport === "stdio") {
-    const mcpServer = createMcpServer(deps);
+    const mcpServer = createMcpServer(makeDeps());
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
       () => mcpServer.server.sendResourceListChanged(),
-      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.default.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = () => mcpServer.close();
@@ -93,16 +100,21 @@ async function main(): Promise<void> {
     // A stateless StreamableHTTPServerTransport only survives a single request,
     // so each MCP session gets its own transport + server (deps are shared),
     // routed by the Mcp-Session-Id header per the SDK's session pattern.
-    const authTokens = await resolveAuthTokens(
-      {
-        envToken: config.mcp.authToken,
-        envPreviousToken: config.mcp.authTokenPrevious,
-        dataDir: config.cache.dir,
-        ttlMs: config.mcp.authTokenTtlMs,
-        graceMs: config.mcp.authTokenGraceMs,
-      },
-      logger,
-    );
+    const authTokenOpts = {
+      envToken: config.mcp.authToken,
+      envPreviousToken: config.mcp.authTokenPrevious,
+      dataDir: config.cache.dir,
+      ttlMs: config.mcp.authTokenTtlMs,
+      graceMs: config.mcp.authTokenGraceMs,
+    };
+    const authTokens = await resolveAuthTokens(authTokenOpts, logger);
+    // With a TTL on the auto-generated token, rotation must also happen while
+    // the server RUNS — verify() enforces expiry live, and a long-running
+    // process would otherwise lock every client out until a manual restart.
+    const stopTokenRotation =
+      !config.mcp.authToken && config.mcp.authTokenTtlMs !== undefined
+        ? startAutoRotation(authTokens, authTokenOpts, logger)
+        : null;
     // Bound the session map. Each MCP session pins a McpServer + transport that
     // is removed only on transport.onclose (explicit DELETE / clean teardown).
     // A client that initializes then drops its connection — or reconnects in a
@@ -114,15 +126,18 @@ async function main(): Promise<void> {
     const SESSION_IDLE_MS = 30 * 60_000; // 30 min without a request → reclaim
     const sessions = new Map<
       string,
-      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number }
+      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number; openStreams: number }
     >();
 
     // Reclaim sessions whose last request predates `cutoff`. Returns how many
     // were evicted. Shared by the periodic sweep and the at-capacity fast path.
+    // A session with an open SSE stream is NOT idle even without new POSTs —
+    // it is passively receiving notifications — so it is never reclaimed while
+    // the stream is up (openStreams drops to 0 when the connection closes).
     const evictIdleSessions = (cutoff: number): number => {
       let evicted = 0;
       for (const [sid, s] of sessions) {
-        if (s.lastSeen < cutoff) {
+        if (s.lastSeen < cutoff && s.openStreams === 0) {
           sessions.delete(sid);
           s.server.close().catch(() => {});
           evicted++;
@@ -178,7 +193,7 @@ async function main(): Promise<void> {
 
         // Health check endpoint
         if (req.url === "/health" && req.method === "GET") {
-          handleHealthRequest(req, res, { session: targets.active.session, deviceTypeCache: targets.active.deviceTypeCache });
+          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache });
           return;
         }
 
@@ -220,6 +235,15 @@ async function main(): Promise<void> {
         const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
         if (existing) {
           existing.lastSeen = Date.now();
+          if (req.method === "GET") {
+            // GET opens the long-lived SSE notification stream; hold the
+            // session out of idle eviction until the connection closes.
+            existing.openStreams++;
+            res.on("close", () => {
+              existing.openStreams--;
+              existing.lastSeen = Date.now();
+            });
+          }
           await existing.transport.handleRequest(req, res);
           return;
         }
@@ -254,7 +278,7 @@ async function main(): Promise<void> {
           allowedHosts: config.mcp.allowedHosts,
           allowedOrigins: config.mcp.allowedOrigins,
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now() });
+            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now(), openStreams: 0 });
             logger.info("mcp_session_started", { sessions: sessions.size });
           },
         });
@@ -263,7 +287,7 @@ async function main(): Promise<void> {
             logger.info("mcp_session_closed", { sessions: sessions.size });
           }
         };
-        const sessionServer = createMcpServer(deps);
+        const sessionServer = createMcpServer(makeDeps());
         await sessionServer.connect(transport);
         await transport.handleRequest(req, res);
       } catch (err) {
@@ -312,11 +336,12 @@ async function main(): Promise<void> {
           [...sessions.values()].map((s) => s.server.server.sendResourceListChanged()),
         );
       },
-      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.default.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = async () => {
       clearInterval(idleSweep);
+      stopTokenRotation?.();
       await Promise.allSettled([...sessions.values()].map((s) => s.server.close()));
       sessions.clear();
     };

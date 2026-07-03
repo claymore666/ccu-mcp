@@ -138,10 +138,10 @@ describe("set_system_variable handler", () => {
     cleanupDeps(deps);
   });
 
-  it("uses ReGa.runScript for string variables, with escaping", async () => {
+  it("uses ReGa.runScript for string variables, with escaping and scoped lookup", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return [{ name: "Notiz", type: "STRING" }];
-      return "";
+      return "OK"; // the write script confirms with WriteLine("OK")
     });
     const { server, deps } = createTestServer({ sessionCall });
 
@@ -151,31 +151,78 @@ describe("set_system_variable handler", () => {
     const scriptCall = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "ReGa.runScript");
     const script = (scriptCall![1] as { script: string }).script;
     expect(script).toContain('say \\"hi\\" #1'); // quotes escaped, # untouched (issue #16)
+    // Lookup is scoped to the sysvar list — a channel/program with the same
+    // name must not shadow the variable (global dom.GetObject name match).
+    expect(script).toContain('dom.GetObject(ID_SYSTEM_VARIABLES).Get(');
     cleanupDeps(deps);
   });
 
-  it("uses SysVar.setFloat for enum variables", async () => {
+  it("string write surfaces a ReGa failure (empty output) instead of fake success", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Notiz", type: "STRING" }];
+      return ""; // hmscript returns "" on any ReGa error
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "set_system_variable", { name: "Notiz", value: "x" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("CCU_ERROR");
+    cleanupDeps(deps);
+  });
+
+  it("uses SysVar.setFloat for enum (LIST) variables and accepts a valid index", async () => {
     const sessionCall = vi.fn()
-      .mockResolvedValueOnce([{ name: "Modus", type: "ENUM" }])
+      .mockResolvedValueOnce([{ name: "Modus", type: "LIST", valueList: "off;low;high" }])
       .mockResolvedValueOnce(true);
     const { server, deps } = createTestServer({ sessionCall });
 
     const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Modus", value: 2 }));
 
     expect((result as any).method).toBe("SysVar.setFloat");
+    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setFloat", { name: "Modus", value: 2 });
     cleanupDeps(deps);
   });
 
-  it("uses SysVar.setBool for bool variables", async () => {
-    const sessionCall = vi.fn()
-      .mockResolvedValueOnce([{ name: "Anwesenheit", type: "BOOL" }]) // SysVar.getAll
-      .mockResolvedValueOnce(true);                                    // SysVar.setBool
+  it("converts an enum label to its index and rejects out-of-range/unknown values", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Modus", type: "LIST", valueList: "off;low;high" }];
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const byLabel = parseToolResult(await callTool(server, "set_system_variable", { name: "Modus", value: "low" })) as any;
+    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setFloat", { name: "Modus", value: 1 });
+    expect(byLabel.value).toBe(1);
+
+    const outOfRange: any = await callTool(server, "set_system_variable", { name: "Modus", value: 99 });
+    expect(outOfRange.isError).toBe(true);
+    expect(JSON.parse(outOfRange.content[0].text).error).toBe("INVALID_INPUT");
+
+    const unknown: any = await callTool(server, "set_system_variable", { name: "Modus", value: "turbo" });
+    expect(unknown.isError).toBe(true);
+    expect(JSON.parse(unknown.content[0].text).error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+
+  it("uses SysVar.setBool for LOGIC variables, sending numeric 0/1", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      // the CCU's real type string for a plain bool sysvar is LOGIC, not BOOL
+      if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "LOGIC" }];
+      return true;
+    });
     const { server, deps } = createTestServer({ sessionCall });
 
     const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true }));
-
     expect((result as any).method).toBe("SysVar.setBool");
-    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: true });
+    // setbool.tcl string-compares non-0/1 values ("false" >= 1 is true!), so
+    // the tool must send numeric 0/1 — never a JSON boolean.
+    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: 1 });
+
+    await callTool(server, "set_system_variable", { name: "Anwesenheit", value: false });
+    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: 0 });
+
+    const junk: any = await callTool(server, "set_system_variable", { name: "Anwesenheit", value: "maybe" });
+    expect(junk.isError).toBe(true);
+    expect(JSON.parse(junk.content[0].text).error).toBe("INVALID_INPUT");
     cleanupDeps(deps);
   });
 });
@@ -189,6 +236,7 @@ describe("create_system_variable handler", () => {
   it("creates a bool variable via ReGa and reports created:true", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return []; // no existing vars
+      if (method === "ReGa.runScript") return "Urlaub"; // script echoes the stored name
       return null;
     });
     const { server, deps } = createTestServer({ sessionCall });
@@ -223,8 +271,44 @@ describe("create_system_variable handler", () => {
     cleanupDeps(deps);
   });
 
-  it("creates a float variable with unit/min/max", async () => {
+  it("reports CCU_ERROR when the create script produces no output (ReGa failure)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [];
+      if (method === "ReGa.runScript") return ""; // hmscript returns "" on script error
+      return null;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "Urlaub", type: "bool" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("CCU_ERROR");
+    cleanupDeps(deps);
+  });
+
+  it("rejects enum labels containing the CCU's ';' value-list separator", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "Modus", type: "enum", values: ["off", "eco;comfort"] });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    expect(sessionCall).not.toHaveBeenCalled();
+    cleanupDeps(deps);
+  });
+
+  it("rejects min/max magnitudes that stringify to exponent notation", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => (method === "SysVar.getAll" ? [] : null));
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "Tiny", type: "float", min: 1e-7, max: 1 });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    cleanupDeps(deps);
+  });
+
+  it("creates a float variable with unit/min/max", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [];
+      if (method === "ReGa.runScript") return "Soll";
+      return null;
+    });
     const { server, deps } = createTestServer({ sessionCall });
 
     await callTool(server, "create_system_variable", { name: "Soll", type: "float", unit: "°C", min: 5, max: 30 });
@@ -284,6 +368,7 @@ describe("sysvar type cache invalidation (issue #24)", () => {
   it("create_system_variable invalidates the shared type cache so the next set re-fetches", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "BOOL" }];
+      if (method === "ReGa.runScript") return "Neu"; // create script echoes the stored name
       return null;
     });
     const { server, deps } = createTestServer({ sessionCall });
