@@ -116,6 +116,14 @@ export class SessionManager {
   async logout(): Promise<void> {
     this.closed = true;
     this.stopRenewal();
+    // Let an in-flight login settle: one already past the closed check may
+    // still assign sessionId and restart the renewal timer. Awaiting it here
+    // means the session it minted is logged out below instead of leaked
+    // (counting toward the CCU's "too many sessions").
+    if (this.loginPromise) {
+      await this.loginPromise.catch(() => {});
+      this.stopRenewal();
+    }
     if (this.sessionId) {
       try {
         await this.client.call("Session.logout", { _session_id_: this.sessionId });

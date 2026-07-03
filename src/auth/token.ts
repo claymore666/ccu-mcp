@@ -73,6 +73,12 @@ export interface ResolveAuthTokensOptions {
   ttlMs?: number;
   /** Overlap after an auto-rotation during which the just-replaced token still validates. */
   graceMs: number;
+  /**
+   * Announce a freshly-minted token even when persisting it FAILED. True for
+   * startup (an in-memory token beats none); rotation ticks pass false so a
+   * broken data dir doesn't announce a new never-persisted token every tick.
+   */
+  announceUnpersisted?: boolean;
 }
 
 /** Persisted shape of the auto-generated token file. */
@@ -235,8 +241,9 @@ export async function resolveAuthTokens(
     changed = true;
   }
 
+  let saved = true;
   if (changed) {
-    const saved = await persist(dataDir, state, logger);
+    saved = await persist(dataDir, state, logger);
     if (!saved && rotated) {
       // A rotation that can't be persisted must not take effect: the next
       // check would re-read the unchanged file and rotate AGAIN, minting and
@@ -251,7 +258,9 @@ export async function resolveAuthTokens(
       rotated = false;
     }
   }
-  if (minted) announce(state.token!, dataDir, rotated);
+  if (minted && (saved || opts.announceUnpersisted !== false)) {
+    announce(state.token!, dataDir, rotated);
+  }
 
   const entries: TokenEntry[] = [
     {
@@ -289,22 +298,31 @@ export function startAutoRotation(
   logger: Logger,
   intervalMs: number = ROTATION_CHECK_INTERVAL_MS,
 ): () => void {
+  const hasPersistedToken = async (): Promise<boolean> => {
+    try {
+      return Boolean(parsePersisted(await readFile(join(opts.dataDir, ENV_FILENAME), "utf-8")).token);
+    } catch {
+      return false;
+    }
+  };
   const tick = (): void => {
     void (async () => {
-      // Only rotate what is actually PERSISTED. If the startup generation
-      // could not be saved (unwritable data dir), a tick would re-read the
-      // empty state and generate + announce a brand-new token, invalidating
-      // the startup-announced one — every interval. Skipping keeps the
-      // in-memory token stable; auth_token_save_failed already flagged the
-      // root cause.
-      try {
-        const persisted = parsePersisted(await readFile(join(opts.dataDir, ENV_FILENAME), "utf-8"));
-        if (!persisted.token) return;
-      } catch {
-        return; // nothing persisted → nothing to rotate
+      // Only ADOPT what ends up persisted. If the startup save failed
+      // (unwritable data dir), blindly adopting each tick's resolve would
+      // mint + announce a brand-new token every interval, 401ing the
+      // previous one. Announce is suppressed for unpersisted mints, and the
+      // in-memory startup token stays valid until the data dir is fixed —
+      // at which point the resolve below persists a fresh token, announces
+      // it, and rotation resumes without a restart.
+      const hadPersisted = await hasPersistedToken();
+      const fresh = await resolveAuthTokens(
+        { ...opts, announceUnpersisted: false },
+        logger,
+        Date.now() + intervalMs,
+      );
+      if (hadPersisted || (await hasPersistedToken())) {
+        tokens.replaceWith(fresh);
       }
-      const fresh = await resolveAuthTokens(opts, logger, Date.now() + intervalMs);
-      tokens.replaceWith(fresh);
     })().catch((err: unknown) => {
       logger.error("auth_token_rotation_failed", { error: (err as Error).message });
     });
