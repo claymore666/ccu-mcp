@@ -242,7 +242,10 @@ export async function resolveAuthTokens(
       // check would re-read the unchanged file and rotate AGAIN, minting and
       // announcing a fresh token every interval (each invalidating the last).
       // Keep the pre-rotation state; auth_token_save_failed points the
-      // operator at the real problem (unwritable data dir).
+      // operator at the real problem (unwritable data dir). Deliberate
+      // trade-off: once the old token's hard expiry passes, verify() rejects
+      // everything until the data dir is fixed — a deterministic, logged
+      // lockout beats silently churning through announced tokens.
       state = preRotationState;
       minted = false;
       rotated = false;
@@ -287,11 +290,24 @@ export function startAutoRotation(
   intervalMs: number = ROTATION_CHECK_INTERVAL_MS,
 ): () => void {
   const tick = (): void => {
-    resolveAuthTokens(opts, logger, Date.now() + intervalMs)
-      .then((fresh) => tokens.replaceWith(fresh))
-      .catch((err: unknown) => {
-        logger.error("auth_token_rotation_failed", { error: (err as Error).message });
-      });
+    void (async () => {
+      // Only rotate what is actually PERSISTED. If the startup generation
+      // could not be saved (unwritable data dir), a tick would re-read the
+      // empty state and generate + announce a brand-new token, invalidating
+      // the startup-announced one — every interval. Skipping keeps the
+      // in-memory token stable; auth_token_save_failed already flagged the
+      // root cause.
+      try {
+        const persisted = parsePersisted(await readFile(join(opts.dataDir, ENV_FILENAME), "utf-8"));
+        if (!persisted.token) return;
+      } catch {
+        return; // nothing persisted → nothing to rotate
+      }
+      const fresh = await resolveAuthTokens(opts, logger, Date.now() + intervalMs);
+      tokens.replaceWith(fresh);
+    })().catch((err: unknown) => {
+      logger.error("auth_token_rotation_failed", { error: (err as Error).message });
+    });
   };
   // Run once immediately: a token expiring within the FIRST interval after
   // startup would otherwise 401 until the first timer tick (the startup

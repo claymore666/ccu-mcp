@@ -121,6 +121,16 @@ export function parseValue(val: unknown): unknown {
     // so a long numeric ID stored in a STRING datapoint would be corrupted.
     const significant = s.replace(/[-.]/g, "").replace(/^0+/, "");
     if (significant.length <= 15) return Number(s);
+    // Longer digit strings are still fine when the double round-trips exactly
+    // (e.g. "3600000000000000" — trailing zeros carry no precision).
+    if (!s.includes(".")) {
+      try {
+        const n = Number(s);
+        if (BigInt(s) === BigInt(n)) return n;
+      } catch {
+        // fall through to returning the string
+      }
+    }
   }
   return s;
 }
