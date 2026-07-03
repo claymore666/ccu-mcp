@@ -220,8 +220,13 @@ export class SessionManager {
    * (full CCU access) at mode 0600, so this adds no meaningful exposure.
    */
   private credHash(): string {
+    // Length-prefix the user so distinct (user, password) pairs can never
+    // alias through the delimiter (e.g. "a"/"b:c" vs "a:b"/"c"). Both are
+    // operator config, so this is belt-and-suspenders, not a security
+    // boundary — but an unambiguous credential hash is worth the one line.
+    const { user, password } = this.config;
     return createHash("sha256")
-      .update(`${this.config.user}:${this.config.password}`)
+      .update(`${user.length}:${user}:${password}`)
       .digest("hex")
       .slice(0, 16);
   }

@@ -336,7 +336,7 @@ describe("session persistence and restore (coverage round)", () => {
 
   // cred = truncated sha256("<user>:<password>") — must match baseConfig (Admin/pw)
   const credOf = (user: string, password: string) =>
-    createHash("sha256").update(`${user}:${password}`).digest("hex").slice(0, 16);
+    createHash("sha256").update(`${user.length}:${user}:${password}`).digest("hex").slice(0, 16);
 
   it("restores a persisted session when host, port, user, and credentials match", async () => {
     await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin", cred: credOf("Admin", "pw") });
