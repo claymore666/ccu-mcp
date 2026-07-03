@@ -358,15 +358,24 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
       // setbool.tcl/setfloat.tcl answer success even when dom.GetObject finds
       // no variable (verified in the OCCU TCL) — a delete racing the 30s type
       // cache would silently no-op. Verify the write had a target: a missing
-      // variable makes getValueByName's script write nothing ("").
-      await rateLimiter.acquire();
-      const verify = await withRetry(
-        () => session.call("SysVar.getValueByName", { name: args.name }),
-        "SysVar.getValueByName",
-        logger,
-        { rateLimiter },
-      );
-      if (typeof verify !== "string" || verify === "") {
+      // variable makes getValueByName's script write nothing (""). A TRANSPORT
+      // failure of this extra read must not turn the already-landed write into
+      // a reported error — the result then says the write is unverified.
+      let verifyResult: unknown;
+      let verified = true;
+      try {
+        await rateLimiter.acquire();
+        verifyResult = await withRetry(
+          () => session.call("SysVar.getValueByName", { name: args.name }),
+          "SysVar.getValueByName",
+          logger,
+          { rateLimiter },
+        );
+      } catch (err) {
+        logger.warn("sysvar_write_unverified", { name: args.name, error: (err as Error).message });
+        verified = false;
+      }
+      if (verified && (typeof verifyResult !== "string" || verifyResult === "")) {
         throw new CcuError({
           error: "NOT_FOUND",
           code: 0,
@@ -375,7 +384,12 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         });
       }
 
-      return toolResult({ name: args.name, value: rpcValue, method });
+      return toolResult({
+        name: args.name,
+        value: rpcValue,
+        method,
+        ...(verified ? {} : { verified: false, note: "The write succeeded but could not be verified (CCU unreachable during verification)." }),
+      });
     }),
   );
 }

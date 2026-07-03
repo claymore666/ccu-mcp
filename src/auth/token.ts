@@ -262,12 +262,15 @@ export async function resolveAuthTokens(
       state.issued = now;
       changed = true;
     } else if (now + lookaheadMs - state.issued >= ttlMs) {
-      // Expired → rotate. Keep the old token valid for the grace overlap.
+      // Expired → rotate. Keep the old token valid for the grace overlap —
+      // and never SHORTER than its promised hard expiry: a lookahead-triggered
+      // early rotation with a grace smaller than the tick interval must not
+      // cut the token off before issued+ttl.
       state = {
         token: randomBytes(32).toString("base64url"),
         issued: now,
         previous: state.token,
-        previousExpires: now + graceMs,
+        previousExpires: Math.max(now + graceMs, state.issued + ttlMs),
       };
       changed = true;
       minted = true;
