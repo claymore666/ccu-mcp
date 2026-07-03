@@ -19,6 +19,11 @@ export class SessionManager {
   private sessionId: string | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private loginPromise: Promise<void> | null = null;
+  // Set on logout/destroy: an in-flight call failing AUTH after logout must
+  // not lazily re-login — that would mint a CCU session nobody ever logs out,
+  // restart the renewal timer post-destroy, and re-persist a session file
+  // that logout just cleared.
+  private closed = false;
 
   constructor(config: CcuConfig, logger: Logger, cacheDir?: string, sessionFile?: string) {
     this.config = config;
@@ -44,6 +49,14 @@ export class SessionManager {
   }
 
   private async doLogin(): Promise<void> {
+    if (this.closed) {
+      throw new CcuError({
+        error: "AUTH",
+        code: 0,
+        message: "Session manager is closed (server shutting down)",
+        hint: "Retry after the server restarts.",
+      });
+    }
     // Reuse the in-memory session if the CCU still accepts it. This matters
     // when re-login was triggered by a 400 that was really a privilege denial
     // (the session is fine, the user just may not call that method): minting a
@@ -101,6 +114,7 @@ export class SessionManager {
   }
 
   async logout(): Promise<void> {
+    this.closed = true;
     this.stopRenewal();
     if (this.sessionId) {
       try {
@@ -258,6 +272,7 @@ export class SessionManager {
   }
 
   destroy(): void {
+    this.closed = true;
     this.stopRenewal();
   }
 }

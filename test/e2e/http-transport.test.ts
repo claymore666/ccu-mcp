@@ -140,10 +140,16 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
     const sid = await initialize(mcpPort);
     const res = await mcpPost(mcpPort, {
       jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: "get_system_info", arguments: {} },
+      params: { name: "list_devices", arguments: {} },
     }, sid);
     expect(res.status).toBe(200);
-    await res.text();
+    const msg = await parseSse(res);
+    // The failure must surface as a STRUCTURED tool error (isError + JSON
+    // body with category and hint), not a JSON-RPC crash or empty success.
+    expect(msg.result.isError).toBe(true);
+    const structured = JSON.parse(msg.result.content[0].text) as { error: string; hint: string };
+    expect(["UNREACHABLE", "TIMEOUT", "AUTH", "CCU_ERROR"]).toContain(structured.error);
+    expect(structured.hint).toBeTruthy();
     expect(child.exitCode).toBeNull(); // server survived the failed CCU call
   });
 });

@@ -127,6 +127,7 @@ async function main(): Promise<void> {
     // authenticated client must still not grow this without bound.
     const MAX_SESSIONS = 256;
     const SESSION_IDLE_MS = 30 * 60_000; // 30 min without a request → reclaim
+    const MAX_BODY_BYTES = 4 * 1024 * 1024; // JSON-RPC messages are tiny; 4 MB is generous
     const sessions = new Map<
       string,
       { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number; openStreams: number }
@@ -194,8 +195,9 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Health check endpoint
-        if (req.url === "/health" && req.method === "GET") {
+        // Health check endpoint (tolerate cache-busting query strings that
+        // uptime monitors append — req.url includes the query part)
+        if ((req.url === "/health" || req.url?.startsWith("/health?")) && req.method === "GET") {
           handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache });
           return;
         }
@@ -232,6 +234,18 @@ async function main(): Promise<void> {
           return;
         }
 
+        // Body size cap: the SDK transport buffers the whole JSON body with no
+        // limit of its own, so an authenticated client could otherwise balloon
+        // the heap with one multi-GB POST. Content-Length covers every normal
+        // client; a chunked-encoding bypass requires a hostile valid-token
+        // holder, which is outside the threat model.
+        const contentLength = Number(req.headers["content-length"]);
+        if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Request body too large" }));
+          return;
+        }
+
         // Existing session: route to its transport (POST, GET/SSE, DELETE) and
         // mark it active so the idle sweep doesn't reclaim a session in use.
         const sessionId = req.headers["mcp-session-id"];
@@ -253,6 +267,22 @@ async function main(): Promise<void> {
             });
           }
           await existing.transport.handleRequest(req, res);
+          return;
+        }
+
+        // A request that CARRIES a session id we don't know (idle-evicted or
+        // pre-restart) must get 404 "Session not found" — the MCP spec's cue
+        // for the client to re-initialize. Routing it into a fresh transport
+        // would answer 400 "Server not initialized", which clients treat as a
+        // hard error and never recover from (and would waste a McpServer
+        // construction per request).
+        if (typeof sessionId === "string") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found" },
+            id: null,
+          }));
           return;
         }
 

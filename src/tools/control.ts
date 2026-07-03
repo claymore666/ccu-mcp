@@ -73,7 +73,10 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
 
       // Write new value. An ACTION datapoint (PRESS_SHORT, STOP, ...) is a
       // one-shot trigger: a timed-out request may still have been delivered,
-      // so auto-retry could fire it twice — send those exactly once.
+      // so auto-retry could fire it twice — send those exactly once. Retry
+      // only when the cache POSITIVELY says the param is not ACTION: on a
+      // cache miss (cold cache, unwarmed target) the param might be a trigger,
+      // and losing one retry is cheaper than double-firing a button press.
       const rawParamType = resolver.resolveRawParamType(args.address, args.valueKey, deviceTypeCache);
       const doSetValue = () => session.call("Interface.setValue", {
         interface: iface,
@@ -83,10 +86,10 @@ function registerSetValue(server: McpServer, deps: ServerDeps): void {
         value: args.value,
       });
       await rateLimiter.acquire();
-      if (rawParamType === "ACTION") {
-        await doSetValue();
-      } else {
+      if (rawParamType !== undefined && rawParamType !== "ACTION") {
         await withRetry(doSetValue, "Interface.setValue", logger, { rateLimiter });
+      } else {
+        await doSetValue();
       }
 
       log({ address: args.address });
@@ -142,11 +145,14 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
         return { name, type, value: String(value) };
       });
 
-      // If any written key is a one-shot ACTION trigger, the request must not
-      // be auto-retried — a timeout after delivery would re-fire the trigger.
-      const containsAction = Object.keys(args.set).some(
-        (name) => resolver.resolveRawParamType(args.address, name, deviceTypeCache, args.paramsetKey) === "ACTION",
-      );
+      // If any written key is (or COULD be, on a cache miss) a one-shot ACTION
+      // trigger, the request must not be auto-retried — a timeout after
+      // delivery would re-fire the trigger. ACTION params only exist in
+      // VALUES; MASTER writes are config and always safe to retry.
+      const safeToRetry = args.paramsetKey === "MASTER" || Object.keys(args.set).every((name) => {
+        const raw = resolver.resolveRawParamType(args.address, name, deviceTypeCache, args.paramsetKey);
+        return raw !== undefined && raw !== "ACTION";
+      });
       const doPutParamset = () => session.call("Interface.putParamset", {
         interface: iface,
         address: args.address,
@@ -154,10 +160,10 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
         set: paramArray,
       });
       await rateLimiter.acquire();
-      if (containsAction) {
-        await doPutParamset();
-      } else {
+      if (safeToRetry) {
         await withRetry(doPutParamset, "Interface.putParamset", logger, { rateLimiter });
+      } else {
+        await doPutParamset();
       }
 
       return toolResult({ address: args.address, paramsetKey: args.paramsetKey, written: args.set });
@@ -252,6 +258,18 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         }
       } else if (varType.includes("FLOAT") || varType.includes("NUMBER") || varType.includes("INTEGER")) {
         method = "SysVar.setFloat";
+        // setfloat.tcl passes the value straight into sv.State() and always
+        // answers success — a non-numeric value would silently store 0.
+        const num = typeof args.value === "number" ? args.value : Number(String(args.value));
+        if (typeof args.value === "boolean" || String(args.value).trim() === "" || !Number.isFinite(num)) {
+          throw new CcuError({
+            error: "INVALID_INPUT",
+            code: 0,
+            message: `System variable "${args.name}" is numeric; got: ${JSON.stringify(args.value)}`,
+            hint: "Pass a finite number.",
+          });
+        }
+        rpcValue = num;
       } else if (varType.includes("ENUM") || varType.includes("LIST")) {
         method = "SysVar.setFloat"; // Enums use numeric index
         // Accept either a 0-based index or one of the enum's labels; anything
@@ -670,30 +688,44 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
       }
 
       if (args.function) {
-        await rateLimiter.acquire();
-        const functions = await withRetry(
-          () => session.call("Subsection.getAll"),
-          "Subsection.getAll",
-          logger,
-          { rateLimiter },
-        ) as Array<{ id: string; name: string }>;
-        const fn = functions.find((f) => f.name === args.function);
-        if (!fn) {
-          throw new CcuError({
-            error: "NOT_FOUND",
-            code: 0,
-            message: `Function not found: ${args.function}`,
-            hint: `Valid functions: ${functions.map((f) => f.name).join(", ")}`,
-          });
+        try {
+          await rateLimiter.acquire();
+          const functions = await withRetry(
+            () => session.call("Subsection.getAll"),
+            "Subsection.getAll",
+            logger,
+            { rateLimiter },
+          ) as Array<{ id: string; name: string }>;
+          const fn = functions.find((f) => f.name === args.function);
+          if (!fn) {
+            throw new CcuError({
+              error: "NOT_FOUND",
+              code: 0,
+              message: `Function not found: ${args.function}`,
+              hint: `Valid functions: ${functions.map((f) => f.name).join(", ")}`,
+            });
+          }
+          await rateLimiter.acquire();
+          await withRetry(
+            () => session.call(mode === "add" ? "Subsection.addChannel" : "Subsection.removeChannel", { id: fn.id, channelId }),
+            "Subsection.modifyChannel",
+            logger,
+            { rateLimiter },
+          );
+          applied.push({ kind: "function", name: fn.name });
+        } catch (err) {
+          // The room step may already have been applied — a bare error would
+          // hide that partial state and invite a double-applying retry.
+          if (applied.length > 0 && err instanceof CcuError) {
+            throw new CcuError({
+              ...err.structured,
+              message:
+                `${err.structured.message} — NOTE: the room ` +
+                `${mode === "add" ? "assignment" : "removal"} ("${applied[0]!.name}") was already applied`,
+            });
+          }
+          throw err;
         }
-        await rateLimiter.acquire();
-        await withRetry(
-          () => session.call(mode === "add" ? "Subsection.addChannel" : "Subsection.removeChannel", { id: fn.id, channelId }),
-          "Subsection.modifyChannel",
-          logger,
-          { rateLimiter },
-        );
-        applied.push({ kind: "function", name: fn.name });
       }
 
       return toolResult({
