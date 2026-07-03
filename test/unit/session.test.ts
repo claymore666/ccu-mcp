@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SessionManager } from "../../src/ccu/session.js";
+import { createHash } from "node:crypto";
 import { CcuError } from "../../src/middleware/error-mapper.js";
 import { Logger } from "../../src/logger.js";
 
@@ -333,8 +334,12 @@ describe("session persistence and restore (coverage round)", () => {
     return session;
   }
 
-  it("restores a persisted session when host, port, and user match", async () => {
-    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin" });
+  // cred = truncated sha256("<user>:<password>") — must match baseConfig (Admin/pw)
+  const credOf = (user: string, password: string) =>
+    createHash("sha256").update(`${user}:${password}`).digest("hex").slice(0, 16);
+
+  it("restores a persisted session when host, port, user, and credentials match", async () => {
+    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin", cred: credOf("Admin", "pw") });
     const client = createMockClient();
     client.call.mockResolvedValue(true); // Session.renew
     const session = createSessionWithDir(client);
@@ -343,6 +348,22 @@ describe("session persistence and restore (coverage round)", () => {
 
     expect(session.getSessionId()).toBe("persisted");
     expect(client.call).not.toHaveBeenCalledWith("Session.login", expect.anything());
+    session.destroy();
+  });
+
+  it("ignores a persisted session minted with different credentials (password rotation)", async () => {
+    // Restoring across a password change would keep renewing the old session
+    // forever — the new password would never be exercised, and rotation would
+    // not cut off access.
+    await writeSessionFile({ sessionId: "stale-cred", host: "test", port: 80, user: "Admin", cred: credOf("Admin", "OLD-password") });
+    const client = createMockClient();
+    client.call.mockImplementation(async (method: string) =>
+      method === "Session.login" ? "fresh" : true);
+    const session = createSessionWithDir(client);
+
+    await session.login();
+
+    expect(session.getSessionId()).toBe("fresh");
     session.destroy();
   });
 

@@ -1,5 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { CcuConfig } from "./types.js";
 import { CcuClient } from "./client.js";
 import { CcuError } from "../middleware/error-mapper.js";
@@ -210,13 +211,28 @@ export class SessionManager {
     return this.sessionId !== null;
   }
 
+  /**
+   * Truncated hash of the credentials that minted the persisted session. A
+   * session must NOT be restored when the configured password changed:
+   * renewals would keep the old session alive indefinitely, so a rotated (or
+   * mistyped) password would never be exercised and rotation wouldn't cut off
+   * access. Truncated to 16 hex chars — the file already holds the session id
+   * (full CCU access) at mode 0600, so this adds no meaningful exposure.
+   */
+  private credHash(): string {
+    return createHash("sha256")
+      .update(`${this.config.user}:${this.config.password}`)
+      .digest("hex")
+      .slice(0, 16);
+  }
+
   private async tryRestoreSession(): Promise<boolean> {
     try {
       const filePath = join(this.cacheDir, this.sessionFile);
       const data = JSON.parse(await readFile(filePath, "utf-8"));
 
       if (data.sessionId && data.host === this.config.host && data.port === this.config.port
-          && data.user === this.config.user) {
+          && data.user === this.config.user && data.cred === this.credHash()) {
         // Test if session is still valid
         try {
           await this.client.call("Session.renew", { _session_id_: data.sessionId });
@@ -245,6 +261,7 @@ export class SessionManager {
         host: this.config.host,
         port: this.config.port,
         user: this.config.user,
+        cred: this.credHash(),
         timestamp: new Date().toISOString(),
       });
       // 0600: the session ID grants full admin access to the CCU

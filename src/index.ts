@@ -202,9 +202,16 @@ async function main(): Promise<void> {
           return;
         }
 
+        // Path routing: MCP is served on the root path only (README points
+        // clients at the bare URL; "/mcp" accepted as a common convention).
+        // Without this, the full protocol answered on ANY path, and a typo'd
+        // path surfaced as a misleading Accept/initialization error instead
+        // of 404.
+        const path = (req.url ?? "/").split("?")[0];
+
         // Health check endpoint (tolerate cache-busting query strings that
-        // uptime monitors append — req.url includes the query part)
-        if ((req.url === "/health" || req.url?.startsWith("/health?")) && req.method === "GET") {
+        // uptime monitors append)
+        if (path === "/health" && req.method === "GET") {
           const detailed = authTokens.verify(extractBearerToken(req.headers.authorization ?? ""));
           handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache }, detailed);
           return;
@@ -239,6 +246,13 @@ async function main(): Promise<void> {
             "WWW-Authenticate": challenge,
           });
           res.end(JSON.stringify({ error: "Unauthorized" }));
+          return;
+        }
+
+        // Unknown paths are 404 — not the MCP endpoint.
+        if (path !== "/" && path !== "/mcp") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Not found" }));
           return;
         }
 

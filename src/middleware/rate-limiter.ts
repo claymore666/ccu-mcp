@@ -8,6 +8,7 @@ export class RateLimiter {
   private lastRefill: number;
   private waitQueue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
   private refillTimer: ReturnType<typeof setInterval> | null = null;
+  private destroyed = false;
 
   constructor(maxBurst: number = 20, refillRate: number = 10, maxQueue: number = 1000) {
     this.maxTokens = maxBurst;
@@ -53,6 +54,18 @@ export class RateLimiter {
   }
 
   async acquire(): Promise<void> {
+    // A post-destroy acquire (e.g. a tool's SECOND acquire racing shutdown)
+    // must fail like the queued waiters did — re-arming the refill timer and
+    // firing the call into a session being logged out would produce a
+    // confusing AUTH/UNREACHABLE error instead of this clean rejection.
+    if (this.destroyed) {
+      throw new CcuError({
+        error: "CCU_ERROR",
+        code: 0,
+        message: "Server is shutting down; the request was cancelled.",
+        hint: "Retry after the server restarts.",
+      });
+    }
     this.refill();
 
     if (this.tokens >= 1) {
@@ -80,6 +93,7 @@ export class RateLimiter {
   }
 
   destroy(): void {
+    this.destroyed = true;
     if (this.refillTimer) {
       clearInterval(this.refillTimer);
       this.refillTimer = null;

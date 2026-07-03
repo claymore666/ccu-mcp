@@ -182,12 +182,18 @@ async function persist(dataDir: string, state: PersistedToken, logger: Logger): 
   }
 }
 
-function announce(token: string, dataDir: string, rotated: boolean): void {
+function announce(token: string, dataDir: string, rotated: boolean, saved: boolean): void {
   const envPath = join(dataDir, ENV_FILENAME);
   const what = rotated ? "Rotated auth token" : "Generated auth token";
   // stderr so the operator can copy it; never goes through the structured logger.
   process.stderr.write(`\n[ccu-mcp] ${what}: ${token}\n`);
-  process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+  if (saved) {
+    process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+  } else {
+    process.stderr.write(
+      `[ccu-mcp] WARNING: the token could NOT be saved to ${envPath} — it is valid for this run only. Fix the data dir permissions.\n`,
+    );
+  }
   process.stderr.write(`[ccu-mcp] Use this token in your MCP client configuration.\n\n`);
 }
 
@@ -200,15 +206,22 @@ function announce(token: string, dataDir: string, rotated: boolean): void {
  *     rotation overlap; the operator ends the overlap by dropping it + restart.
  *     TTL does not apply to operator-supplied tokens — the operator owns them.
  *  2. The auto-generated token persisted under `dataDir/.env`. With `ttlMs` set
- *     it carries an issued-at; once it lapses we rotate on startup: a fresh
- *     token is generated and the just-replaced one stays valid for `graceMs`
- *     so in-flight clients aren't cut off mid-migration.
+ *     it carries an issued-at; once it lapses we rotate (at startup and via
+ *     the runtime rotation ticks): a fresh token is generated and the
+ *     just-replaced one stays valid for `graceMs` so in-flight clients aren't
+ *     cut off mid-migration.
  *  3. If neither exists, generate and persist a new token.
+ *
+ * `lookaheadMs` advances ONLY the TTL-expiry decision (rotate slightly early
+ * so there is no 401 window between hard expiry and the next tick). Pruning
+ * and timestamp stamping always use the REAL clock — a skewed prune clock
+ * could drop the outgoing token before its promised grace end.
  */
 export async function resolveAuthTokens(
   opts: ResolveAuthTokensOptions,
   logger: Logger,
   now: number = Date.now(),
+  lookaheadMs: number = 0,
 ): Promise<AuthTokens> {
   // 1. Explicit env token(s) — operator-managed, no TTL, file untouched.
   if (opts.envToken) {
@@ -248,7 +261,7 @@ export async function resolveAuthTokens(
       // expiring a token whose true age we can't know.
       state.issued = now;
       changed = true;
-    } else if (now - state.issued >= ttlMs) {
+    } else if (now + lookaheadMs - state.issued >= ttlMs) {
       // Expired → rotate. Keep the old token valid for the grace overlap.
       state = {
         token: randomBytes(32).toString("base64url"),
@@ -292,7 +305,7 @@ export async function resolveAuthTokens(
     }
   }
   if (minted && (saved || opts.announceUnpersisted !== false)) {
-    announce(state.token!, dataDir, rotated);
+    announce(state.token!, dataDir, rotated, saved);
   }
 
   const entries: TokenEntry[] = [
@@ -346,12 +359,15 @@ export function startAutoRotation(
       // previous one. Announce is suppressed for unpersisted mints, and the
       // in-memory startup token stays valid until the data dir is fixed —
       // at which point the resolve below persists a fresh token, announces
-      // it, and rotation resumes without a restart.
+      // it, and rotation resumes without a restart. The interval is passed
+      // as LOOKAHEAD (rotate-early decision only); pruning uses the real
+      // clock so a short grace window is never cut off by the skew.
       const hadPersisted = await hasPersistedToken();
       const fresh = await resolveAuthTokens(
         { ...opts, announceUnpersisted: false },
         logger,
-        Date.now() + intervalMs,
+        Date.now(),
+        intervalMs,
       );
       if (hadPersisted) {
         tokens.replaceWith(fresh);

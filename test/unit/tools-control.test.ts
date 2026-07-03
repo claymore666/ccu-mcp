@@ -105,6 +105,7 @@ describe("set_system_variable handler", () => {
   it("caches sysvar types so repeated writes fetch SysVar.getAll only once", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "BOOL" }];
+      if (method === "SysVar.getValueByName") return "current";
       return true;
     });
     const { server, deps } = createTestServer({ sessionCall });
@@ -126,6 +127,7 @@ describe("set_system_variable handler", () => {
           ? [{ name: "Anwesenheit", type: "BOOL" }]
           : [{ name: "Anwesenheit", type: "BOOL" }, { name: "NeueVariable", type: "FLOAT" }];
       }
+      if (method === "SysVar.getValueByName") return "current";
       return true;
     });
     const { server, deps } = createTestServer({ sessionCall });
@@ -141,6 +143,7 @@ describe("set_system_variable handler", () => {
   it("uses ReGa.runScript for string variables, with escaping and scoped lookup", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return [{ name: "Notiz", type: "STRING" }];
+      if (method === "SysVar.getValueByName") return "current";
       return "OK"; // the write script confirms with WriteLine("OK")
     });
     const { server, deps } = createTestServer({ sessionCall });
@@ -169,28 +172,35 @@ describe("set_system_variable handler", () => {
     cleanupDeps(deps);
   });
 
+  // Last RPC is now the post-write verification, so assert on the setter call itself.
+  const lastCallTo = (sessionCall: any, method: string) =>
+    sessionCall.mock.calls.filter((c: unknown[]) => c[0] === method).at(-1);
+
   it("uses SysVar.setFloat for enum (LIST) variables and accepts a valid index", async () => {
-    const sessionCall = vi.fn()
-      .mockResolvedValueOnce([{ name: "Modus", type: "LIST", valueList: "off;low;high" }])
-      .mockResolvedValueOnce(true);
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Modus", type: "LIST", valueList: "off;low;high" }];
+      if (method === "SysVar.getValueByName") return "high";
+      return true;
+    });
     const { server, deps } = createTestServer({ sessionCall });
 
     const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Modus", value: 2 }));
 
     expect((result as any).method).toBe("SysVar.setFloat");
-    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setFloat", { name: "Modus", value: 2 });
+    expect(lastCallTo(sessionCall, "SysVar.setFloat")).toEqual(["SysVar.setFloat", { name: "Modus", value: 2 }]);
     cleanupDeps(deps);
   });
 
   it("converts an enum label to its index and rejects out-of-range/unknown values", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       if (method === "SysVar.getAll") return [{ name: "Modus", type: "LIST", valueList: "off;low;high" }];
+      if (method === "SysVar.getValueByName") return "current";
       return true;
     });
     const { server, deps } = createTestServer({ sessionCall });
 
     const byLabel = parseToolResult(await callTool(server, "set_system_variable", { name: "Modus", value: "low" })) as any;
-    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setFloat", { name: "Modus", value: 1 });
+    expect(lastCallTo(sessionCall, "SysVar.setFloat")).toEqual(["SysVar.setFloat", { name: "Modus", value: 1 }]);
     expect(byLabel.value).toBe(1);
 
     const outOfRange: any = await callTool(server, "set_system_variable", { name: "Modus", value: 99 });
@@ -207,6 +217,7 @@ describe("set_system_variable handler", () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
       // the CCU's real type string for a plain bool sysvar is LOGIC, not BOOL
       if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "LOGIC" }];
+      if (method === "SysVar.getValueByName") return "current";
       return true;
     });
     const { server, deps } = createTestServer({ sessionCall });
@@ -215,10 +226,10 @@ describe("set_system_variable handler", () => {
     expect((result as any).method).toBe("SysVar.setBool");
     // setbool.tcl string-compares non-0/1 values ("false" >= 1 is true!), so
     // the tool must send numeric 0/1 — never a JSON boolean.
-    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: 1 });
+    expect(lastCallTo(sessionCall, "SysVar.setBool")).toEqual(["SysVar.setBool", { name: "Anwesenheit", value: 1 }]);
 
     await callTool(server, "set_system_variable", { name: "Anwesenheit", value: false });
-    expect(sessionCall).toHaveBeenLastCalledWith("SysVar.setBool", { name: "Anwesenheit", value: 0 });
+    expect(lastCallTo(sessionCall, "SysVar.setBool")).toEqual(["SysVar.setBool", { name: "Anwesenheit", value: 0 }]);
 
     const junk: any = await callTool(server, "set_system_variable", { name: "Anwesenheit", value: "maybe" });
     expect(junk.isError).toBe(true);

@@ -355,6 +355,26 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         { rateLimiter },
       );
 
+      // setbool.tcl/setfloat.tcl answer success even when dom.GetObject finds
+      // no variable (verified in the OCCU TCL) — a delete racing the 30s type
+      // cache would silently no-op. Verify the write had a target: a missing
+      // variable makes getValueByName's script write nothing ("").
+      await rateLimiter.acquire();
+      const verify = await withRetry(
+        () => session.call("SysVar.getValueByName", { name: args.name }),
+        "SysVar.getValueByName",
+        logger,
+        { rateLimiter },
+      );
+      if (typeof verify !== "string" || verify === "") {
+        throw new CcuError({
+          error: "NOT_FOUND",
+          code: 0,
+          message: `System variable disappeared before the write could land: ${args.name}`,
+          hint: "It was likely deleted concurrently (the CCU's setBool/setFloat report success even without a target). Call list_system_variables to confirm.",
+        });
+      }
+
       return toolResult({ name: args.name, value: rpcValue, method });
     }),
   );
