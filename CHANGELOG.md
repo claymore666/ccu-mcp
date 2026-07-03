@@ -97,6 +97,18 @@ instead of looping through re-login.
 
 **Miscellaneous.**
 
+- The HTTP MCP endpoint is served on `/` (and `/mcp`) only; unknown paths now
+  return 404 instead of answering the full protocol. Point clients at the
+  bare server URL as documented.
+- A persisted CCU session is only restored when the configured credentials
+  still match (session.json carries a credential hash) — after a password
+  change the server does a fresh login instead of silently renewing the old
+  session forever. Existing session files trigger one fresh login after
+  upgrade.
+- `set_system_variable` verifies bool/float/enum writes found their target
+  (one extra read per write): the CCU's setters report success even for a
+  variable deleted moments earlier.
+
 - Device-type cache format is v2 (enum `valueList` is now a proper label
   array); the old cache is discarded and re-warmed once after upgrade.
 - `list_devices` with both `room` and `function` filters as AND (was OR).
