@@ -3,6 +3,18 @@ import type { ServerDeps } from "../server.js";
 import { withRetry } from "../middleware/retry.js";
 import { VERSION } from "../utils.js";
 
+/** Every registered resource URI — the source of truth for subscribe validation. */
+export const RESOURCE_URIS: readonly string[] = [
+  "homematic://devices",
+  "homematic://rooms",
+  "homematic://functions",
+  "homematic://programs",
+  "homematic://sysvars",
+  "homematic://interfaces",
+  "homematic://device-types",
+  "homematic://system",
+];
+
 export function registerResources(server: McpServer, deps: ServerDeps): void {
   const { rateLimiter, logger } = deps;
 

@@ -77,6 +77,17 @@ export class SessionManager {
 
     // Fresh login with retry on "too many sessions"
     for (let attempt = 0; attempt <= LOGIN_MAX_RETRIES; attempt++) {
+      // Re-check between retries: logout() awaits this promise, and a full
+      // retry cycle (~9-12s) would push shutdown past the 10s force-exit,
+      // skipping Session.logout entirely.
+      if (this.closed) {
+        throw new CcuError({
+          error: "AUTH",
+          code: 0,
+          message: "Session manager is closed (server shutting down)",
+          hint: "Retry after the server restarts.",
+        });
+      }
       try {
         const result = await this.client.call("Session.login", {
           username: this.config.user,

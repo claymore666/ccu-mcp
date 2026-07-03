@@ -37,6 +37,22 @@ export class AuthTokens {
   }
 
   /**
+   * Adopt a freshly-resolved set while keeping the CURRENT tokens valid for a
+   * grace window. Used when persistence recovers after a broken data dir: the
+   * in-memory startup token clients were given must not 401 instantly — it
+   * gets the same overlap a normal rotation grants the outgoing token.
+   */
+  adoptWithGrace(other: AuthTokens, graceMs: number, now: number = Date.now()): void {
+    const cutoff = now + graceMs;
+    const graced = this.entries.map((e) => ({
+      ...e,
+      expiresAt: e.expiresAt === null ? cutoff : Math.min(e.expiresAt, cutoff),
+      label: `${e.label}-graced`,
+    }));
+    this.entries = [...other.entries, ...graced];
+  }
+
+  /**
    * Timing-safe check of a presented token against every entry. Compares against
    * ALL entries (no early return) so neither a match nor expiry leaks via timing,
    * preserving the original single-token guarantee across the rotation set.
@@ -320,8 +336,13 @@ export function startAutoRotation(
         logger,
         Date.now() + intervalMs,
       );
-      if (hadPersisted || (await hasPersistedToken())) {
+      if (hadPersisted) {
         tokens.replaceWith(fresh);
+      } else if (await hasPersistedToken()) {
+        // Persistence just recovered: the newly persisted token replaces the
+        // unpersisted in-memory one, but clients holding the old one get the
+        // usual grace overlap instead of an instant 401.
+        tokens.adoptWithGrace(fresh, opts.graceMs);
       }
     })().catch((err: unknown) => {
       logger.error("auth_token_rotation_failed", { error: (err as Error).message });

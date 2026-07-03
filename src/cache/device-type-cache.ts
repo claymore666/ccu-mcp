@@ -5,6 +5,7 @@ import type { RateLimiter } from "../middleware/rate-limiter.js";
 import type { Logger } from "../logger.js";
 import type { CachedDeviceType, CachedParamDescription, DeviceTypeCacheFile } from "./types.js";
 import { CACHE_VERSION } from "./types.js";
+import { expectArray } from "../utils.js";
 
 const DEFAULT_CACHE_FILENAME = "device-type-cache.json";
 
@@ -179,7 +180,9 @@ export class DeviceTypeCache {
 
       // Get all interfaces
       await rateLimiter.acquire();
-      const interfaces = await session.call("Interface.listInterfaces") as Array<{ name: string }>;
+      const interfaces = expectArray<{ name: string }>(
+        await session.call("Interface.listInterfaces"), "Interface.listInterfaces",
+      );
 
       // Get all devices per interface
       const devicesByType = new Map<string, { interface: string; address: string; channels: string[] }>();
@@ -188,7 +191,9 @@ export class DeviceTypeCache {
         await rateLimiter.acquire();
         let devices: Array<{ type: string; address: string; children?: string[]; parent?: string }>;
         try {
-          devices = await session.call("Interface.listDevices", { interface: iface.name }) as typeof devices;
+          devices = expectArray(
+            await session.call("Interface.listDevices", { interface: iface.name }), "Interface.listDevices",
+          );
         } catch {
           this.logger.warn("cache_warm_interface_skip", { interface: iface.name });
           continue;

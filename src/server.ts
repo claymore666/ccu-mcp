@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { SubscribeRequestSchema, UnsubscribeRequestSchema, McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import type { AppConfig } from "./config.js";
 import type { SessionManager } from "./ccu/session.js";
 import type { RateLimiter } from "./middleware/rate-limiter.js";
@@ -13,7 +13,7 @@ import { registerControlTools } from "./tools/control.js";
 import { registerDiagnosticsTools } from "./tools/diagnostics.js";
 import { registerMetaTools } from "./tools/meta.js";
 import { registerTargetTools } from "./tools/targets.js";
-import { registerResources } from "./resources/registry.js";
+import { registerResources, RESOURCE_URIS } from "./resources/registry.js";
 import { registerPrompts } from "./prompts/registry.js";
 import { VERSION } from "./utils.js";
 
@@ -81,6 +81,14 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   const subscriptions = new Set<string>();
   serverSubscriptions.set(server, subscriptions);
   server.server.setRequestHandler(SubscribeRequestSchema, async (req) => {
+    // Reject unknown URIs: silently accepting a typo would leave the client
+    // waiting forever for notifications that can never come.
+    if (!RESOURCE_URIS.includes(req.params.uri)) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        `Unknown resource: ${req.params.uri}. Valid URIs: ${RESOURCE_URIS.join(", ")}`,
+      );
+    }
     subscriptions.add(req.params.uri);
     return {};
   });
