@@ -334,7 +334,7 @@ describe("session persistence and restore (coverage round)", () => {
     return session;
   }
 
-  // cred = truncated sha256("<user>:<password>") — must match baseConfig (Admin/pw)
+  // cred = truncated sha256("<user.length>:<user>:<password>") — must match baseConfig (Admin/pw)
   const credOf = (user: string, password: string) =>
     createHash("sha256").update(`${user.length}:${user}:${password}`).digest("hex").slice(0, 16);
 
