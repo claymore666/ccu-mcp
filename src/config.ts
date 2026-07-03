@@ -203,6 +203,14 @@ export function loadConfig(): AppConfig {
   if (!profilesEnv) {
     // Back-compat: no CCU_PROFILES ⇒ one "default" profile from the flat
     // CCU_HOST/CCU_PASSWORD/... vars, with the exact validation as before.
+    // A leftover CCU_DEFAULT_PROFILE would be silently meaningless here — and
+    // writes would target the flat CCU_HOST box while the env file suggests a
+    // named profile — so fail loudly like every other config typo.
+    if (process.env.CCU_DEFAULT_PROFILE?.trim()) {
+      throw new Error(
+        "CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not — either define CCU_PROFILES or remove CCU_DEFAULT_PROFILE",
+      );
+    }
     const host = process.env.CCU_HOST;
     if (!host) throw new Error("CCU_HOST environment variable is required");
     const password = process.env.CCU_PASSWORD;

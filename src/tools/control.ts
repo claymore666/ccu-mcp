@@ -6,7 +6,7 @@ import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { assertWritable } from "../ccu/target-registry.js";
-import { toolResult, parseValue, escapeHmScript } from "../utils.js";
+import { toolResult, parseValue, escapeHmScript, expectArray } from "../utils.js";
 
 // Optional `confirm` field for write tools: required (true) to authorize a write
 // against a `protected` CCU target (e.g. prod). Harmless on unprotected targets.
@@ -215,7 +215,7 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
           "SysVar.getAll",
           logger,
           { rateLimiter },
-        ) as Array<{ name: string; type: string; valueList?: string }>;
+        ).then((r) => expectArray<{ name: string; type: string; valueList?: string }>(r));
         typeCacheHolder.entry = {
           ts: Date.now(),
           types: new Map(allVars.map((v) => [v.name, { type: v.type, valueList: v.valueList }])),
@@ -416,7 +416,7 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
         "SysVar.getAll",
         logger,
         { rateLimiter },
-      ) as Array<{ name: string }>;
+      ).then((r) => expectArray<{ name: string }>(r));
       if (existing.some((v) => v.name === args.name)) {
         throw new CcuError({
           error: "INVALID_INPUT",
@@ -571,7 +571,7 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
         "SysVar.getAll",
         logger,
         { rateLimiter },
-      ) as Array<{ name: string }>;
+      ).then((r) => expectArray<{ name: string }>(r));
       if (!existing.some((v) => v.name === args.name)) {
         throw new CcuError({
           error: "NOT_FOUND",
@@ -642,7 +642,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
         "Device.listAllDetail",
         logger,
         { rateLimiter },
-      ) as CcuDevice[];
+      ).then((r) => expectArray<CcuDevice>(r));
       active.resolver.updateDeviceList(devices);
       let channelId: string | undefined;
       for (const d of devices) {
@@ -667,7 +667,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
           "Room.getAll",
           logger,
           { rateLimiter },
-        ) as Array<{ id: string; name: string }>;
+        ).then((r) => expectArray<{ id: string; name: string }>(r));
         const room = rooms.find((r) => r.name === args.room);
         if (!room) {
           throw new CcuError({
@@ -695,7 +695,7 @@ function registerAssignChannel(server: McpServer, deps: ServerDeps, mode: "add" 
             "Subsection.getAll",
             logger,
             { rateLimiter },
-          ) as Array<{ id: string; name: string }>;
+          ).then((r) => expectArray<{ id: string; name: string }>(r));
           const fn = functions.find((f) => f.name === args.function);
           if (!fn) {
             throw new CcuError({
@@ -767,7 +767,7 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
         "Program.getAll",
         logger,
         { rateLimiter },
-      ) as Array<{ id: string; name: string }>;
+      ).then((r) => expectArray<{ id: string; name: string }>(r));
 
       const program = programs.find((p) => String(p.id) === args.id);
       if (!program) {

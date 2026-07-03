@@ -5,6 +5,7 @@ import type { Logger } from "../logger.js";
 import type { CcuDevice } from "../ccu/types.js";
 import { CcuError } from "./error-mapper.js";
 import { withRetry } from "./retry.js";
+import { expectArray } from "../utils.js";
 
 export class Resolver {
   private interfaceMap: Map<string, string> | null = null;
@@ -132,7 +133,7 @@ export class Resolver {
       "Device.listAllDetail",
       logger,
       { rateLimiter },
-    ) as CcuDevice[];
+    ).then((r) => expectArray<CcuDevice>(r));
 
     this.updateDeviceList(devices);
   }

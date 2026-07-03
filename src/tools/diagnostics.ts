@@ -6,7 +6,7 @@ import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { assertWritable, resolveTarget } from "../ccu/target-registry.js";
-import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo } from "../utils.js";
+import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo, expectArray } from "../utils.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
@@ -401,7 +401,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           "Device.listAllDetail",
           logger,
           { rateLimiter },
-        ) as CcuDevice[];
+        ).then((r) => expectArray<CcuDevice>(r));
         resolver.updateDeviceList(devices);
         const nameByAddress = new Map<string, string>();
         const ifaceByAddress = new Map<string, string>();
@@ -422,7 +422,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
           "Interface.listInterfaces",
           logger,
           { rateLimiter },
-        ) as Array<{ name: string }>;
+        ).then((r) => expectArray<{ name: string }>(r));
 
         const needle = args.name?.toLowerCase();
         const deviceEntries: Array<Record<string, unknown>> = [];

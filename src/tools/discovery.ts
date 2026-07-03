@@ -5,7 +5,7 @@ import type { CcuDevice } from "../ccu/types.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { resolveTarget } from "../ccu/target-registry.js";
-import { structuredResult } from "../utils.js";
+import { structuredResult, expectArray } from "../utils.js";
 
 // Optional per-call target override (route one read to a named CCU).
 const targetField = z.string().optional()
@@ -52,7 +52,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
         { rateLimiter },
       );
 
-      let devices = result as CcuDevice[];
+      let devices = expectArray<CcuDevice>(result, "Device.listAllDetail");
 
       // Update resolver's device list
       resolver.updateDeviceList(devices);
@@ -70,7 +70,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             "Room.getAll",
             logger,
             { rateLimiter },
-          ) as Array<{ id: string; name: string; channelIds: string[] }>;
+          ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const room = rooms.find((r) => r.name === args.room);
           filterSets.push(new Set(room?.channelIds ?? []));
         }
@@ -82,7 +82,7 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             "Subsection.getAll",
             logger,
             { rateLimiter },
-          ) as Array<{ id: string; name: string; channelIds: string[] }>;
+          ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const func = functions.find((f) => f.name === args.function);
           filterSets.push(new Set(func?.channelIds ?? []));
         }
@@ -210,7 +210,7 @@ function registerListPrograms(server: McpServer, deps: ServerDeps): void {
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger, { rateLimiter }) as Array<{ name: string }>;
+      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger, { rateLimiter }).then((r) => expectArray<{ name: string }>(r));
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -239,7 +239,7 @@ function registerListSystemVariables(server: McpServer, deps: ServerDeps): void 
       const { rateLimiter, logger } = deps;
       const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger, { rateLimiter }) as Array<{ name: string }>;
+      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger, { rateLimiter }).then((r) => expectArray<{ name: string }>(r));
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -335,7 +335,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         "Device.listAllDetail",
         logger,
         { rateLimiter },
-      ) as CcuDevice[];
+      ).then((r) => expectArray<CcuDevice>(r));
       resolver.updateDeviceList(devices);
       const channelName = new Map<string, string>();
       for (const d of devices) for (const ch of d.channels) channelName.set(ch.address, ch.name);
@@ -347,7 +347,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         "Interface.listInterfaces",
         logger,
         { rateLimiter },
-      ) as Array<{ name: string }>;
+      ).then((r) => expectArray<{ name: string }>(r));
 
       // Match a channel address against the filter: exact channel, or any
       // channel of the given device address (so a device-level filter works).

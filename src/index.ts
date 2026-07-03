@@ -19,7 +19,7 @@ import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthTokens, startAutoRotation } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
-import { createMcpServer, type ServerDeps } from "./server.js";
+import { createMcpServer, serverSubscriptions, type ServerDeps } from "./server.js";
 import { extractBearerToken, normalizeClientIp } from "./utils.js";
 
 async function main(): Promise<void> {
@@ -92,7 +92,12 @@ async function main(): Promise<void> {
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
-      () => mcpServer.server.sendResourceListChanged(),
+      async (changedUris) => {
+        const subs = serverSubscriptions.get(mcpServer);
+        for (const uri of changedUris) {
+          if (subs?.has(uri)) await mcpServer.server.sendResourceUpdated({ uri });
+        }
+      },
       () => stdioDeps.selection.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
@@ -369,9 +374,14 @@ async function main(): Promise<void> {
     }
 
     poller = new ResourcePoller(
-      async () => {
+      async (changedUris) => {
         await Promise.allSettled(
-          [...sessions.values()].map((s) => s.server.server.sendResourceListChanged()),
+          [...sessions.values()].flatMap((s) => {
+            const subs = serverSubscriptions.get(s.server);
+            return changedUris
+              .filter((uri) => subs?.has(uri))
+              .map((uri) => s.server.server.sendResourceUpdated({ uri }));
+          }),
         );
       },
       () => targets.default.session, rateLimiter, logger, config.resourcePollInterval,

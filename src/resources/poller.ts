@@ -31,9 +31,11 @@ export class ResourcePoller {
   private consecutiveFailures = 0;
 
   constructor(
-    // Called when a polled resource changed. In stdio mode this notifies the
-    // single server; in HTTP mode it fans out to all active MCP sessions.
-    private readonly notifyChanged: () => Promise<void>,
+    // Called with the URIs whose CONTENT changed. In stdio mode this notifies
+    // the single server; in HTTP mode it fans out to all active MCP sessions.
+    // Consumers send notifications/resources/updated per subscribed URI — the
+    // resource LIST is static, so list_changed would be the wrong signal.
+    private readonly notifyChanged: (changedUris: string[]) => Promise<void>,
     // Resolves the ACTIVE target's session on every cycle (not captured once),
     // so the poller follows a use_ccu() switch — matching how the resources
     // themselves read deps.session per-call. Capturing the startup session here
@@ -72,7 +74,7 @@ export class ResourcePoller {
   }
 
   private async poll(): Promise<void> {
-    let anyChanged = false;
+    const changedUris: string[] = [];
     let anyFailed = false;
 
     for (const resource of POLLABLE) {
@@ -82,6 +84,7 @@ export class ResourcePoller {
           () => this.getSession().call(resource.method),
           resource.method,
           this.logger,
+          { rateLimiter: this.rateLimiter },
         );
         const hash = createHash("sha256").update(JSON.stringify(data)).digest("hex");
 
@@ -90,7 +93,7 @@ export class ResourcePoller {
 
         if (prev && prev !== hash) {
           this.logger.info("resource_changed", { uri: resource.uri });
-          anyChanged = true;
+          changedUris.push(resource.uri);
         }
       } catch (err) {
         anyFailed = true;
@@ -107,9 +110,9 @@ export class ResourcePoller {
       this.consecutiveFailures = 0;
     }
 
-    if (anyChanged) {
+    if (changedUris.length > 0) {
       try {
-        await this.notifyChanged();
+        await this.notifyChanged(changedUris);
       } catch (err) {
         this.logger.warn("resource_notify_failed", { error: (err as Error).message });
       }

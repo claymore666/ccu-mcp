@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { CcuError } from "./middleware/error-mapper.js";
 const _require = createRequire(import.meta.url);
 
 /** Server version — read from package.json at runtime, single source of truth. */
@@ -94,6 +95,25 @@ export function structuredResult(structured: Record<string, unknown>, text?: unk
     content: [{ type: "text" as const, text: typeof body === "string" ? body : JSON.stringify(body, null, 2) }],
     structuredContent: structured,
   };
+}
+
+/**
+ * Assert a CCU JSON-RPC result is an array before it is iterated. A CCU (or a
+ * proxy in front of it) answering a valid JSON-RPC envelope with `result:
+ * null` must surface as a structured CCU_ERROR, not as a TypeError crash
+ * ("null is not iterable") with no category or hint.
+ */
+export function expectArray<T>(result: unknown, ccuMethod?: string): T[] {
+  if (!Array.isArray(result)) {
+    throw new CcuError({
+      error: "CCU_ERROR",
+      code: 0,
+      message: `CCU returned an unexpected non-array result${ccuMethod ? ` for ${ccuMethod}` : ""}`,
+      hint: "The CCU (or a proxy in front of it) answered with a malformed result. Try again; if it persists, check the CCU's API service.",
+      ...(ccuMethod && { ccuMethod }),
+    });
+  }
+  return result as T[];
 }
 
 /** Try to parse JSON, return raw string on failure. */
