@@ -117,7 +117,7 @@ Returns: Array of {address, name, datapoints}
 Idempotent: yes`,
 
   get_paramset: `Read all parameters for a channel.
-Args: address (string), paramsetKey ("VALUES"|"MASTER"|"LINK"), interface? (auto-resolved), target? (CCU target name)
+Args: address (string), paramsetKey ("VALUES" | "MASTER" | a link partner's channel address for that link's parameters), interface? (auto-resolved), target? (CCU target name)
 Returns: {address, paramsetKey, params}
 Idempotent: yes`,
 

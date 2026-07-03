@@ -217,11 +217,12 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get Paramset",
       description:
-        "Read all parameters for a channel (VALUES, MASTER, or LINK). " +
-        "Interface is auto-resolved from the address.",
+        "Read all parameters for a channel: VALUES (runtime state), MASTER (config), or a link " +
+        "paramset — for the latter pass the LINK PARTNER's channel address as paramsetKey " +
+        "(find partners with list_links). Interface is auto-resolved from the address.",
       inputSchema: {
         address: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
-        paramsetKey: z.enum(["VALUES", "MASTER", "LINK"]).describe("Paramset to read"),
+        paramsetKey: z.string().describe("'VALUES', 'MASTER', or a link partner's channel address (reads that direct link's parameters)"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
         target: targetField,
       },
@@ -235,6 +236,18 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
     async (args) => runTool("get_paramset", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
       const { session, resolver } = resolveTarget(deps.selection, args.target);
+      // The XML-RPC layer accepts MASTER, VALUES, or a link PARTNER's channel
+      // address as the paramset key — the literal "LINK" is not a valid key
+      // (verified live: it fails 502 "unknown device or channel", which would
+      // surface as a misleading NOT_FOUND for a channel that exists).
+      if (args.paramsetKey.toUpperCase() === "LINK") {
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: 'The literal "LINK" is not a valid paramset key on the CCU.',
+          hint: "To read a direct link's parameters, pass the LINK PARTNER's channel address as paramsetKey (find partners with list_links).",
+        });
+      }
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       await rateLimiter.acquire();

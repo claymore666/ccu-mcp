@@ -7,7 +7,7 @@ const CCU_ERROR_MAP: Record<number, { category: ErrorCategory; hint: string }> =
   402: { category: "INTERNAL", hint: "Missing required argument — this is a bug in ccu-mcp." },
   501: { category: "CCU_ERROR", hint: "CCU internal error. Try again or check CCU logs." },
   502: { category: "NOT_FOUND", hint: "Device or channel not found. Call list_devices to discover valid addresses." },
-  503: { category: "NOT_FOUND", hint: "Invalid paramset key. Valid keys are: VALUES, MASTER, LINK." },
+  503: { category: "NOT_FOUND", hint: "Invalid paramset key. Valid keys are VALUES, MASTER, or a link partner's channel address." },
   505: { category: "INVALID_INPUT", hint: "Invalid valueKey or value. Call describe_device_type to see valid parameters." },
   506: { category: "INVALID_INPUT", hint: "Operation not supported by this device/channel." },
   507: { category: "CCU_ERROR", hint: "Transmission pending in HmIP Legacy API. Try again shortly." },

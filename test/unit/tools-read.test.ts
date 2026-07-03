@@ -150,12 +150,28 @@ describe("error and edge paths (coverage round)", () => {
     cleanupDeps(deps);
   });
 
-  it("get_paramset passes arrays through unparsed", async () => {
+  it("get_paramset passes arrays through unparsed (link paramset via partner address)", async () => {
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockResolvedValue([1, 2, 3]),
     });
-    const result = parseToolResult(await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "LINK", interface: "HmIP-RF" })) as any;
+    // Link paramsets are read by passing the link PARTNER's channel address.
+    const result = parseToolResult(await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "BBB:2", interface: "HmIP-RF" })) as any;
     expect(result.params).toEqual([1, 2, 3]);
+    cleanupDeps(deps);
+  });
+
+  it("get_paramset rejects the literal LINK key with guidance (invalid on the CCU)", async () => {
+    // Verified live: the XML-RPC layer accepts MASTER, VALUES, or a partner
+    // channel address — the literal "LINK" fails 502 "unknown device or
+    // channel", which would surface as a misleading NOT_FOUND.
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "get_paramset", { address: "AAA:1", paramsetKey: "LINK", interface: "HmIP-RF" });
+    expect(result.isError).toBe(true);
+    const structured = JSON.parse(result.content[0].text);
+    expect(structured.error).toBe("INVALID_INPUT");
+    expect(structured.hint).toMatch(/partner/i);
+    expect(sessionCall).not.toHaveBeenCalled();
     cleanupDeps(deps);
   });
 
