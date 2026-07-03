@@ -3,16 +3,28 @@ import type { ServerDeps } from "../server.js";
 import { withRetry } from "../middleware/retry.js";
 import { VERSION } from "../utils.js";
 
-/** Every registered resource URI — the source of truth for subscribe validation. */
+// CCU-backed list resources: one JSON-RPC method each; polled for change
+// notifications (see poller.ts POLLABLE).
+const CCU_LIST_RESOURCES = [
+  { name: "devices", uri: "homematic://devices", description: "All devices with channels", method: "Device.listAllDetail" },
+  { name: "rooms", uri: "homematic://rooms", description: "All rooms with channel assignments", method: "Room.getAll" },
+  { name: "functions", uri: "homematic://functions", description: "All function groups", method: "Subsection.getAll" },
+  { name: "programs", uri: "homematic://programs", description: "All automation programs", method: "Program.getAll" },
+  { name: "sysvars", uri: "homematic://sysvars", description: "All system variables with values", method: "SysVar.getAll" },
+  { name: "interfaces", uri: "homematic://interfaces", description: "Available communication interfaces", method: "Interface.listInterfaces" },
+] as const;
+
+const DEVICE_TYPES_URI = "homematic://device-types";
+const SYSTEM_URI = "homematic://system";
+
+/**
+ * Every registered resource URI, DERIVED from the registrations below so the
+ * subscribe validation in server.ts can't drift from what is actually served.
+ */
 export const RESOURCE_URIS: readonly string[] = [
-  "homematic://devices",
-  "homematic://rooms",
-  "homematic://functions",
-  "homematic://programs",
-  "homematic://sysvars",
-  "homematic://interfaces",
-  "homematic://device-types",
-  "homematic://system",
+  ...CCU_LIST_RESOURCES.map((r) => r.uri),
+  DEVICE_TYPES_URI,
+  SYSTEM_URI,
 ];
 
 export function registerResources(server: McpServer, deps: ServerDeps): void {
@@ -26,39 +38,23 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
     return withRetry(() => deps.session.call(method), method, logger);
   };
 
-  server.registerResource("devices", "homematic://devices", { description: "All devices with channels" }, async () => ({
-    contents: [{ uri: "homematic://devices", text: JSON.stringify(await ccuRead("Device.listAllDetail"), null, 2), mimeType: "application/json" }],
+  for (const r of CCU_LIST_RESOURCES) {
+    server.registerResource(r.name, r.uri, { description: r.description }, async () => ({
+      contents: [{ uri: r.uri, text: JSON.stringify(await ccuRead(r.method), null, 2), mimeType: "application/json" }],
+    }));
+  }
+
+  // The two non-polled resources: subscriptions are accepted but change
+  // notifications are not emitted for them (locally-derived / near-static).
+  server.registerResource("device-types", DEVICE_TYPES_URI, { description: "Cached device type schemas (not change-notified)" }, async () => ({
+    contents: [{ uri: DEVICE_TYPES_URI, text: JSON.stringify(deps.deviceTypeCache.getAll(), null, 2), mimeType: "application/json" }],
   }));
 
-  server.registerResource("rooms", "homematic://rooms", { description: "All rooms with channel assignments" }, async () => ({
-    contents: [{ uri: "homematic://rooms", text: JSON.stringify(await ccuRead("Room.getAll"), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("functions", "homematic://functions", { description: "All function groups" }, async () => ({
-    contents: [{ uri: "homematic://functions", text: JSON.stringify(await ccuRead("Subsection.getAll"), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("programs", "homematic://programs", { description: "All automation programs" }, async () => ({
-    contents: [{ uri: "homematic://programs", text: JSON.stringify(await ccuRead("Program.getAll"), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("sysvars", "homematic://sysvars", { description: "All system variables with values" }, async () => ({
-    contents: [{ uri: "homematic://sysvars", text: JSON.stringify(await ccuRead("SysVar.getAll"), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("interfaces", "homematic://interfaces", { description: "Available communication interfaces" }, async () => ({
-    contents: [{ uri: "homematic://interfaces", text: JSON.stringify(await ccuRead("Interface.listInterfaces"), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("device-types", "homematic://device-types", { description: "Cached device type schemas" }, async () => ({
-    contents: [{ uri: "homematic://device-types", text: JSON.stringify(deps.deviceTypeCache.getAll(), null, 2), mimeType: "application/json" }],
-  }));
-
-  server.registerResource("system", "homematic://system", { description: "CCU system info" }, async () => {
+  server.registerResource("system", SYSTEM_URI, { description: "CCU system info (not change-notified)" }, async () => {
     const info: Record<string, unknown> = { serverVersion: VERSION };
     for (const [key, method] of [["version", "CCU.getVersion"], ["serial", "CCU.getSerial"]] as const) {
       try { info[key] = await ccuRead(method); } catch { info[key] = null; }
     }
-    return { contents: [{ uri: "homematic://system", text: JSON.stringify(info, null, 2), mimeType: "application/json" }] };
+    return { contents: [{ uri: SYSTEM_URI, text: JSON.stringify(info, null, 2), mimeType: "application/json" }] };
   });
 }

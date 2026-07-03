@@ -18,6 +18,7 @@ const POLLABLE: PollableResource[] = [
   { uri: "homematic://functions", method: "Subsection.getAll" },
   { uri: "homematic://programs", method: "Program.getAll" },
   { uri: "homematic://sysvars", method: "SysVar.getAll" },
+  { uri: "homematic://interfaces", method: "Interface.listInterfaces" },
 ];
 
 // Backoff: 1×, 2×, 4×, 8×, capped at 10× the base interval

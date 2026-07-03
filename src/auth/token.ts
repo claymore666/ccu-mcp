@@ -31,9 +31,21 @@ export class AuthTokens {
    * Swap in the entries of a freshly-resolved set. Used by runtime rotation:
    * requests hold a reference to ONE AuthTokens instance, so rotation must
    * mutate it in place rather than build a new object nobody consults.
+   *
+   * In-memory graced entries (from adoptWithGrace) survive the swap until
+   * their own expiry — they exist ONLY in memory, so rebuilding from the
+   * persisted file alone would cut the promised grace short at the very next
+   * rotation tick.
    */
-  replaceWith(other: AuthTokens): void {
-    this.entries = other.entries;
+  replaceWith(other: AuthTokens, now: number = Date.now()): void {
+    const keptGraced = this.entries.filter(
+      (e) =>
+        e.label.endsWith("-graced") &&
+        e.expiresAt !== null &&
+        now <= e.expiresAt &&
+        !other.entries.some((o) => o.hash.equals(e.hash)),
+    );
+    this.entries = [...other.entries, ...keptGraced];
   }
 
   /**
@@ -41,14 +53,19 @@ export class AuthTokens {
    * grace window. Used when persistence recovers after a broken data dir: the
    * in-memory startup token clients were given must not 401 instantly — it
    * gets the same overlap a normal rotation grants the outgoing token.
+   * Expired entries are pruned and duplicates skipped, so repeated recoveries
+   * can't grow the set (and per-request verify cost) without bound.
    */
   adoptWithGrace(other: AuthTokens, graceMs: number, now: number = Date.now()): void {
     const cutoff = now + graceMs;
-    const graced = this.entries.map((e) => ({
-      ...e,
-      expiresAt: e.expiresAt === null ? cutoff : Math.min(e.expiresAt, cutoff),
-      label: `${e.label}-graced`,
-    }));
+    const graced = this.entries
+      .filter((e) => e.expiresAt === null || now <= e.expiresAt)
+      .filter((e) => !other.entries.some((o) => o.hash.equals(e.hash)))
+      .map((e) => ({
+        ...e,
+        expiresAt: e.expiresAt === null ? cutoff : Math.min(e.expiresAt, cutoff),
+        label: e.label.endsWith("-graced") ? e.label : `${e.label}-graced`,
+      }));
     this.entries = [...other.entries, ...graced];
   }
 

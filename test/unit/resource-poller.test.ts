@@ -85,8 +85,8 @@ describe("ResourcePoller", () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    // Should have been called for all 5 POLLABLE resources despite first failing
-    expect(mocks.session.call.mock.calls.length).toBe(5);
+    // Should have been called for all 6 POLLABLE resources despite first failing
+    expect(mocks.session.call.mock.calls.length).toBe(6);
     poller.stop();
   });
 
@@ -97,8 +97,8 @@ describe("ResourcePoller", () => {
 
     await vi.advanceTimersByTimeAsync(10_000);
 
-    // 5 resources = 5 acquire calls
-    expect(mocks.rateLimiter.acquire).toHaveBeenCalledTimes(5);
+    // 6 resources = 6 acquire calls
+    expect(mocks.rateLimiter.acquire).toHaveBeenCalledTimes(6);
     poller.stop();
   });
 });
