@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keep the SHA-pinned GitHub Actions current (Dependabot bumps the pin +
+  # the version comment together, so pinning doesn't rot).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # npm deps: security + version updates against the committed lockfile.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
