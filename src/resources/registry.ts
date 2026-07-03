@@ -35,7 +35,7 @@ export function registerResources(server: McpServer, deps: ServerDeps): void {
   // the startup target at registration time.
   const ccuRead = async (method: string) => {
     await rateLimiter.acquire();
-    return withRetry(() => deps.session.call(method), method, logger);
+    return withRetry(() => deps.session.call(method), method, logger, { rateLimiter });
   };
 
   for (const r of CCU_LIST_RESOURCES) {

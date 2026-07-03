@@ -224,9 +224,13 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
                 if (match) {
                   svc.AlReceipt();
                   if (!first) { Write(","); } first = false;
-                  ! JSON-escape user-controlled names (backslash first, then quote)
+                  ! JSON-escape user-controlled names (backslash first, then quote,
+                  ! then raw control chars — consistent with the other emitters)
                   dpName = dpName.Replace("\\\\", "\\\\\\\\");
                   dpName = dpName.Replace("\\"", "\\\\\\"");
+                  dpName = dpName.Replace("\\t", "\\\\t");
+                  dpName = dpName.Replace("\\r", "\\\\r");
+                  dpName = dpName.Replace("\\n", "\\\\n");
                   Write('{"id":"' # sId # '","type":"' # dpName # '","address":"' # chAddr # '"}');
                 }
               }
