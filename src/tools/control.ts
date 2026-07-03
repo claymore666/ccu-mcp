@@ -527,6 +527,12 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
           await rateLimiter.acquire();
           await session.call("SysVar.deleteSysVarByName", { name: actualName });
         } catch { /* best-effort cleanup of the unintended object */ }
+        // The create+delete pair mutated the sysvar list: invalidate the type
+        // cache here too, or a concurrent set's getAll snapshot taken between
+        // create and cleanup would pass the gen check and cache the phantom
+        // variable for the TTL.
+        typeCacheHolder.entry = null;
+        typeCacheHolder.gen++;
         throw new CcuError({
           error: "INVALID_INPUT",
           code: 0,

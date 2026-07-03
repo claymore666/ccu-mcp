@@ -29,7 +29,10 @@ CCU → Interfaces → Devices → Channels → Datapoints (paramsets)
 ## Paramsets
 - **VALUES** — Runtime state (temperature, switch state, valve position)
 - **MASTER** — Device configuration (reporting interval, display settings)
-- **LINK** — Direct peering configuration
+- **Link parameters** — Direct peering configuration. Read them with
+  \`get_paramset\` by passing the link PARTNER's channel address as
+  \`paramsetKey\` (find partners with \`list_links\`) — the literal key
+  "LINK" is not valid on the CCU.
 
 ## Typical Workflow
 1. \`list_devices\` → find device types and channel addresses
