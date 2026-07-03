@@ -19,6 +19,15 @@ export function handleHealthRequest(
 ): void {
   const { session, deviceTypeCache } = deps;
 
+  if (!detailed) {
+    // Liveness only. healthy/degraded (and 200/503) is a pure function of
+    // session_valid, so exposing it pre-auth would still tell any scanner
+    // whether the configured CCU admin credentials currently work.
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
   const checks = {
     server: "up" as const,
     session_valid: session.isLoggedIn(),
@@ -30,5 +39,5 @@ export function handleHealthRequest(
   const httpStatus = status === "healthy" ? 200 : 503;
 
   res.writeHead(httpStatus, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(detailed ? { status, checks } : { status }));
+  res.end(JSON.stringify({ status, checks }));
 }

@@ -36,7 +36,7 @@ export function mapNetworkError(err: Error, ccuMethod: string): StructuredError 
 
   if (causeMsg.includes("fingerprint mismatch")) {
     return {
-      error: "UNREACHABLE",
+      error: "TLS_ERROR",
       code: 0,
       message: `CCU TLS certificate verification failed: ${causeMsg}`,
       hint:

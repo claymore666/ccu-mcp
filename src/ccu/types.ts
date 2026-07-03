@@ -27,6 +27,10 @@ export type ErrorCategory =
   | "CCU_ERROR"
   | "TIMEOUT"
   | "UNREACHABLE"
+  // Deterministic TLS verification failure (pin mismatch): deliberately NOT
+  // retriable — re-handshaking with a possibly-MITM'd peer only delays the
+  // security signal.
+  | "TLS_ERROR"
   | "RATE_LIMITED"
   | "INTERNAL";
 

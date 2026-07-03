@@ -437,14 +437,18 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 
   // stdio: the client usually terminates by closing the pipe (stdin EOF),
-  // not by signaling. Without this, the process would exit via event-loop
-  // drain with no Session.logout (leaking a CCU session toward "too many
-  // sessions") and no cache save. shutdown() is re-entrancy-guarded, so the
-  // close event fired by our own closeTransports() is harmless.
+  // not by signaling. Hook stdin DIRECTLY — StdioServerTransport registers
+  // only 'data'/'error' listeners, so transport/server onclose never fires
+  // on EOF and the process would exit via event-loop drain with no
+  // Session.logout (leaking a CCU session toward "too many sessions") and
+  // no cache save. shutdown() is re-entrancy-guarded.
   if (stdioServer) {
-    stdioServer.server.onclose = () => {
-      void shutdown("stdio-closed");
-    };
+    process.stdin.on("end", () => {
+      void shutdown("stdin-eof");
+    });
+    process.stdin.on("close", () => {
+      void shutdown("stdin-closed");
+    });
   }
 }
 

@@ -135,9 +135,16 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
     rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("stays alive and reports degraded health", async () => {
+  it("stays alive and reports degraded health (detailed view needs auth)", async () => {
     expect(child.exitCode).toBeNull();
-    const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+    // Unauthenticated: liveness only — session state must not leak pre-auth.
+    const anon = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+    expect(anon.status).toBe(200);
+    expect(((await anon.json()) as { status: string }).status).toBe("ok");
+    // Authenticated: full degraded status.
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/health`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
     expect(res.status).toBe(503);
     const body = await res.json() as { status: string };
     expect(body.status).toBe("degraded");
@@ -221,11 +228,16 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("serves the health endpoint without auth", async () => {
+  it("serves the health endpoint without auth (liveness only)", async () => {
     const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
     expect(res.status).toBe(200);
     const body = await res.json() as { status: string };
-    expect(body.status).toBe("healthy");
+    expect(body.status).toBe("ok");
+    // Detailed status requires the bearer token.
+    const detailed = await fetch(`http://127.0.0.1:${mcpPort}/health`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
+    expect((await detailed.json() as { status: string }).status).toBe("healthy");
   });
 
   it("rejects MCP requests without a token", async () => {
@@ -626,7 +638,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   it("serves the health endpoint over HTTPS", async () => {
     const res = await httpsJson(mcpPort, { path: "/health", ca: caCert });
     expect(res.status).toBe(200);
-    expect((JSON.parse(res.text) as { status: string }).status).toBe("healthy");
+    expect((JSON.parse(res.text) as { status: string }).status).toBe("ok");
   });
 
   it("rejects a plaintext HTTP request to the TLS port (TLS is actually on)", async () => {
