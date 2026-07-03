@@ -361,6 +361,11 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
       // variable makes getValueByName's script write nothing (""). A TRANSPORT
       // failure of this extra read must not turn the already-landed write into
       // a reported error — the result then says the write is unverified.
+      // Trade-off: getValueByName's lookup is global (same as the setters'),
+      // not scoped to ID_SYSTEM_VARIABLES — a scoped check would need
+      // ReGa.runScript, which is ADMIN-only and would break USER-level
+      // logins. Worst case is a false NOT_FOUND on a name collision with an
+      // empty-valued channel/program, never a false success.
       let verifyResult: unknown;
       let verified = true;
       try {

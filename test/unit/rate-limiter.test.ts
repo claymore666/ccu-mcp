@@ -64,4 +64,16 @@ describe("RateLimiter", () => {
       expect((err as CcuError).structured.message).toMatch(/shutting down/);
     });
   });
+
+  it("acquire after destroy rejects instead of re-arming the refill timer", async () => {
+    // A tool's SECOND acquire racing shutdown must fail like the queued
+    // waiters did — not park in a fresh queue and fire into a session being
+    // logged out.
+    limiter = new RateLimiter(10, 10);
+    limiter.destroy();
+    await expect(limiter.acquire()).rejects.toBeInstanceOf(CcuError);
+    await limiter.acquire().catch((err) => {
+      expect((err as CcuError).structured.message).toMatch(/shutting down/);
+    });
+  });
 });

@@ -236,6 +236,38 @@ describe("set_system_variable handler", () => {
     expect(JSON.parse(junk.content[0].text).error).toBe("INVALID_INPUT");
     cleanupDeps(deps);
   });
+
+  it("reports NOT_FOUND when the write verification finds no target (deleted concurrently)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "LOGIC" }];
+      if (method === "SysVar.getValueByName") return ""; // variable vanished
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("NOT_FOUND");
+    cleanupDeps(deps);
+  });
+
+  it("returns success flagged verified:false when only the verification read fails", async () => {
+    // The write already landed — a transport failure of the extra read must
+    // not be reported as a failed write.
+    const { CcuError } = await import("../../src/middleware/error-mapper.js");
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "LOGIC" }];
+      if (method === "SysVar.getValueByName") {
+        throw new CcuError({ error: "UNREACHABLE", code: 0, message: "down", hint: "" });
+      }
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true })) as any;
+    expect(result.method).toBe("SysVar.setBool");
+    expect(result.verified).toBe(false);
+    expect(result.note).toMatch(/could not be verified/);
+    cleanupDeps(deps);
+  });
 });
 
 describe("create_system_variable handler", () => {

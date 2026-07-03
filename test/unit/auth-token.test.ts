@@ -151,6 +151,31 @@ describe("resolveAuthTokens", () => {
       expect(tokens.verify(tokenB, tRotate + 24 * HOUR + 1)).toBe(true);
     });
 
+    it("early (lookahead) rotation keeps the old token valid through its promised hard expiry", async () => {
+      const t0 = 1_000_000_000_000;
+      const MIN = 60_000;
+      // Token A, TTL 30 days, tiny grace (3 min) — shorter than the 5-min tick.
+      await resolveAuthTokens({ dataDir: dir, ttlMs: 30 * DAY, graceMs: 3 * MIN }, logger, t0);
+      const tokenA = await fileToken(dir);
+
+      // A tick 4 minutes BEFORE hard expiry rotates early via lookahead.
+      const tTick = t0 + 30 * DAY - 4 * MIN;
+      const tokens = await resolveAuthTokens(
+        { dataDir: dir, ttlMs: 30 * DAY, graceMs: 3 * MIN },
+        logger,
+        tTick,
+        5 * MIN, // lookahead
+      );
+      const tokenB = await fileToken(dir);
+      expect(tokenB).not.toBe(tokenA);
+
+      // A must stay valid until its PROMISED hard expiry (t0 + 30d), even
+      // though tick+grace (3 min) would end 1 min earlier.
+      expect(tokens.verify(tokenA, t0 + 30 * DAY - 1)).toBe(true);
+      expect(tokens.verify(tokenA, t0 + 30 * DAY + 1)).toBe(false);
+      expect(tokens.verify(tokenB, t0 + 30 * DAY + 1)).toBe(true);
+    });
+
     it("drops a rotated-out token from the file once its grace fully elapses", async () => {
       const t0 = 1_000_000_000_000;
       await resolveAuthTokens({ dataDir: dir, ttlMs: 30 * DAY, graceMs: 24 * HOUR }, logger, t0);
