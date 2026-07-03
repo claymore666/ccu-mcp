@@ -350,6 +350,12 @@ This has been tested against a production debmatic installation with:
 
 Other device types should work too — the server queries the CCU for parameter descriptions rather than maintaining a static device database.
 
+## Changelog
+
+Release notes — including **behavior changes to check before upgrading**
+(stricter config validation, `/health` response shape, per-session write
+confirmation, retry semantics) — live in [CHANGELOG.md](CHANGELOG.md).
+
 ## Related projects
 
 - [OpenCCU](https://github.com/OpenCCU/OpenCCU) — community-maintained, cloud-free CCU firmware for Raspberry Pi, x86/ARM, and CCU3/ELV-Charly hardware (formerly **RaspberryMatic**; built on the OCCU framework)
