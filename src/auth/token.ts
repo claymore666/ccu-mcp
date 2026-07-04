@@ -25,7 +25,49 @@ interface TokenEntry {
  * lapses — no restart or background timer needed.
  */
 export class AuthTokens {
-  constructor(private readonly entries: TokenEntry[]) {}
+  constructor(private entries: TokenEntry[]) {}
+
+  /**
+   * Swap in the entries of a freshly-resolved set. Used by runtime rotation:
+   * requests hold a reference to ONE AuthTokens instance, so rotation must
+   * mutate it in place rather than build a new object nobody consults.
+   *
+   * In-memory graced entries (from adoptWithGrace) survive the swap until
+   * their own expiry — they exist ONLY in memory, so rebuilding from the
+   * persisted file alone would cut the promised grace short at the very next
+   * rotation tick.
+   */
+  replaceWith(other: AuthTokens, now: number = Date.now()): void {
+    const keptGraced = this.entries.filter(
+      (e) =>
+        e.label.endsWith("-graced") &&
+        e.expiresAt !== null &&
+        now <= e.expiresAt &&
+        !other.entries.some((o) => o.hash.equals(e.hash)),
+    );
+    this.entries = [...other.entries, ...keptGraced];
+  }
+
+  /**
+   * Adopt a freshly-resolved set while keeping the CURRENT tokens valid for a
+   * grace window. Used when persistence recovers after a broken data dir: the
+   * in-memory startup token clients were given must not 401 instantly — it
+   * gets the same overlap a normal rotation grants the outgoing token.
+   * Expired entries are pruned and duplicates skipped, so repeated recoveries
+   * can't grow the set (and per-request verify cost) without bound.
+   */
+  adoptWithGrace(other: AuthTokens, graceMs: number, now: number = Date.now()): void {
+    const cutoff = now + graceMs;
+    const graced = this.entries
+      .filter((e) => e.expiresAt === null || now <= e.expiresAt)
+      .filter((e) => !other.entries.some((o) => o.hash.equals(e.hash)))
+      .map((e) => ({
+        ...e,
+        expiresAt: e.expiresAt === null ? cutoff : Math.min(e.expiresAt, cutoff),
+        label: e.label.endsWith("-graced") ? e.label : `${e.label}-graced`,
+      }));
+    this.entries = [...other.entries, ...graced];
+  }
 
   /**
    * Timing-safe check of a presented token against every entry. Compares against
@@ -64,6 +106,12 @@ export interface ResolveAuthTokensOptions {
   ttlMs?: number;
   /** Overlap after an auto-rotation during which the just-replaced token still validates. */
   graceMs: number;
+  /**
+   * Announce a freshly-minted token even when persisting it FAILED. True for
+   * startup (an in-memory token beats none); rotation ticks pass false so a
+   * broken data dir doesn't announce a new never-persisted token every tick.
+   */
+  announceUnpersisted?: boolean;
 }
 
 /** Persisted shape of the auto-generated token file. */
@@ -104,25 +152,48 @@ function serialize(state: PersistedToken): string {
   return lines.join("\n") + "\n";
 }
 
-async function persist(dataDir: string, state: PersistedToken, logger: Logger): Promise<void> {
+// The keys this module owns inside the .env file. Everything else in the file
+// belongs to the operator and must survive a rewrite.
+const MANAGED_KEY_RE = /^MCP_AUTH_TOKEN(_ISSUED|_PREVIOUS|_PREVIOUS_EXPIRES)?=/;
+
+async function persist(dataDir: string, state: PersistedToken, logger: Logger): Promise<boolean> {
   const envPath = join(dataDir, ENV_FILENAME);
   try {
     await mkdir(dataDir, { recursive: true });
+    // Preserve operator-added lines (it's a normal dotenv file and the announce
+    // message points operators at it) — only the managed token keys are replaced.
+    let foreign: string[] = [];
+    try {
+      foreign = (await readFile(envPath, "utf-8"))
+        .split(/\r?\n/)
+        .filter((line) => line.trim() !== "" && !MANAGED_KEY_RE.test(line));
+    } catch {
+      // No existing file — nothing to preserve.
+    }
+    const content = serialize(state) + (foreign.length > 0 ? foreign.join("\n") + "\n" : "");
     const tmpPath = envPath + ".tmp";
     // 0600: file contains the bearer token(s) for the HTTP transport
-    await writeFile(tmpPath, serialize(state), { encoding: "utf-8", mode: 0o600 });
+    await writeFile(tmpPath, content, { encoding: "utf-8", mode: 0o600 });
     await rename(tmpPath, envPath);
+    return true;
   } catch (err) {
     logger.error("auth_token_save_failed", { error: (err as Error).message });
+    return false;
   }
 }
 
-function announce(token: string, dataDir: string, rotated: boolean): void {
+function announce(token: string, dataDir: string, rotated: boolean, saved: boolean): void {
   const envPath = join(dataDir, ENV_FILENAME);
   const what = rotated ? "Rotated auth token" : "Generated auth token";
   // stderr so the operator can copy it; never goes through the structured logger.
   process.stderr.write(`\n[ccu-mcp] ${what}: ${token}\n`);
-  process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+  if (saved) {
+    process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+  } else {
+    process.stderr.write(
+      `[ccu-mcp] WARNING: the token could NOT be saved to ${envPath} — it is valid for this run only. Fix the data dir permissions.\n`,
+    );
+  }
   process.stderr.write(`[ccu-mcp] Use this token in your MCP client configuration.\n\n`);
 }
 
@@ -135,15 +206,22 @@ function announce(token: string, dataDir: string, rotated: boolean): void {
  *     rotation overlap; the operator ends the overlap by dropping it + restart.
  *     TTL does not apply to operator-supplied tokens — the operator owns them.
  *  2. The auto-generated token persisted under `dataDir/.env`. With `ttlMs` set
- *     it carries an issued-at; once it lapses we rotate on startup: a fresh
- *     token is generated and the just-replaced one stays valid for `graceMs`
- *     so in-flight clients aren't cut off mid-migration.
+ *     it carries an issued-at; once it lapses we rotate (at startup and via
+ *     the runtime rotation ticks): a fresh token is generated and the
+ *     just-replaced one stays valid for `graceMs` so in-flight clients aren't
+ *     cut off mid-migration.
  *  3. If neither exists, generate and persist a new token.
+ *
+ * `lookaheadMs` advances ONLY the TTL-expiry decision (rotate slightly early
+ * so there is no 401 window between hard expiry and the next tick). Pruning
+ * and timestamp stamping always use the REAL clock — a skewed prune clock
+ * could drop the outgoing token before its promised grace end.
  */
 export async function resolveAuthTokens(
   opts: ResolveAuthTokensOptions,
   logger: Logger,
   now: number = Date.now(),
+  lookaheadMs: number = 0,
 ): Promise<AuthTokens> {
   // 1. Explicit env token(s) — operator-managed, no TTL, file untouched.
   if (opts.envToken) {
@@ -169,6 +247,7 @@ export async function resolveAuthTokens(
   let changed = false;
   let minted = false; // brand-new token this run (generate or rotate) → announce
   let rotated = false;
+  const preRotationState: PersistedToken = { ...state };
 
   if (!state.token) {
     // 3. No usable token — generate.
@@ -182,13 +261,16 @@ export async function resolveAuthTokens(
       // expiring a token whose true age we can't know.
       state.issued = now;
       changed = true;
-    } else if (now - state.issued >= ttlMs) {
-      // Expired → rotate. Keep the old token valid for the grace overlap.
+    } else if (now + lookaheadMs - state.issued >= ttlMs) {
+      // Expired → rotate. Keep the old token valid for the grace overlap —
+      // and never SHORTER than its promised hard expiry: a lookahead-triggered
+      // early rotation with a grace smaller than the tick interval must not
+      // cut the token off before issued+ttl.
       state = {
         token: randomBytes(32).toString("base64url"),
         issued: now,
         previous: state.token,
-        previousExpires: now + graceMs,
+        previousExpires: Math.max(now + graceMs, state.issued + ttlMs),
       };
       changed = true;
       minted = true;
@@ -208,8 +290,26 @@ export async function resolveAuthTokens(
     changed = true;
   }
 
-  if (changed) await persist(dataDir, state, logger);
-  if (minted) announce(state.token!, dataDir, rotated);
+  let saved = true;
+  if (changed) {
+    saved = await persist(dataDir, state, logger);
+    if (!saved && rotated) {
+      // A rotation that can't be persisted must not take effect: the next
+      // check would re-read the unchanged file and rotate AGAIN, minting and
+      // announcing a fresh token every interval (each invalidating the last).
+      // Keep the pre-rotation state; auth_token_save_failed points the
+      // operator at the real problem (unwritable data dir). Deliberate
+      // trade-off: once the old token's hard expiry passes, verify() rejects
+      // everything until the data dir is fixed — a deterministic, logged
+      // lockout beats silently churning through announced tokens.
+      state = preRotationState;
+      minted = false;
+      rotated = false;
+    }
+  }
+  if (minted && (saved || opts.announceUnpersisted !== false)) {
+    announce(state.token!, dataDir, rotated, saved);
+  }
 
   const entries: TokenEntry[] = [
     {
@@ -226,4 +326,69 @@ export async function resolveAuthTokens(
     });
   }
   return new AuthTokens(entries);
+}
+
+const ROTATION_CHECK_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Keep the auto-generated token rotating while the server RUNS. `verify()`
+ * enforces expiry live, but without this the replacement token would only be
+ * minted at the next restart — a server up past the TTL would 401 every client
+ * permanently. Re-resolves the persisted state periodically; the `now`
+ * lookahead of one interval rotates just BEFORE the hard expiry, so there is
+ * no 401 window (the outgoing token stays valid through the grace overlap).
+ *
+ * Only meaningful for the file-backed token path with a TTL; do not call for
+ * operator-managed env tokens. Returns a stop function for shutdown.
+ */
+export function startAutoRotation(
+  tokens: AuthTokens,
+  opts: ResolveAuthTokensOptions,
+  logger: Logger,
+  intervalMs: number = ROTATION_CHECK_INTERVAL_MS,
+): () => void {
+  const hasPersistedToken = async (): Promise<boolean> => {
+    try {
+      return Boolean(parsePersisted(await readFile(join(opts.dataDir, ENV_FILENAME), "utf-8")).token);
+    } catch {
+      return false;
+    }
+  };
+  const tick = (): void => {
+    void (async () => {
+      // Only ADOPT what ends up persisted. If the startup save failed
+      // (unwritable data dir), blindly adopting each tick's resolve would
+      // mint + announce a brand-new token every interval, 401ing the
+      // previous one. Announce is suppressed for unpersisted mints, and the
+      // in-memory startup token stays valid until the data dir is fixed —
+      // at which point the resolve below persists a fresh token, announces
+      // it, and rotation resumes without a restart. The interval is passed
+      // as LOOKAHEAD (rotate-early decision only); pruning uses the real
+      // clock so a short grace window is never cut off by the skew.
+      const hadPersisted = await hasPersistedToken();
+      const fresh = await resolveAuthTokens(
+        { ...opts, announceUnpersisted: false },
+        logger,
+        Date.now(),
+        intervalMs,
+      );
+      if (hadPersisted) {
+        tokens.replaceWith(fresh);
+      } else if (await hasPersistedToken()) {
+        // Persistence just recovered: the newly persisted token replaces the
+        // unpersisted in-memory one, but clients holding the old one get the
+        // usual grace overlap instead of an instant 401.
+        tokens.adoptWithGrace(fresh, opts.graceMs);
+      }
+    })().catch((err: unknown) => {
+      logger.error("auth_token_rotation_failed", { error: (err as Error).message });
+    });
+  };
+  // Run once immediately: a token expiring within the FIRST interval after
+  // startup would otherwise 401 until the first timer tick (the startup
+  // resolve has no lookahead).
+  tick();
+  const timer = setInterval(tick, intervalMs);
+  timer.unref();
+  return () => clearInterval(timer);
 }

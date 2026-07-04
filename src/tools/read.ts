@@ -42,7 +42,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_value", deps.logger, async (log) => {
       const { rateLimiter, logger } = deps;
-      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       await rateLimiter.acquire();
@@ -54,6 +54,7 @@ function registerGetValue(server: McpServer, deps: ServerDeps): void {
         }),
         "Interface.getValue",
         logger,
+        { rateLimiter },
       );
 
       log({ address: args.address });
@@ -83,7 +84,7 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_values", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const t = resolveTarget(deps.targets, args.target);
+      const t = resolveTarget(deps.selection, args.target);
       const { session } = t;
       // Build HM Script to collect values
       let script: string;
@@ -112,24 +113,53 @@ function registerGetValues(server: McpServer, deps: ServerDeps): void {
         () => session.call("ReGa.runScript", { script }, t.profile.ccu.scriptTimeout),
         "ReGa.runScript",
         logger,
+        { rateLimiter },
       );
 
       const data = typeof result === "string" ? tryParseJson(result) : result;
+      // A non-array here means the ReGa script FAILED (runscript returns ""
+      // on any script error) or emitted broken JSON — answering with an empty
+      // success would be indistinguishable from "no matching channels".
+      if (!Array.isArray(data)) {
+        throw new CcuError({
+          error: "CCU_ERROR",
+          code: 0,
+          message: "The CCU script for get_values returned no parseable output",
+          hint: "The CCU's script engine failed (busy or errored). Try again; if it persists, check the CCU's ReGa state.",
+        });
+      }
+      // Parse each datapoint value to a native type, so a value read via the
+      // bulk get_values matches what the single get_value / get_paramset
+      // return (the HM-script emits every value as a quoted string for safe
+      // JSON; without this, STATE would be "true" here but boolean true there).
+      for (const entry of data) {
+        if (entry && typeof entry === "object" && !Array.isArray(entry)) {
+          const dps = (entry as Record<string, unknown>).datapoints;
+          if (dps && typeof dps === "object" && !Array.isArray(dps)) {
+            (entry as Record<string, unknown>).datapoints = parseValues(dps as Record<string, unknown>);
+          }
+        }
+      }
       // Wrap the array for structuredContent; keep the bare array as the text block.
-      return structuredResult({ values: Array.isArray(data) ? data : [] }, data);
+      return structuredResult({ values: data }, data);
     }),
   );
 }
 
 // Helper HM Script fragment: write channel datapoints as JSON object
 // Quote all values as JSON strings for safety — empty values, special chars, enums all handled.
-// Names and values are JSON-escaped (backslash first, then quote) since channel names and
-// STRING datapoints are user-controlled; addresses and HssType are CCU identifiers and safe.
+// Names and values are JSON-escaped (backslash first, then quote, then the control
+// characters JSON forbids raw — tab/newline/CR reachable via user-renamed channels and
+// STRING datapoints) since both are user-controlled; addresses and HssType are CCU
+// identifiers and safe. The "\t"/"\n"/"\r" literals are real ReGa string escapes.
 const WRITE_CHANNEL_DPS = `
           if (!first) { Write(","); } first = false;
           string chNameEsc = ch.Name();
           chNameEsc = chNameEsc.Replace("\\\\", "\\\\\\\\");
           chNameEsc = chNameEsc.Replace("\\"", "\\\\\\"");
+          chNameEsc = chNameEsc.Replace("\\t", "\\\\t");
+          chNameEsc = chNameEsc.Replace("\\r", "\\\\r");
+          chNameEsc = chNameEsc.Replace("\\n", "\\\\n");
           Write('{"address":"' # ch.Address() # '","name":"' # chNameEsc # '","datapoints":{');
           boolean firstDp = true;
           string dpId;
@@ -140,6 +170,9 @@ const WRITE_CHANNEL_DPS = `
               string dpValEsc = "" # dp.Value();
               dpValEsc = dpValEsc.Replace("\\\\", "\\\\\\\\");
               dpValEsc = dpValEsc.Replace("\\"", "\\\\\\"");
+              dpValEsc = dpValEsc.Replace("\\t", "\\\\t");
+              dpValEsc = dpValEsc.Replace("\\r", "\\\\r");
+              dpValEsc = dpValEsc.Replace("\\n", "\\\\n");
               Write('"' # dp.HssType() # '":"' # dpValEsc # '"');
             }
           }
@@ -196,11 +229,12 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
     {
       title: "Get Paramset",
       description:
-        "Read all parameters for a channel (VALUES, MASTER, or LINK). " +
-        "Interface is auto-resolved from the address.",
+        "Read all parameters for a channel: VALUES (runtime state), MASTER (config), or a link " +
+        "paramset — for the latter pass the LINK PARTNER's channel address as paramsetKey " +
+        "(find partners with list_links). Interface is auto-resolved from the address.",
       inputSchema: {
         address: z.string().describe("Channel address (e.g. '000A1BE9A71F15:1')"),
-        paramsetKey: z.enum(["VALUES", "MASTER", "LINK"]).describe("Paramset to read"),
+        paramsetKey: z.string().describe("'VALUES', 'MASTER', or a link partner's channel address (reads that direct link's parameters)"),
         interface: z.string().optional().describe("Interface name override (auto-resolved if omitted)"),
         target: targetField,
       },
@@ -213,7 +247,19 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("get_paramset", deps.logger, async () => {
       const { rateLimiter, logger } = deps;
-      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
+      // The XML-RPC layer accepts MASTER, VALUES, or a link PARTNER's channel
+      // address as the paramset key — the literal "LINK" is not a valid key
+      // (verified live: it fails 502 "unknown device or channel", which would
+      // surface as a misleading NOT_FOUND for a channel that exists).
+      if (args.paramsetKey.toUpperCase() === "LINK") {
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: 'The literal "LINK" is not a valid paramset key on the CCU.',
+          hint: "To read a direct link's parameters, pass the LINK PARTNER's channel address as paramsetKey (find partners with list_links).",
+        });
+      }
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       await rateLimiter.acquire();
@@ -225,6 +271,7 @@ function registerGetParamset(server: McpServer, deps: ServerDeps): void {
         }),
         "Interface.getParamset",
         logger,
+        { rateLimiter },
       );
 
       // Parse values to native types if result is a flat object

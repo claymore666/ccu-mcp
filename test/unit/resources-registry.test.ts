@@ -41,6 +41,16 @@ describe("resource registry", () => {
     });
   }
 
+  it("a CCU list resource surfaces a malformed (null) result as a CCU_ERROR, not literal 'null'", async () => {
+    // Guard parity with the sibling list_* tools: a subscriber must not be
+    // handed the text "null" indistinguishable from an empty payload.
+    const { server, deps } = createTestServer({
+      sessionCall: vi.fn().mockResolvedValue(null), // CCU/proxy returns result:null
+    });
+    await expect(readResource(server, "homematic://devices")).rejects.toThrow(/non-array result/i);
+    cleanupDeps(deps);
+  });
+
   it("homematic://device-types serves the local cache", async () => {
     const { server, deps } = createServerWithCcu();
     const result: any = await readResource(server, "homematic://device-types");

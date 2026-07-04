@@ -46,22 +46,34 @@ describe("RateLimiter", () => {
       expect((err as CcuError).structured.error).toBe("RATE_LIMITED");
     });
 
-    // The two genuinely-queued waiters are still pending; destroy releases them
-    // so the test doesn't leak unsettled promises.
+    // The two genuinely-queued waiters are still pending; destroy settles them
+    // (by rejection) so the test doesn't leak unsettled promises.
     limiter.destroy();
-    await Promise.all([queued1, queued2]);
+    await expect(queued1).rejects.toBeInstanceOf(CcuError);
+    await expect(queued2).rejects.toBeInstanceOf(CcuError);
   });
 
-  it("destroy releases waiting requests", async () => {
+  it("destroy rejects waiting requests (shutdown must not fire queued CCU calls)", async () => {
     limiter = new RateLimiter(0, 0); // No tokens, no refill
 
-    let resolved = false;
-    const promise = limiter.acquire().then(() => {
-      resolved = true;
-    });
+    const promise = limiter.acquire();
 
     limiter.destroy();
-    await promise;
-    expect(resolved).toBe(true);
+    await expect(promise).rejects.toBeInstanceOf(CcuError);
+    await promise.catch((err) => {
+      expect((err as CcuError).structured.message).toMatch(/shutting down/);
+    });
+  });
+
+  it("acquire after destroy rejects instead of re-arming the refill timer", async () => {
+    // A tool's SECOND acquire racing shutdown must fail like the queued
+    // waiters did — not park in a fresh queue and fire into a session being
+    // logged out.
+    limiter = new RateLimiter(10, 10);
+    limiter.destroy();
+    await expect(limiter.acquire()).rejects.toBeInstanceOf(CcuError);
+    await limiter.acquire().catch((err) => {
+      expect((err as CcuError).structured.message).toMatch(/shutting down/);
+    });
   });
 });

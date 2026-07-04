@@ -66,7 +66,9 @@ export class Logger {
 
 export function createLogger(): Logger {
   const level = (process.env.LOG_LEVEL || "info") as LogLevel;
-  if (!(level in LEVEL_PRIORITY)) {
+  // hasOwn, not `in`: `in` matches Object.prototype keys, so LOG_LEVEL values
+  // like "constructor" would pass validation and silently log at full verbosity.
+  if (!Object.hasOwn(LEVEL_PRIORITY, level)) {
     throw new Error(`Invalid LOG_LEVEL: ${level}. Must be one of: error, warn, info, debug`);
   }
   return new Logger(level);

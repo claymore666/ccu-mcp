@@ -4,8 +4,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 export function registerPrompts(server: McpServer): void {
   server.registerPrompt("check-windows", { description: "Check all window/door sensors and report which are open" }, async () => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
-      "Check all window and door sensors using list_devices (filter by type containing 'SWDO' or 'SCI') " +
-      "and get_values. Report which are open and which are closed. Group by room if possible (use list_rooms)."
+      "Check all window and door sensors: call list_devices (no type filter — the type arg is EXACT-match), " +
+      "keep the devices whose type contains 'SWDO' or 'SCI' (e.g. HmIP-SWDO-I), then read them with get_values. " +
+      "Report which are open and which are closed. Group by room if possible (use list_rooms)."
     }}],
   }));
 

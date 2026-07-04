@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { SessionManager } from "../../src/ccu/session.js";
 import { DeviceTypeCache } from "../../src/cache/device-type-cache.js";
+import { CACHE_VERSION } from "../../src/cache/types.js";
 import { RateLimiter } from "../../src/middleware/rate-limiter.js";
 import { createLogger } from "../../src/logger.js";
 import { Resolver } from "../../src/middleware/resolver.js";
@@ -173,7 +174,7 @@ describeIf("CCU Integration (against debmatic)", () => {
     const { readFile } = await import("node:fs/promises");
     const fileContent = await readFile(join(tempDir, "device-type-cache.json"), "utf-8");
     const parsed = JSON.parse(fileContent);
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(CACHE_VERSION);
     expect(Object.keys(parsed.types).length).toBeGreaterThan(0);
 
     // Spot check a known device type

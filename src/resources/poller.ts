@@ -18,6 +18,7 @@ const POLLABLE: PollableResource[] = [
   { uri: "homematic://functions", method: "Subsection.getAll" },
   { uri: "homematic://programs", method: "Program.getAll" },
   { uri: "homematic://sysvars", method: "SysVar.getAll" },
+  { uri: "homematic://interfaces", method: "Interface.listInterfaces" },
 ];
 
 // Backoff: 1×, 2×, 4×, 8×, capped at 10× the base interval
@@ -26,18 +27,24 @@ const MAX_BACKOFF_MULTIPLIER = 10;
 export class ResourcePoller {
   private hashes = new Map<string, string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
+  // Tracks which session the hashes belong to: after a use_ccu switch the new
+  // target's data must become the fresh baseline, not be diffed against the
+  // OLD target's hashes (which would fire one spurious update per resource).
+  private hashedSession: SessionManager | null = null;
   // Counts consecutive poll cycles where at least one resource failed.
   // Used to apply exponential backoff on the next schedule.
   private consecutiveFailures = 0;
 
   constructor(
-    // Called when a polled resource changed. In stdio mode this notifies the
-    // single server; in HTTP mode it fans out to all active MCP sessions.
-    private readonly notifyChanged: () => Promise<void>,
-    // Resolves the ACTIVE target's session on every cycle (not captured once),
-    // so the poller follows a use_ccu() switch — matching how the resources
-    // themselves read deps.session per-call. Capturing the startup session here
-    // would leave the poller watching the startup CCU after a switch.
+    // Called with the URIs whose CONTENT changed. In stdio mode this notifies
+    // the single server; in HTTP mode it fans out to all active MCP sessions.
+    // Consumers send notifications/resources/updated per subscribed URI — the
+    // resource LIST is static, so list_changed would be the wrong signal.
+    private readonly notifyChanged: (changedUris: string[]) => Promise<void>,
+    // Resolved on every cycle (not captured once). In stdio mode this follows
+    // the single session's use_ccu() switch; in HTTP mode it deliberately pins
+    // the DEFAULT target — many MCP sessions share one poller, so there is no
+    // single "active" target to follow there.
     private readonly getSession: () => SessionManager,
     private readonly rateLimiter: RateLimiter,
     private readonly logger: Logger,
@@ -72,16 +79,23 @@ export class ResourcePoller {
   }
 
   private async poll(): Promise<void> {
-    let anyChanged = false;
+    const changedUris: string[] = [];
     let anyFailed = false;
+
+    const session = this.getSession();
+    if (this.hashedSession !== session) {
+      this.hashes.clear();
+      this.hashedSession = session;
+    }
 
     for (const resource of POLLABLE) {
       try {
         await this.rateLimiter.acquire();
         const data = await withRetry(
-          () => this.getSession().call(resource.method),
+          () => session.call(resource.method),
           resource.method,
           this.logger,
+          { rateLimiter: this.rateLimiter },
         );
         const hash = createHash("sha256").update(JSON.stringify(data)).digest("hex");
 
@@ -90,7 +104,7 @@ export class ResourcePoller {
 
         if (prev && prev !== hash) {
           this.logger.info("resource_changed", { uri: resource.uri });
-          anyChanged = true;
+          changedUris.push(resource.uri);
         }
       } catch (err) {
         anyFailed = true;
@@ -107,9 +121,9 @@ export class ResourcePoller {
       this.consecutiveFailures = 0;
     }
 
-    if (anyChanged) {
+    if (changedUris.length > 0) {
       try {
-        await this.notifyChanged();
+        await this.notifyChanged(changedUris);
       } catch (err) {
         this.logger.warn("resource_notify_failed", { error: (err as Error).message });
       }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TargetRegistry, resolveTarget, assertWritable } from "../../src/ccu/target-registry.js";
+import { TargetRegistry, TargetSelection, resolveTarget, assertWritable } from "../../src/ccu/target-registry.js";
 import { Logger } from "../../src/logger.js";
 import type { AppConfig } from "../../src/config.js";
 import type { CcuProfile } from "../../src/ccu/types.js";
@@ -39,8 +39,11 @@ describe("TargetRegistry", () => {
   it("builds one target per profile and makes the default active", () => {
     const reg = new TargetRegistry(appConfig([profile("prod", { protected: true }), profile("dev")], "prod", tempDir), logger, tempDir);
     expect(reg.list().map((t) => t.profile.name)).toEqual(["prod", "dev"]);
-    expect(reg.active.profile.name).toBe("prod");
-    expect(reg.active.profile.protected).toBe(true);
+    expect(reg.default.profile.name).toBe("prod");
+    expect(reg.default.profile.protected).toBe(true);
+    // A fresh per-MCP-session selection starts on the default target.
+    const sel = new TargetSelection(reg);
+    expect(sel.active.profile.name).toBe("prod");
   });
 
   it("getByName / has are case-insensitive; unknown is undefined", () => {
@@ -51,17 +54,22 @@ describe("TargetRegistry", () => {
     expect(reg.has("nope")).toBe(false);
   });
 
-  it("use() switches the active target and returns it", () => {
+  it("use() switches only that selection's active target and returns it", () => {
     const reg = new TargetRegistry(appConfig([profile("prod"), profile("dev")], "prod", tempDir), logger, tempDir);
-    const t = reg.use("dev");
+    const sel = new TargetSelection(reg);
+    const other = new TargetSelection(reg);
+    const t = sel.use("dev");
     expect(t.profile.name).toBe("dev");
-    expect(reg.active.profile.name).toBe("dev");
+    expect(sel.active.profile.name).toBe("dev");
+    // Another MCP session's selection is unaffected (issue: shared active pointer).
+    expect(other.active.profile.name).toBe("prod");
   });
 
   it("use() on an unknown target throws a NOT_FOUND CcuError", () => {
     const reg = new TargetRegistry(appConfig([profile("prod")], "prod", tempDir), logger, tempDir);
-    expect(() => reg.use("ghost")).toThrowError(CcuError);
-    try { reg.use("ghost"); } catch (e) { expect((e as CcuError).structured.error).toBe("NOT_FOUND"); }
+    const sel = new TargetSelection(reg);
+    expect(() => sel.use("ghost")).toThrowError(CcuError);
+    try { sel.use("ghost"); } catch (e) { expect((e as CcuError).structured.error).toBe("NOT_FOUND"); }
   });
 
   it("each target gets its own resolver, caches, and sysvar holder", () => {
@@ -70,7 +78,7 @@ describe("TargetRegistry", () => {
     expect(prod!.resolver).not.toBe(dev!.resolver);
     expect(prod!.deviceTypeCache).not.toBe(dev!.deviceTypeCache);
     expect(prod!.sysVarTypeCache).not.toBe(dev!.sysVarTypeCache);
-    expect(prod!.unlocked).toBe(false);
+    expect(new TargetSelection(reg).isUnlocked(prod!)).toBe(false);
   });
 
   it("saveCaches writes a distinct file per target; default keeps the legacy name", async () => {
@@ -105,20 +113,23 @@ describe("resolveTarget", () => {
   beforeEach(async () => { tempDir = await mkdtemp(join(tmpdir(), "ccu-resolve-")); });
   afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
 
-  it("returns the active target when no name is given", () => {
+  it("returns the selection's active target when no name is given", () => {
     const reg = new TargetRegistry(appConfig([profile("prod"), profile("dev")], "prod", tempDir), logger, tempDir);
-    expect(resolveTarget(reg).profile.name).toBe("prod");
+    const sel = new TargetSelection(reg);
+    expect(resolveTarget(sel).profile.name).toBe("prod");
   });
 
   it("returns the named target without switching active", () => {
     const reg = new TargetRegistry(appConfig([profile("prod"), profile("dev")], "prod", tempDir), logger, tempDir);
-    expect(resolveTarget(reg, "dev").profile.name).toBe("dev");
-    expect(reg.active.profile.name).toBe("prod"); // unchanged
+    const sel = new TargetSelection(reg);
+    expect(resolveTarget(sel, "dev").profile.name).toBe("dev");
+    expect(sel.active.profile.name).toBe("prod"); // unchanged
   });
 
   it("throws NOT_FOUND for an unknown name", () => {
     const reg = new TargetRegistry(appConfig([profile("prod")], "prod", tempDir), logger, tempDir);
-    expect(() => resolveTarget(reg, "ghost")).toThrowError(/Unknown CCU target/);
+    const sel = new TargetSelection(reg);
+    expect(() => resolveTarget(sel, "ghost")).toThrowError(/Unknown CCU target/);
   });
 });
 
@@ -127,52 +138,68 @@ describe("assertWritable", () => {
   beforeEach(async () => { tempDir = await mkdtemp(join(tmpdir(), "ccu-guard-")); });
   afterEach(async () => { await rm(tempDir, { recursive: true, force: true }); });
 
-  function target(opts?: Partial<Pick<CcuProfile, "protected" | "readonly">>) {
+  function setup(opts?: Partial<Pick<CcuProfile, "protected" | "readonly">>) {
     const reg = new TargetRegistry(appConfig([profile("t", opts)], "t", tempDir), logger, tempDir);
-    return reg.active;
+    const sel = new TargetSelection(reg);
+    return { sel, t: sel.active };
   }
 
   it("allows writes to an unprotected target", () => {
-    expect(() => assertWritable(target(), undefined)).not.toThrow();
+    const { sel, t } = setup();
+    expect(() => assertWritable(sel, t, undefined)).not.toThrow();
   });
 
   it("refuses a read-only target even with confirm", () => {
-    expect(() => assertWritable(target({ readonly: true }), true)).toThrowError(/read-only/);
+    const { sel, t } = setup({ readonly: true });
+    expect(() => assertWritable(sel, t, true)).toThrowError(/read-only/);
   });
 
   it("refuses a protected target without confirm, then unlocks with confirm:true", () => {
-    const t = target({ protected: true });
-    expect(() => assertWritable(t, undefined)).toThrowError(/protected/);
-    expect(t.unlocked).toBe(false);
+    const { sel, t } = setup({ protected: true });
+    expect(() => assertWritable(sel, t, undefined)).toThrowError(/protected/);
+    expect(sel.isUnlocked(t)).toBe(false);
     // confirm unlocks for the session
-    expect(() => assertWritable(t, true)).not.toThrow();
-    expect(t.unlocked).toBe(true);
+    expect(() => assertWritable(sel, t, true)).not.toThrow();
+    expect(sel.isUnlocked(t)).toBe(true);
     // subsequent writes no longer need confirm
-    expect(() => assertWritable(t, undefined)).not.toThrow();
+    expect(() => assertWritable(sel, t, undefined)).not.toThrow();
+  });
+
+  it("an unlock in one selection does not leak into another (per-MCP-session)", () => {
+    const reg = new TargetRegistry(appConfig([profile("t", { protected: true })], "t", tempDir), logger, tempDir);
+    const a = new TargetSelection(reg);
+    const b = new TargetSelection(reg);
+    assertWritable(a, a.active, true); // client A unlocks
+    expect(a.isUnlocked(a.active)).toBe(true);
+    // client B still needs its own confirm
+    expect(b.isUnlocked(b.active)).toBe(false);
+    expect(() => assertWritable(b, b.active, undefined)).toThrowError(/protected/);
   });
 
   // Issue #72: high-blast-radius tools (run_script, delete_system_variable)
   // never ride on the session unlock — every call needs its own confirm.
   it("alwaysConfirm ignores the session unlock: each call needs confirm:true", () => {
-    const t = target({ protected: true });
-    assertWritable(t, true); // ordinary write unlocks the session
-    expect(t.unlocked).toBe(true);
+    const { sel, t } = setup({ protected: true });
+    assertWritable(sel, t, true); // ordinary write unlocks the session
+    expect(sel.isUnlocked(t)).toBe(true);
     // ...but an alwaysConfirm tool still refuses without its own confirm
-    expect(() => assertWritable(t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
-    expect(() => assertWritable(t, true, { alwaysConfirm: true })).not.toThrow();
+    expect(() => assertWritable(sel, t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
+    expect(() => assertWritable(sel, t, true, { alwaysConfirm: true })).not.toThrow();
     // and refuses again on the next call — no per-call carryover
-    expect(() => assertWritable(t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
+    expect(() => assertWritable(sel, t, undefined, { alwaysConfirm: true })).toThrowError(/EVERY call/);
   });
 
   it("a confirmed alwaysConfirm call does not unlock the session for other writes", () => {
-    const t = target({ protected: true });
-    expect(() => assertWritable(t, true, { alwaysConfirm: true })).not.toThrow();
-    expect(t.unlocked).toBe(false);
-    expect(() => assertWritable(t, undefined)).toThrowError(/protected/);
+    const { sel, t } = setup({ protected: true });
+    expect(() => assertWritable(sel, t, true, { alwaysConfirm: true })).not.toThrow();
+    expect(sel.isUnlocked(t)).toBe(false);
+    expect(() => assertWritable(sel, t, undefined)).toThrowError(/protected/);
   });
 
   it("alwaysConfirm is a no-op gate on unprotected targets and still refuses readonly", () => {
-    expect(() => assertWritable(target(), undefined, { alwaysConfirm: true })).not.toThrow();
-    expect(() => assertWritable(target({ readonly: true }), true, { alwaysConfirm: true })).toThrowError(/read-only/);
+    const open = setup();
+    expect(() => assertWritable(open.sel, open.t, undefined, { alwaysConfirm: true })).not.toThrow();
+    const ro = setup({ readonly: true });
+    expect(() => assertWritable(ro.sel, ro.t, true, { alwaysConfirm: true })).toThrowError(/read-only/);
   });
 });

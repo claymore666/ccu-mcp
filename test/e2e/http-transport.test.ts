@@ -14,6 +14,21 @@ import { AddressInfo } from "node:net";
 
 const DIST = join(__dirname, "../../dist/index.js");
 const AUTH_TOKEN = "e2e-test-token";
+
+/**
+ * process.env with every server config var scrubbed. The e2e children must be
+ * driven ONLY by the vars each test sets: an ambient CCU_PROFILES would make
+ * the child ignore the injected mock CCU_HOST (and hit a real CCU!), and
+ * ambient CCU_TLS_x / CCU_DEFAULT_PROFILE would trip config validation and
+ * kill the child with an opaque "server did not start" timeout.
+ */
+function cleanEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/^(CCU_|MCP_|CACHE_|RESOURCE_POLL_INTERVAL$|LOG_LEVEL$)/.test(key)) delete env[key];
+  }
+  return env;
+}
 // Origin on the allowlist for the CORS-enabled describe block below.
 const ALLOWED_ORIGIN = "http://localhost:6274";
 
@@ -86,7 +101,7 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: "9", // discard port — nothing listens, connection refused
         CCU_HTTPS: "false",
@@ -120,9 +135,16 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
     rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("stays alive and reports degraded health", async () => {
+  it("stays alive and reports degraded health (detailed view needs auth)", async () => {
     expect(child.exitCode).toBeNull();
-    const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+    // Unauthenticated: liveness only — session state must not leak pre-auth.
+    const anon = await fetch(`http://127.0.0.1:${mcpPort}/health`);
+    expect(anon.status).toBe(200);
+    expect(((await anon.json()) as { status: string }).status).toBe("ok");
+    // Authenticated: full degraded status.
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/health`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
     expect(res.status).toBe(503);
     const body = await res.json() as { status: string };
     expect(body.status).toBe("degraded");
@@ -140,10 +162,16 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
     const sid = await initialize(mcpPort);
     const res = await mcpPost(mcpPort, {
       jsonrpc: "2.0", id: 2, method: "tools/call",
-      params: { name: "get_system_info", arguments: {} },
+      params: { name: "list_devices", arguments: {} },
     }, sid);
     expect(res.status).toBe(200);
-    await res.text();
+    const msg = await parseSse(res);
+    // The failure must surface as a STRUCTURED tool error (isError + JSON
+    // body with category and hint), not a JSON-RPC crash or empty success.
+    expect(msg.result.isError).toBe(true);
+    const structured = JSON.parse(msg.result.content[0].text) as { error: string; hint: string };
+    expect(["UNREACHABLE", "TIMEOUT", "AUTH", "CCU_ERROR"]).toContain(structured.error);
+    expect(structured.hint).toBeTruthy();
     expect(child.exitCode).toBeNull(); // server survived the failed CCU call
   });
 });
@@ -161,7 +189,7 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",
@@ -200,11 +228,16 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("serves the health endpoint without auth", async () => {
+  it("serves the health endpoint without auth (liveness only)", async () => {
     const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
     expect(res.status).toBe(200);
     const body = await res.json() as { status: string };
-    expect(body.status).toBe("healthy");
+    expect(body.status).toBe("ok");
+    // Detailed status requires the bearer token.
+    const detailed = await fetch(`http://127.0.0.1:${mcpPort}/health`, {
+      headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+    });
+    expect((await detailed.json() as { status: string }).status).toBe("healthy");
   });
 
   it("rejects MCP requests without a token", async () => {
@@ -431,7 +464,7 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",
@@ -566,7 +599,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
 
     child = spawn("node", [DIST], {
       env: {
-        ...process.env,
+        ...cleanEnv(),
         CCU_HOST: "127.0.0.1",
         CCU_PORT: String(ccu.port),
         CCU_HTTPS: "false",
@@ -605,7 +638,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   it("serves the health endpoint over HTTPS", async () => {
     const res = await httpsJson(mcpPort, { path: "/health", ca: caCert });
     expect(res.status).toBe(200);
-    expect((JSON.parse(res.text) as { status: string }).status).toBe("healthy");
+    expect((JSON.parse(res.text) as { status: string }).status).toBe("ok");
   });
 
   it("rejects a plaintext HTTP request to the TLS port (TLS is actually on)", async () => {

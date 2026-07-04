@@ -5,6 +5,7 @@ import type { RateLimiter } from "../middleware/rate-limiter.js";
 import type { Logger } from "../logger.js";
 import type { CachedDeviceType, CachedParamDescription, DeviceTypeCacheFile } from "./types.js";
 import { CACHE_VERSION } from "./types.js";
+import { expectArray } from "../utils.js";
 
 const DEFAULT_CACHE_FILENAME = "device-type-cache.json";
 
@@ -13,8 +14,41 @@ const WARM_CONCURRENCY = 3;
 
 type RawParamDesc = {
   ID: string; TYPE: string; OPERATIONS: string;
-  MIN?: string; MAX?: string; DEFAULT?: string; UNIT?: string; VALUE_LIST?: string[];
+  MIN?: string; MAX?: string; DEFAULT?: string; UNIT?: string; VALUE_LIST?: string[] | string;
 };
+
+/**
+ * getparamsetdescription.tcl pushes VALUE_LIST through json_toString, which
+ * serializes the TCL list as ONE space-joined string, brace-wrapping entries
+ * that contain spaces ('{Party Mode} Off'). Tokenize it back into labels so
+ * enum indexes line up with the real value list.
+ */
+function parseTclList(input: string): string[] {
+  const items: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    while (input[i] === " ") i++;
+    if (i >= input.length) break;
+    if (input[i] === "{") {
+      let depth = 1;
+      let j = i + 1;
+      const start = j;
+      while (j < input.length && depth > 0) {
+        if (input[j] === "{") depth++;
+        else if (input[j] === "}") depth--;
+        j++;
+      }
+      items.push(input.slice(start, depth === 0 ? j - 1 : j));
+      i = j;
+    } else {
+      let j = i;
+      while (j < input.length && input[j] !== " ") j++;
+      items.push(input.slice(i, j));
+      i = j;
+    }
+  }
+  return items;
+}
 
 function parseParamDescriptions(descArray: RawParamDesc[]): Record<string, CachedParamDescription> {
   const params: Record<string, CachedParamDescription> = {};
@@ -26,7 +60,9 @@ function parseParamDescriptions(descArray: RawParamDesc[]): Record<string, Cache
       ...(p.MAX !== undefined && { max: Number(p.MAX) }),
       ...(p.DEFAULT !== undefined && { default: p.DEFAULT }),
       ...(p.UNIT && { unit: p.UNIT }),
-      ...(p.VALUE_LIST && { valueList: p.VALUE_LIST }),
+      ...(p.VALUE_LIST && {
+        valueList: Array.isArray(p.VALUE_LIST) ? p.VALUE_LIST : parseTclList(p.VALUE_LIST),
+      }),
     };
   }
   return params;
@@ -40,6 +76,12 @@ export class DeviceTypeCache {
   private readonly fileName: string;
   private warming = false;
   private inflightQueries = new Map<string, Promise<CachedDeviceType | undefined>>();
+  // True until a load proves fresh or a warm completes: expired-on-disk data is
+  // still loaded as a fallback, but callers can see it needs a refresh.
+  private stale = true;
+  // Serializes saveToDisk calls: concurrent saves share one fixed .tmp path, so
+  // interleaved write/rename pairs could drop a save or keep the older snapshot.
+  private savePromise: Promise<void> = Promise.resolve();
 
   constructor(cacheDir: string, ttl: number, logger: Logger, fileName?: string) {
     this.cacheDir = cacheDir;
@@ -82,6 +124,7 @@ export class DeviceTypeCache {
       const expired = age > this.ttl;
 
       this.cache = new Map(Object.entries(parsed.types));
+      this.stale = expired;
       this.logger.info("cache_loaded", { types: this.cache.size, age_seconds: Math.round(age), expired });
 
       return !expired;
@@ -91,8 +134,15 @@ export class DeviceTypeCache {
     }
   }
 
-  /** Atomic write: serialize → tmp file → rename */
-  async saveToDisk(): Promise<void> {
+  /** Atomic write: serialize → tmp file → rename. Calls are queued so two
+   *  concurrent saves (background warm + a live-query save) can't interleave
+   *  on the shared .tmp path. */
+  saveToDisk(): Promise<void> {
+    this.savePromise = this.savePromise.then(() => this.doSaveToDisk());
+    return this.savePromise;
+  }
+
+  private async doSaveToDisk(): Promise<void> {
     const filePath = join(this.cacheDir, this.fileName);
     const tmpPath = filePath + ".tmp";
 
@@ -130,7 +180,9 @@ export class DeviceTypeCache {
 
       // Get all interfaces
       await rateLimiter.acquire();
-      const interfaces = await session.call("Interface.listInterfaces") as Array<{ name: string }>;
+      const interfaces = expectArray<{ name: string }>(
+        await session.call("Interface.listInterfaces"), "Interface.listInterfaces",
+      );
 
       // Get all devices per interface
       const devicesByType = new Map<string, { interface: string; address: string; channels: string[] }>();
@@ -139,7 +191,9 @@ export class DeviceTypeCache {
         await rateLimiter.acquire();
         let devices: Array<{ type: string; address: string; children?: string[]; parent?: string }>;
         try {
-          devices = await session.call("Interface.listDevices", { interface: iface.name }) as typeof devices;
+          devices = expectArray(
+            await session.call("Interface.listDevices", { interface: iface.name }), "Interface.listDevices",
+          );
         } catch {
           this.logger.warn("cache_warm_interface_skip", { interface: iface.name });
           continue;
@@ -223,6 +277,7 @@ export class DeviceTypeCache {
       await Promise.all(workers);
 
       await this.saveToDisk();
+      this.stale = false;
 
       const duration = Date.now() - start;
       this.logger.info("cache_warm_done", { types: this.cache.size, duration_ms: duration });
@@ -297,5 +352,10 @@ export class DeviceTypeCache {
 
   isWarming(): boolean {
     return this.warming;
+  }
+
+  /** True when the cached schemas are older than the TTL (or never loaded). */
+  isStale(): boolean {
+    return this.stale;
   }
 }

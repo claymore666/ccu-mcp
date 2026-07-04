@@ -25,8 +25,11 @@ export class CcuClient {
     if (config.https) {
       this.dispatcher = new Agent({
         connect: this.buildConnect(config, logger),
+        // pipelining: 0 also disables HTTP keep-alive in undici — every
+        // request gets a fresh connection (and, with the pinning connector's
+        // maxCachedSessions: 0, a full TLS handshake). Deliberate: the cert
+        // must be present to pin on every connection.
         pipelining: 0,
-        keepAliveTimeout: 1000,
       });
     }
   }
@@ -99,13 +102,13 @@ export class CcuClient {
 
     const start = Date.now();
     let response: CcuRpcResponse;
+    let httpStatus = 0;
 
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
       let text: string;
-      let httpStatus = 0;
       try {
         const httpResponse = await undiciFetch(this.baseUrl, {
           method: "POST",
@@ -138,8 +141,11 @@ export class CcuClient {
       if (err instanceof CcuError) throw err;
 
       const duration = Date.now() - start;
-      this.logger.error("ccu_request_failed", { method, duration_ms: duration, error: (err as Error).message });
-      throw new CcuError(mapNetworkError(err as Error, method));
+      // Log the MAPPED message: it unwraps undici's generic "fetch failed"
+      // wrapper to the real cause (TLS pin mismatch, ECONNREFUSED, ...).
+      const structured = mapNetworkError(err as Error, method);
+      this.logger.error("ccu_request_failed", { method, duration_ms: duration, error: structured.message });
+      throw new CcuError(structured);
     }
 
     const duration = Date.now() - start;
@@ -147,6 +153,20 @@ export class CcuClient {
     if (response.error) {
       this.logger.debug("ccu_response_error", { method, duration_ms: duration, code: response.error.code });
       throw new CcuError(mapCcuError(response.error, method));
+    }
+
+    // A non-2xx status whose body parses as JSON but carries no CCU error object
+    // is NOT a CCU response (reverse proxy / gateway error page). Treating it as
+    // success would make write tools report success for a request that never
+    // reached the CCU.
+    if (httpStatus < 200 || httpStatus >= 300) {
+      throw new CcuError({
+        error: "CCU_ERROR",
+        code: 0,
+        message: `Unexpected HTTP ${httpStatus} from CCU endpoint (no JSON-RPC error in body)`,
+        hint: "The response did not come from the CCU JSON-RPC API — check proxies or the CCU's web server.",
+        ccuMethod: method,
+      });
     }
 
     this.logger.debug("ccu_response_ok", { method, duration_ms: duration });

@@ -15,11 +15,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { RateLimiter } from "./middleware/rate-limiter.js";
-import { TargetRegistry } from "./ccu/target-registry.js";
+import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
-import { resolveAuthTokens } from "./auth/token.js";
+import { resolveAuthTokens, startAutoRotation } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
-import { createMcpServer, type ServerDeps } from "./server.js";
+import { createMcpServer, serverSubscriptions, type ServerDeps } from "./server.js";
 import { extractBearerToken, normalizeClientIp } from "./utils.js";
 
 async function main(): Promise<void> {
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   // it start before the CCU is reachable. Only the active target logs in eagerly;
   // others log in lazily on first use / switch.
   try {
-    await targets.loginActive();
+    await targets.loginDefault();
   } catch (err) {
     logger.warn("startup_degraded", {
       error: (err as Error).message,
@@ -54,36 +54,53 @@ async function main(): Promise<void> {
     });
   }
 
-  // Load each target's device-type cache; warm only the active one in background.
+  // Load each target's device-type cache; warm only the default one in background.
   await targets.loadCaches();
-  targets.warmActive(rateLimiter).catch((err) => {
+  targets.warmDefault(rateLimiter).catch((err) => {
     logger.error("cache_warm_background_error", { error: (err as Error).message });
   });
 
-  // Shared tool dependencies. session/resolver/deviceTypeCache are getters that
-  // resolve to the ACTIVE target each access, so a use_ccu() switch is picked up
-  // by the next tool call without touching tools that read deps.session etc.
-  const deps: ServerDeps = {
-    config,
-    targets,
-    get session() { return targets.active.session; },
-    get resolver() { return targets.active.resolver; },
-    get deviceTypeCache() { return targets.active.deviceTypeCache; },
-    rateLimiter,
-    logger,
+  // Per-MCP-session tool dependencies: each McpServer gets its OWN
+  // TargetSelection (active-target pointer + protected-target unlocks), so in
+  // HTTP mode one client's use_ccu/confirm can't affect another client.
+  // session/resolver/deviceTypeCache are getters that resolve to the
+  // selection's active target on each access, so a use_ccu() switch is picked
+  // up by the next tool call without touching tools that read deps.session etc.
+  const makeDeps = (): ServerDeps => {
+    const selection = new TargetSelection(targets);
+    return {
+      config,
+      targets,
+      selection,
+      get session() { return selection.active.session; },
+      get resolver() { return selection.active.resolver; },
+      get deviceTypeCache() { return selection.active.deviceTypeCache; },
+      rateLimiter,
+      logger,
+    };
   };
 
   let poller: ResourcePoller;
   let closeTransports: () => Promise<void>;
   let httpServer: HttpServer | HttpsServer | null = null;
+  let stdioServer: McpServer | null = null;
 
   if (config.mcp.transport === "stdio") {
-    const mcpServer = createMcpServer(deps);
+    // stdio has exactly one MCP session; the poller follows ITS selection so a
+    // use_ccu switch moves change-detection along with the resource reads.
+    const stdioDeps = makeDeps();
+    const mcpServer = createMcpServer(stdioDeps);
+    stdioServer = mcpServer;
     const transport = new StdioServerTransport();
     await mcpServer.connect(transport);
     poller = new ResourcePoller(
-      () => mcpServer.server.sendResourceListChanged(),
-      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      async (changedUris) => {
+        const subs = serverSubscriptions.get(mcpServer);
+        for (const uri of changedUris) {
+          if (subs?.has(uri)) await mcpServer.server.sendResourceUpdated({ uri });
+        }
+      },
+      () => stdioDeps.selection.active.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = () => mcpServer.close();
@@ -93,16 +110,21 @@ async function main(): Promise<void> {
     // A stateless StreamableHTTPServerTransport only survives a single request,
     // so each MCP session gets its own transport + server (deps are shared),
     // routed by the Mcp-Session-Id header per the SDK's session pattern.
-    const authTokens = await resolveAuthTokens(
-      {
-        envToken: config.mcp.authToken,
-        envPreviousToken: config.mcp.authTokenPrevious,
-        dataDir: config.cache.dir,
-        ttlMs: config.mcp.authTokenTtlMs,
-        graceMs: config.mcp.authTokenGraceMs,
-      },
-      logger,
-    );
+    const authTokenOpts = {
+      envToken: config.mcp.authToken,
+      envPreviousToken: config.mcp.authTokenPrevious,
+      dataDir: config.cache.dir,
+      ttlMs: config.mcp.authTokenTtlMs,
+      graceMs: config.mcp.authTokenGraceMs,
+    };
+    const authTokens = await resolveAuthTokens(authTokenOpts, logger);
+    // With a TTL on the auto-generated token, rotation must also happen while
+    // the server RUNS — verify() enforces expiry live, and a long-running
+    // process would otherwise lock every client out until a manual restart.
+    const stopTokenRotation =
+      !config.mcp.authToken && config.mcp.authTokenTtlMs !== undefined
+        ? startAutoRotation(authTokens, authTokenOpts, logger)
+        : null;
     // Bound the session map. Each MCP session pins a McpServer + transport that
     // is removed only on transport.onclose (explicit DELETE / clean teardown).
     // A client that initializes then drops its connection — or reconnects in a
@@ -112,17 +134,21 @@ async function main(): Promise<void> {
     // authenticated client must still not grow this without bound.
     const MAX_SESSIONS = 256;
     const SESSION_IDLE_MS = 30 * 60_000; // 30 min without a request → reclaim
+    const MAX_BODY_BYTES = 4 * 1024 * 1024; // JSON-RPC messages are tiny; 4 MB is generous
     const sessions = new Map<
       string,
-      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number }
+      { server: McpServer; transport: StreamableHTTPServerTransport; lastSeen: number; openStreams: number }
     >();
 
     // Reclaim sessions whose last request predates `cutoff`. Returns how many
     // were evicted. Shared by the periodic sweep and the at-capacity fast path.
+    // A session with an open SSE stream is NOT idle even without new POSTs —
+    // it is passively receiving notifications — so it is never reclaimed while
+    // the stream is up (openStreams drops to 0 when the connection closes).
     const evictIdleSessions = (cutoff: number): number => {
       let evicted = 0;
       for (const [sid, s] of sessions) {
-        if (s.lastSeen < cutoff) {
+        if (s.lastSeen < cutoff && s.openStreams === 0) {
           sessions.delete(sid);
           s.server.close().catch(() => {});
           evicted++;
@@ -176,9 +202,18 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Health check endpoint
-        if (req.url === "/health" && req.method === "GET") {
-          handleHealthRequest(req, res, { session: targets.active.session, deviceTypeCache: targets.active.deviceTypeCache });
+        // Path routing: MCP is served on the root path only (README points
+        // clients at the bare URL; "/mcp" accepted as a common convention).
+        // Without this, the full protocol answered on ANY path, and a typo'd
+        // path surfaced as a misleading Accept/initialization error instead
+        // of 404.
+        const path = (req.url ?? "/").split("?")[0];
+
+        // Health check endpoint (tolerate cache-busting query strings that
+        // uptime monitors append)
+        if (path === "/health" && req.method === "GET") {
+          const detailed = authTokens.verify(extractBearerToken(req.headers.authorization ?? ""));
+          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache }, detailed);
           return;
         }
 
@@ -214,13 +249,62 @@ async function main(): Promise<void> {
           return;
         }
 
+        // Unknown paths are 404 — not the MCP endpoint.
+        if (path !== "/" && path !== "/mcp") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Not found" }));
+          return;
+        }
+
+        // Body size cap: the SDK transport buffers the whole JSON body with no
+        // limit of its own, so an authenticated client could otherwise balloon
+        // the heap with one multi-GB POST. Content-Length covers every normal
+        // client; a chunked-encoding bypass requires a hostile valid-token
+        // holder, which is outside the threat model.
+        const contentLength = Number(req.headers["content-length"]);
+        if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Request body too large" }));
+          return;
+        }
+
         // Existing session: route to its transport (POST, GET/SSE, DELETE) and
         // mark it active so the idle sweep doesn't reclaim a session in use.
         const sessionId = req.headers["mcp-session-id"];
         const existing = typeof sessionId === "string" ? sessions.get(sessionId) : undefined;
         if (existing) {
           existing.lastSeen = Date.now();
+          if (req.method === "GET") {
+            // GET opens the long-lived SSE notification stream; hold the
+            // session out of idle eviction until the connection closes.
+            // TCP keep-alive makes the OS probe the peer so a half-open
+            // stream (client died without FIN/RST) still fires 'close' and
+            // releases the slot — otherwise a wedged stream would pin the
+            // session forever and eventually 503 the server at capacity.
+            req.socket.setKeepAlive(true, 60_000);
+            existing.openStreams++;
+            res.on("close", () => {
+              existing.openStreams--;
+              existing.lastSeen = Date.now();
+            });
+          }
           await existing.transport.handleRequest(req, res);
+          return;
+        }
+
+        // A request that CARRIES a session id we don't know (idle-evicted or
+        // pre-restart) must get 404 "Session not found" — the MCP spec's cue
+        // for the client to re-initialize. Routing it into a fresh transport
+        // would answer 400 "Server not initialized", which clients treat as a
+        // hard error and never recover from (and would waste a McpServer
+        // construction per request).
+        if (typeof sessionId === "string") {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32001, message: "Session not found" },
+            id: null,
+          }));
           return;
         }
 
@@ -254,7 +338,7 @@ async function main(): Promise<void> {
           allowedHosts: config.mcp.allowedHosts,
           allowedOrigins: config.mcp.allowedOrigins,
           onsessioninitialized: (sid) => {
-            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now() });
+            sessions.set(sid, { server: sessionServer, transport, lastSeen: Date.now(), openStreams: 0 });
             logger.info("mcp_session_started", { sessions: sessions.size });
           },
         });
@@ -263,7 +347,7 @@ async function main(): Promise<void> {
             logger.info("mcp_session_closed", { sessions: sessions.size });
           }
         };
-        const sessionServer = createMcpServer(deps);
+        const sessionServer = createMcpServer(makeDeps());
         await sessionServer.connect(transport);
         await transport.handleRequest(req, res);
       } catch (err) {
@@ -307,16 +391,22 @@ async function main(): Promise<void> {
     }
 
     poller = new ResourcePoller(
-      async () => {
+      async (changedUris) => {
         await Promise.allSettled(
-          [...sessions.values()].map((s) => s.server.server.sendResourceListChanged()),
+          [...sessions.values()].flatMap((s) => {
+            const subs = serverSubscriptions.get(s.server);
+            return changedUris
+              .filter((uri) => subs?.has(uri))
+              .map((uri) => s.server.server.sendResourceUpdated({ uri }));
+          }),
         );
       },
-      () => targets.active.session, rateLimiter, logger, config.resourcePollInterval,
+      () => targets.default.session, rateLimiter, logger, config.resourcePollInterval,
     );
     poller.start();
     closeTransports = async () => {
       clearInterval(idleSweep);
+      stopTokenRotation?.();
       await Promise.allSettled([...sessions.values()].map((s) => s.server.close()));
       sessions.clear();
     };
@@ -359,6 +449,21 @@ async function main(): Promise<void> {
 
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
+
+  // stdio: the client usually terminates by closing the pipe (stdin EOF),
+  // not by signaling. Hook stdin DIRECTLY — StdioServerTransport registers
+  // only 'data'/'error' listeners, so transport/server onclose never fires
+  // on EOF and the process would exit via event-loop drain with no
+  // Session.logout (leaking a CCU session toward "too many sessions") and
+  // no cache save. shutdown() is re-entrancy-guarded.
+  if (stdioServer) {
+    process.stdin.on("end", () => {
+      void shutdown("stdin-eof");
+    });
+    process.stdin.on("close", () => {
+      void shutdown("stdin-closed");
+    });
+  }
 }
 
 main().catch((err) => {

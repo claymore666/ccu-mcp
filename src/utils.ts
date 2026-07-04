@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { CcuError } from "./middleware/error-mapper.js";
 const _require = createRequire(import.meta.url);
 
 /** Server version — read from package.json at runtime, single source of truth. */
@@ -96,6 +97,25 @@ export function structuredResult(structured: Record<string, unknown>, text?: unk
   };
 }
 
+/**
+ * Assert a CCU JSON-RPC result is an array before it is iterated. A CCU (or a
+ * proxy in front of it) answering a valid JSON-RPC envelope with `result:
+ * null` must surface as a structured CCU_ERROR, not as a TypeError crash
+ * ("null is not iterable") with no category or hint.
+ */
+export function expectArray<T>(result: unknown, ccuMethod?: string): T[] {
+  if (!Array.isArray(result)) {
+    throw new CcuError({
+      error: "CCU_ERROR",
+      code: 0,
+      message: `CCU returned an unexpected non-array result${ccuMethod ? ` for ${ccuMethod}` : ""}`,
+      hint: "The CCU (or a proxy in front of it) answered with a malformed result. Try again; if it persists, check the CCU's API service.",
+      ...(ccuMethod && { ccuMethod }),
+    });
+  }
+  return result as T[];
+}
+
 /** Try to parse JSON, return raw string on failure. */
 export function tryParseJson(text: string): unknown {
   try { return JSON.parse(text); } catch { return text; }
@@ -116,7 +136,22 @@ export function parseValue(val: unknown): unknown {
   if (s === "") return null;
   if (s === "true") return true;
   if (s === "false") return false;
-  if (DECIMAL_RE.test(s)) return Number(s);
+  if (DECIMAL_RE.test(s)) {
+    // Precision guard: Number() silently rounds past ~15 significant digits,
+    // so a long numeric ID stored in a STRING datapoint would be corrupted.
+    const significant = s.replace(/[-.]/g, "").replace(/^0+/, "");
+    if (significant.length <= 15) return Number(s);
+    // Longer digit strings are still fine when the double round-trips exactly
+    // (e.g. "3600000000000000" — trailing zeros carry no precision).
+    if (!s.includes(".")) {
+      try {
+        const n = Number(s);
+        if (BigInt(s) === BigInt(n)) return n;
+      } catch {
+        // fall through to returning the string
+      }
+    }
+  }
   return s;
 }
 

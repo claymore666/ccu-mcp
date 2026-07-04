@@ -190,7 +190,7 @@ describe("loadConfig", () => {
     process.env.CCU_HOST = "test";
     process.env.CCU_PASSWORD = "pw";
     process.env.MCP_PORT = "4567";
-    expect(loadConfig().mcp.allowedHosts).toEqual(["127.0.0.1:4567", "localhost:4567"]);
+    expect(loadConfig().mcp.allowedHosts).toEqual(["127.0.0.1:4567", "localhost:4567", "[::1]:4567"]);
   });
 
   it("MCP_ALLOWED_HOSTS extends the default host allowlist (trimmed, no blanks)", () => {
@@ -201,6 +201,7 @@ describe("loadConfig", () => {
     expect(loadConfig().mcp.allowedHosts).toEqual([
       "127.0.0.1:3000",
       "localhost:3000",
+      "[::1]:3000",
       "mcp.lan:3000",
       "proxy.example",
     ]);
@@ -211,8 +212,20 @@ describe("loadConfig", () => {
     process.env.CCU_PASSWORD = "pw";
     expect(loadConfig().ccu.tlsVerify).toBe(false);
 
+    process.env.CCU_HTTPS = "true";
     process.env.CCU_TLS_VERIFY = "true";
     expect(loadConfig().ccu.tlsVerify).toBe(true);
+  });
+
+  it("rejects TLS settings when HTTPS is disabled (would be silently ignored)", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_TLS_VERIFY = "true";
+    expect(() => loadConfig()).toThrow(/HTTPS is disabled/);
+
+    delete process.env.CCU_TLS_VERIFY;
+    process.env.CCU_TLS_FINGERPRINT = "AB:CD";
+    expect(() => loadConfig()).toThrow(/HTTPS is disabled/);
   });
 
   // Issue #51: CCU TLS verification via fingerprint pin or CA cert
@@ -227,6 +240,7 @@ describe("loadConfig", () => {
   it("parses CCU_TLS_FINGERPRINT", () => {
     process.env.CCU_HOST = "test";
     process.env.CCU_PASSWORD = "pw";
+    process.env.CCU_HTTPS = "true";
     process.env.CCU_TLS_FINGERPRINT = "AB:CD:EF:01";
     expect(loadConfig().ccu.tlsFingerprint).toBe("AB:CD:EF:01");
   });
@@ -238,6 +252,7 @@ describe("loadConfig", () => {
     try {
       process.env.CCU_HOST = "test";
       process.env.CCU_PASSWORD = "pw";
+      process.env.CCU_HTTPS = "true";
       process.env.CCU_CA_CERT = caPath;
       expect(loadConfig().ccu.caCert).toContain("BEGIN CERTIFICATE");
     } finally {

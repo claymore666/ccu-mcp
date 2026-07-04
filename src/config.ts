@@ -27,7 +27,8 @@ export interface AppConfig {
      * Lifetime of the AUTO-GENERATED bearer token in ms (`MCP_AUTH_TOKEN_TTL_DAYS`,
      * fractional days allowed). Unset ⇒ the generated token never expires (the
      * historical default). Does not apply to an explicit `MCP_AUTH_TOKEN`, which
-     * the operator owns. On startup past expiry the token auto-rotates.
+     * the operator owns. The token auto-rotates AT RUNTIME shortly before
+     * expiry (and on startup if it expired while the server was down).
      */
     authTokenTtlMs?: number;
     /**
@@ -85,9 +86,15 @@ export interface AppConfig {
 }
 
 export function loadConfig(): AppConfig {
-  // CLI flags override env vars for transport
+  // CLI flags override env vars for transport. Validate the env value: a typo
+  // ("STDIO", "Stdio") must fail loudly, not silently select HTTP and leave a
+  // stdio-spawning client hanging forever.
   const args = process.argv.slice(2);
-  let transport: "http" | "stdio" = (process.env.MCP_TRANSPORT as "http" | "stdio") || "http";
+  const transportEnv = process.env.MCP_TRANSPORT?.trim().toLowerCase();
+  if (transportEnv && transportEnv !== "http" && transportEnv !== "stdio") {
+    throw new Error(`MCP_TRANSPORT must be "http" or "stdio", got: "${process.env.MCP_TRANSPORT}"`);
+  }
+  let transport: "http" | "stdio" = (transportEnv as "http" | "stdio" | undefined) || "http";
   if (args.includes("--stdio")) transport = "stdio";
   if (args.includes("--http")) transport = "http";
 
@@ -120,6 +127,11 @@ export function loadConfig(): AppConfig {
   const allowedHosts = [
     `127.0.0.1:${mcpPort}`,
     `localhost:${mcpPort}`,
+    // IPv6 loopback: a client connecting to http://[::1]:port sends the
+    // bracketed literal in the Host header, and the SDK's check is an exact
+    // string match — without this entry the documented MCP_HOST=::1 setup
+    // would 403 every request.
+    `[::1]:${mcpPort}`,
     ...(process.env.MCP_ALLOWED_HOSTS || "")
       .split(",")
       .map((h) => h.trim())
@@ -192,6 +204,14 @@ export function loadConfig(): AppConfig {
   if (!profilesEnv) {
     // Back-compat: no CCU_PROFILES ⇒ one "default" profile from the flat
     // CCU_HOST/CCU_PASSWORD/... vars, with the exact validation as before.
+    // A leftover CCU_DEFAULT_PROFILE would be silently meaningless here — and
+    // writes would target the flat CCU_HOST box while the env file suggests a
+    // named profile — so fail loudly like every other config typo.
+    if (process.env.CCU_DEFAULT_PROFILE?.trim()) {
+      throw new Error(
+        "CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not — either define CCU_PROFILES or remove CCU_DEFAULT_PROFILE",
+      );
+    }
     const host = process.env.CCU_HOST;
     if (!host) throw new Error("CCU_HOST environment variable is required");
     const password = process.env.CCU_PASSWORD;
@@ -218,10 +238,22 @@ export function loadConfig(): AppConfig {
     const names = profilesEnv.split(",").map((s) => s.trim()).filter(Boolean);
     if (names.length === 0) throw new Error("CCU_PROFILES is set but lists no profile names");
     const seen = new Set<string>();
+    // Distinct names can still collide on the sanitized env prefix
+    // ("prod-a" and "prod.a" both read CCU_PROD_A_*), which would silently
+    // configure two "different" targets from the same variables.
+    const seenPrefix = new Map<string, string>();
     for (const n of names) {
       const key = n.toLowerCase();
       if (seen.has(key)) throw new Error(`CCU_PROFILES lists "${n}" more than once`);
       seen.add(key);
+      const prefix = n.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const clash = seenPrefix.get(prefix);
+      if (clash) {
+        throw new Error(
+          `CCU_PROFILES names "${clash}" and "${n}" both map to the same env prefix CCU_${prefix}_* — rename one`,
+        );
+      }
+      seenPrefix.set(prefix, n);
     }
     profiles = names.map(buildProfile);
     const requested = process.env.CCU_DEFAULT_PROFILE?.trim();
@@ -234,6 +266,19 @@ export function loadConfig(): AppConfig {
     defaultProfile = match.name;
   }
 
+  // TLS settings on a plain-HTTP target are a contradiction: the pinning /
+  // verification code path is only built for HTTPS, so the operator would
+  // believe the connection is verified while credentials travel in cleartext.
+  // Fail fast instead of silently ignoring the settings.
+  for (const p of profiles) {
+    if (!p.ccu.https && (p.ccu.tlsFingerprint || p.ccu.caCert || p.ccu.tlsVerify)) {
+      throw new Error(
+        `CCU profile "${p.name}": TLS_FINGERPRINT/CA_CERT/TLS_VERIFY is set but HTTPS is disabled — ` +
+        `these settings only apply over HTTPS. Set ${p.name === "default" ? "CCU_HTTPS" : `CCU_${p.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_HTTPS`}=true or remove them.`,
+      );
+    }
+  }
+
   const defaultCcu = profiles.find((p) => p.name === defaultProfile)!.ccu;
 
   return {
@@ -243,7 +288,10 @@ export function loadConfig(): AppConfig {
     mcp: {
       transport,
       port: mcpPort,
-      authToken: process.env.MCP_AUTH_TOKEN,
+      // trim: a trailing space/CR (CRLF env file, quoted systemd Environment=)
+      // would otherwise be hashed into the expected token and 401 every client;
+      // MCP_AUTH_TOKEN_PREVIOUS and file-parsed tokens are already trimmed.
+      authToken: process.env.MCP_AUTH_TOKEN?.trim() || undefined,
       authTokenPrevious: process.env.MCP_AUTH_TOKEN_PREVIOUS?.trim() || undefined,
       authTokenTtlMs: parseDurationEnv("MCP_AUTH_TOKEN_TTL_DAYS", 86_400_000),
       authTokenGraceMs: parseDurationEnv("MCP_AUTH_TOKEN_GRACE_HOURS", 3_600_000) ?? 24 * 3_600_000,
