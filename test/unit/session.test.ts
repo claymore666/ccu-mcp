@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SessionManager } from "../../src/ccu/session.js";
-import { createHash } from "node:crypto";
+import { scryptSync } from "node:crypto";
 import { CcuError } from "../../src/middleware/error-mapper.js";
 import { Logger } from "../../src/logger.js";
 
@@ -334,12 +334,16 @@ describe("session persistence and restore (coverage round)", () => {
     return session;
   }
 
-  // cred = truncated sha256("<user.length>:<user>:<password>") — must match baseConfig (Admin/pw)
-  const credOf = (user: string, password: string) =>
-    createHash("sha256").update(`${user.length}:${user}:${password}`).digest("hex").slice(0, 16);
+  // {credSalt, cred}: scrypt("<user.length>:<user>:<password>", salt) — matches
+  // credVerifier() in session.ts. baseConfig is Admin/pw.
+  const SALT = "00112233445566778899aabbccddeeff";
+  const credOf = (user: string, password: string, saltHex = SALT) => ({
+    credSalt: saltHex,
+    cred: scryptSync(`${user.length}:${user}:${password}`, Buffer.from(saltHex, "hex"), 32).toString("hex"),
+  });
 
   it("restores a persisted session when host, port, user, and credentials match", async () => {
-    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin", cred: credOf("Admin", "pw") });
+    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin", ...credOf("Admin", "pw") });
     const client = createMockClient();
     client.call.mockResolvedValue(true); // Session.renew
     const session = createSessionWithDir(client);
@@ -355,7 +359,7 @@ describe("session persistence and restore (coverage round)", () => {
     // Restoring across a password change would keep renewing the old session
     // forever — the new password would never be exercised, and rotation would
     // not cut off access.
-    await writeSessionFile({ sessionId: "stale-cred", host: "test", port: 80, user: "Admin", cred: credOf("Admin", "OLD-password") });
+    await writeSessionFile({ sessionId: "stale-cred", host: "test", port: 80, user: "Admin", ...credOf("Admin", "OLD-password") });
     const client = createMockClient();
     client.call.mockImplementation(async (method: string) =>
       method === "Session.login" ? "fresh" : true);

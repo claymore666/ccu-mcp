@@ -101,7 +101,8 @@ instead of looping through re-login.
   return 404 instead of answering the full protocol. Point clients at the
   bare server URL as documented.
 - A persisted CCU session is only restored when the configured credentials
-  still match (session.json carries a credential hash) — after a password
+  still match (session.json carries a salted scrypt credential verifier) —
+  after a password
   change the server does a fresh login instead of silently renewing the old
   session forever. Existing session files trigger one fresh login after
   upgrade.

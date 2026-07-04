@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
+import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { CcuConfig } from "./types.js";
 import { CcuClient } from "./client.js";
 import { CcuError } from "../middleware/error-mapper.js";
@@ -212,23 +212,34 @@ export class SessionManager {
   }
 
   /**
-   * Truncated hash of the credentials that minted the persisted session. A
-   * session must NOT be restored when the configured password changed:
-   * renewals would keep the old session alive indefinitely, so a rotated (or
-   * mistyped) password would never be exercised and rotation wouldn't cut off
-   * access. Truncated to 16 hex chars — the file already holds the session id
-   * (full CCU access) at mode 0600, so this adds no meaningful exposure.
+   * A verifier for the credentials that minted the persisted session, so a
+   * restore is refused after the password changed (otherwise renewals keep
+   * the old session alive indefinitely and a rotated/mistyped password is
+   * never exercised).
+   *
+   * Uses scrypt (a slow, salted password KDF) — NOT a fast hash: the session
+   * file is mode 0600 but a leaked copy must not expose the CCU password to
+   * offline brute-force (the password may be reused elsewhere). The user is
+   * length-prefixed so distinct (user, password) pairs can't alias through
+   * the delimiter.
    */
-  private credHash(): string {
-    // Length-prefix the user so distinct (user, password) pairs can never
-    // alias through the delimiter (e.g. "a"/"b:c" vs "a:b"/"c"). Both are
-    // operator config, so this is belt-and-suspenders, not a security
-    // boundary — but an unambiguous credential hash is worth the one line.
+  private credVerifier(saltHex: string): string {
     const { user, password } = this.config;
-    return createHash("sha256")
-      .update(`${user.length}:${user}:${password}`)
-      .digest("hex")
-      .slice(0, 16);
+    const input = `${user.length}:${user}:${password}`;
+    return scryptSync(input, Buffer.from(saltHex, "hex"), 32).toString("hex");
+  }
+
+  /** Timing-safe check of a stored {credSalt, cred} against the current config. */
+  private credMatches(data: { cred?: unknown; credSalt?: unknown }): boolean {
+    if (typeof data.cred !== "string" || typeof data.credSalt !== "string") return false;
+    let expected: Buffer;
+    try {
+      expected = Buffer.from(this.credVerifier(data.credSalt), "hex");
+    } catch {
+      return false; // malformed salt
+    }
+    const stored = Buffer.from(data.cred, "hex");
+    return expected.length === stored.length && timingSafeEqual(expected, stored);
   }
 
   private async tryRestoreSession(): Promise<boolean> {
@@ -237,7 +248,7 @@ export class SessionManager {
       const data = JSON.parse(await readFile(filePath, "utf-8"));
 
       if (data.sessionId && data.host === this.config.host && data.port === this.config.port
-          && data.user === this.config.user && data.cred === this.credHash()) {
+          && data.user === this.config.user && this.credMatches(data)) {
         // Test if session is still valid
         try {
           await this.client.call("Session.renew", { _session_id_: data.sessionId });
@@ -261,12 +272,14 @@ export class SessionManager {
       await mkdir(this.cacheDir, { recursive: true });
       const filePath = join(this.cacheDir, this.sessionFile);
       const tmpPath = filePath + ".tmp";
+      const credSalt = randomBytes(16).toString("hex");
       const data = JSON.stringify({
         sessionId: this.sessionId,
         host: this.config.host,
         port: this.config.port,
         user: this.config.user,
-        cred: this.credHash(),
+        credSalt,
+        cred: this.credVerifier(credSalt),
         timestamp: new Date().toISOString(),
       });
       // 0600: the session ID grants full admin access to the CCU
