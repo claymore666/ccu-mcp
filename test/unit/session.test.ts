@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { SessionManager } from "../../src/ccu/session.js";
+import { scryptSync } from "node:crypto";
 import { CcuError } from "../../src/middleware/error-mapper.js";
 import { Logger } from "../../src/logger.js";
 
@@ -179,21 +180,46 @@ describe("SessionManager", () => {
       session.destroy();
     });
 
-    it("re-logins and retries on AUTH error", async () => {
+    it("re-logins and retries on AUTH error when the session is truly expired", async () => {
       const client = createMockClient();
       const authError = new CcuError({ error: "AUTH", code: 400, message: "access denied", hint: "" });
 
       client.call
         .mockResolvedValueOnce("old-sess")     // login
         .mockRejectedValueOnce(authError)       // first call fails
-        .mockResolvedValueOnce("new-sess")      // re-login
+        .mockRejectedValueOnce(authError)       // in-memory Session.renew fails → truly expired
+        .mockResolvedValueOnce("new-sess")      // fresh re-login
         .mockResolvedValueOnce("success");      // retry
 
       const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
       await session.login();
       const result = await session.call("Interface.getValue", {});
 
       expect(result).toBe("success");
+      session.destroy();
+    });
+
+    // CCU 400 "access denied" also fires for a VALID session whose user lacks
+    // the method's privilege level — that must not loop through re-login+retry.
+    it("maps a 400 on a still-valid session to a privilege error without a doomed retry", async () => {
+      const client = createMockClient();
+      const authError = new CcuError({ error: "AUTH", code: 400, message: "access denied", hint: "" });
+
+      client.call
+        .mockResolvedValueOnce("sess-1")        // login
+        .mockRejectedValueOnce(authError)       // ADMIN-only method denied
+        .mockResolvedValueOnce(true);           // in-memory Session.renew SUCCEEDS → session valid
+
+      const session = createSession(client);
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+      await session.login();
+
+      await expect(session.call("ReGa.runScript", {})).rejects.toThrow(/privilege level/);
+      // login + denied call + renew — the denied method is NOT re-sent
+      expect(client.call.mock.calls.length).toBe(3);
+      // the still-valid session is kept (no leaked re-login)
+      expect(session.getSessionId()).toBe("sess-1");
       session.destroy();
     });
 
@@ -308,8 +334,16 @@ describe("session persistence and restore (coverage round)", () => {
     return session;
   }
 
-  it("restores a persisted session when host, port, and user match", async () => {
-    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin" });
+  // {credSalt, cred}: scrypt("<user.length>:<user>:<password>", salt) — matches
+  // credVerifier() in session.ts. baseConfig is Admin/pw.
+  const SALT = "00112233445566778899aabbccddeeff";
+  const credOf = (user: string, password: string, saltHex = SALT) => ({
+    credSalt: saltHex,
+    cred: scryptSync(`${user.length}:${user}:${password}`, Buffer.from(saltHex, "hex"), 32).toString("hex"),
+  });
+
+  it("restores a persisted session when host, port, user, and credentials match", async () => {
+    await writeSessionFile({ sessionId: "persisted", host: "test", port: 80, user: "Admin", ...credOf("Admin", "pw") });
     const client = createMockClient();
     client.call.mockResolvedValue(true); // Session.renew
     const session = createSessionWithDir(client);
@@ -318,6 +352,22 @@ describe("session persistence and restore (coverage round)", () => {
 
     expect(session.getSessionId()).toBe("persisted");
     expect(client.call).not.toHaveBeenCalledWith("Session.login", expect.anything());
+    session.destroy();
+  });
+
+  it("ignores a persisted session minted with different credentials (password rotation)", async () => {
+    // Restoring across a password change would keep renewing the old session
+    // forever — the new password would never be exercised, and rotation would
+    // not cut off access.
+    await writeSessionFile({ sessionId: "stale-cred", host: "test", port: 80, user: "Admin", ...credOf("Admin", "OLD-password") });
+    const client = createMockClient();
+    client.call.mockImplementation(async (method: string) =>
+      method === "Session.login" ? "fresh" : true);
+    const session = createSessionWithDir(client);
+
+    await session.login();
+
+    expect(session.getSessionId()).toBe("fresh");
     session.destroy();
   });
 
@@ -414,7 +464,10 @@ describe("renewal double failure (coverage round)", () => {
     await vi.advanceTimersByTimeAsync(60_000); // renew fails
     await vi.advanceTimersByTimeAsync(15_000); // login retries exhaust without throwing out of the timer
 
-    expect(session.isLoggedIn()).toBe(true); // old session id kept; no crash
+    // The dead session id is cleared (renew AND re-login failed), so /health
+    // reports degraded instead of healthy through a total CCU outage; the next
+    // call() lazily re-attempts login. No crash either way.
+    expect(session.isLoggedIn()).toBe(false);
     session.destroy();
     vi.useRealTimers();
   });

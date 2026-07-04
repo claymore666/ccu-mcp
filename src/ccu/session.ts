@@ -1,5 +1,6 @@
 import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { CcuConfig } from "./types.js";
 import { CcuClient } from "./client.js";
 import { CcuError } from "../middleware/error-mapper.js";
@@ -19,6 +20,11 @@ export class SessionManager {
   private sessionId: string | null = null;
   private renewTimer: ReturnType<typeof setInterval> | null = null;
   private loginPromise: Promise<void> | null = null;
+  // Set on logout/destroy: an in-flight call failing AUTH after logout must
+  // not lazily re-login — that would mint a CCU session nobody ever logs out,
+  // restart the renewal timer post-destroy, and re-persist a session file
+  // that logout just cleared.
+  private closed = false;
 
   constructor(config: CcuConfig, logger: Logger, cacheDir?: string, sessionFile?: string) {
     this.config = config;
@@ -44,12 +50,45 @@ export class SessionManager {
   }
 
   private async doLogin(): Promise<void> {
-    // Try to reuse a persisted session first
+    if (this.closed) {
+      throw new CcuError({
+        error: "AUTH",
+        code: 0,
+        message: "Session manager is closed (server shutting down)",
+        hint: "Retry after the server restarts.",
+      });
+    }
+    // Reuse the in-memory session if the CCU still accepts it. This matters
+    // when re-login was triggered by a 400 that was really a privilege denial
+    // (the session is fine, the user just may not call that method): minting a
+    // fresh session would leak the old one and drive the CCU toward its
+    // session limit. A dead session is cleared so /health reflects reality.
+    if (this.sessionId) {
+      try {
+        await this.client.call("Session.renew", { _session_id_: this.sessionId });
+        return;
+      } catch {
+        this.sessionId = null;
+      }
+    }
+
+    // Try to reuse a persisted session next
     const restored = await this.tryRestoreSession();
     if (restored) return;
 
     // Fresh login with retry on "too many sessions"
     for (let attempt = 0; attempt <= LOGIN_MAX_RETRIES; attempt++) {
+      // Re-check between retries: logout() awaits this promise, and a full
+      // retry cycle (~9-12s) would push shutdown past the 10s force-exit,
+      // skipping Session.logout entirely.
+      if (this.closed) {
+        throw new CcuError({
+          error: "AUTH",
+          code: 0,
+          message: "Session manager is closed (server shutting down)",
+          hint: "Retry after the server restarts.",
+        });
+      }
       try {
         const result = await this.client.call("Session.login", {
           username: this.config.user,
@@ -68,6 +107,18 @@ export class SessionManager {
             await new Promise((r) => setTimeout(r, LOGIN_RETRY_DELAY));
             continue;
           }
+          // Out of retries. The CCU returns this single 501 message for BOTH
+          // wrong credentials and session exhaustion (occu login.tcl), so
+          // surface it as an auth problem instead of "CCU internal error. Try
+          // again" — a mistyped password must not read as a transient fault.
+          throw new CcuError({
+            ...err.structured,
+            error: "AUTH",
+            hint:
+              "The CCU reports one error for both invalid credentials and too many sessions. " +
+              "Verify CCU_USER/CCU_PASSWORD first; if they are correct, wait a few minutes " +
+              "for stale CCU sessions to expire and try again.",
+          });
         }
         throw err;
       }
@@ -75,7 +126,16 @@ export class SessionManager {
   }
 
   async logout(): Promise<void> {
+    this.closed = true;
     this.stopRenewal();
+    // Let an in-flight login settle: one already past the closed check may
+    // still assign sessionId and restart the renewal timer. Awaiting it here
+    // means the session it minted is logged out below instead of leaked
+    // (counting toward the CCU's "too many sessions").
+    if (this.loginPromise) {
+      await this.loginPromise.catch(() => {});
+      this.stopRenewal();
+    }
     if (this.sessionId) {
       try {
         await this.client.call("Session.logout", { _session_id_: this.sessionId });
@@ -112,8 +172,30 @@ export class SessionManager {
       return await this.client.call(method, paramsWithSession, timeout);
     } catch (err) {
       if (err instanceof CcuError && err.structured.error === "AUTH") {
-        this.logger.warn("session_expired", { method });
+        // The CCU answers 400 "access denied" both for an expired session and
+        // for a valid session whose user lacks the method's privilege level.
+        // Re-login distinguishes them: if it comes back with the SAME session
+        // id THE FAILED REQUEST USED, that session was never invalid — the 400
+        // was a permission denial and retrying would fail identically. Compare
+        // against the id the request carried (not this.sessionId at catch
+        // time): a concurrent re-login may already have swapped in a new id,
+        // and then the right move is to retry with it, not to report a
+        // privilege problem.
+        const usedSid = paramsWithSession._session_id_;
         await this.login();
+        if (this.sessionId !== null && this.sessionId === usedSid) {
+          throw new CcuError({
+            error: "AUTH",
+            code: err.structured.code,
+            message: `Access denied for ${method}: the CCU user lacks the required privilege level`,
+            hint:
+              "The session is valid but the configured CCU user may not call this method " +
+              "(e.g. script execution needs an ADMIN-level user). Configure a user with " +
+              "sufficient rights or avoid this tool.",
+            ccuMethod: method,
+          });
+        }
+        this.logger.warn("session_expired", { method });
         const retryParams = { ...params, _session_id_: this.getSessionId() };
         return this.client.call(method, retryParams, timeout);
       }
@@ -129,13 +211,44 @@ export class SessionManager {
     return this.sessionId !== null;
   }
 
+  /**
+   * A verifier for the credentials that minted the persisted session, so a
+   * restore is refused after the password changed (otherwise renewals keep
+   * the old session alive indefinitely and a rotated/mistyped password is
+   * never exercised).
+   *
+   * Uses scrypt (a slow, salted password KDF) — NOT a fast hash: the session
+   * file is mode 0600 but a leaked copy must not expose the CCU password to
+   * offline brute-force (the password may be reused elsewhere). The user is
+   * length-prefixed so distinct (user, password) pairs can't alias through
+   * the delimiter.
+   */
+  private credVerifier(saltHex: string): string {
+    const { user, password } = this.config;
+    const input = `${user.length}:${user}:${password}`;
+    return scryptSync(input, Buffer.from(saltHex, "hex"), 32).toString("hex");
+  }
+
+  /** Timing-safe check of a stored {credSalt, cred} against the current config. */
+  private credMatches(data: { cred?: unknown; credSalt?: unknown }): boolean {
+    if (typeof data.cred !== "string" || typeof data.credSalt !== "string") return false;
+    let expected: Buffer;
+    try {
+      expected = Buffer.from(this.credVerifier(data.credSalt), "hex");
+    } catch {
+      return false; // malformed salt
+    }
+    const stored = Buffer.from(data.cred, "hex");
+    return expected.length === stored.length && timingSafeEqual(expected, stored);
+  }
+
   private async tryRestoreSession(): Promise<boolean> {
     try {
       const filePath = join(this.cacheDir, this.sessionFile);
       const data = JSON.parse(await readFile(filePath, "utf-8"));
 
       if (data.sessionId && data.host === this.config.host && data.port === this.config.port
-          && data.user === this.config.user) {
+          && data.user === this.config.user && this.credMatches(data)) {
         // Test if session is still valid
         try {
           await this.client.call("Session.renew", { _session_id_: data.sessionId });
@@ -159,11 +272,14 @@ export class SessionManager {
       await mkdir(this.cacheDir, { recursive: true });
       const filePath = join(this.cacheDir, this.sessionFile);
       const tmpPath = filePath + ".tmp";
+      const credSalt = randomBytes(16).toString("hex");
       const data = JSON.stringify({
         sessionId: this.sessionId,
         host: this.config.host,
         port: this.config.port,
         user: this.config.user,
+        credSalt,
+        cred: this.credVerifier(credSalt),
         timestamp: new Date().toISOString(),
       });
       // 0600: the session ID grants full admin access to the CCU
@@ -210,6 +326,7 @@ export class SessionManager {
   }
 
   destroy(): void {
+    this.closed = true;
     this.stopRenewal();
   }
 }

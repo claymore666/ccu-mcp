@@ -5,7 +5,7 @@ import type { CcuDevice } from "../ccu/types.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { resolveTarget } from "../ccu/target-registry.js";
-import { structuredResult } from "../utils.js";
+import { structuredResult, expectArray } from "../utils.js";
 
 // Optional per-call target override (route one read to a named CCU).
 const targetField = z.string().optional()
@@ -43,21 +43,25 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
     },
     async (args) => runTool("list_devices", deps.logger, async (log) => {
       const { rateLimiter, logger } = deps;
-      const { session, resolver } = resolveTarget(deps.targets, args.target);
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
       const result = await withRetry(
         () => session.call("Device.listAllDetail"),
         "Device.listAllDetail",
         logger,
+        { rateLimiter },
       );
 
-      let devices = result as CcuDevice[];
+      let devices = expectArray<CcuDevice>(result, "Device.listAllDetail");
 
       // Update resolver's device list
       resolver.updateDeviceList(devices);
 
       if (args.room || args.function) {
-        const channelIds = new Set<string>();
+        // Each filter contributes its own channel-id set; when both are given
+        // they must compose as AND (a channel in that room AND that function),
+        // not as a union — "room + function" means the intersection.
+        const filterSets: Array<Set<string>> = [];
 
         if (args.room) {
           await rateLimiter.acquire();
@@ -65,9 +69,10 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             () => session.call("Room.getAll"),
             "Room.getAll",
             logger,
-          ) as Array<{ id: string; name: string; channelIds: string[] }>;
+            { rateLimiter },
+          ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const room = rooms.find((r) => r.name === args.room);
-          if (room) for (const id of room.channelIds) channelIds.add(id);
+          filterSets.push(new Set(room?.channelIds ?? []));
         }
 
         if (args.function) {
@@ -76,14 +81,15 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             () => session.call("Subsection.getAll"),
             "Subsection.getAll",
             logger,
-          ) as Array<{ id: string; name: string; channelIds: string[] }>;
+            { rateLimiter },
+          ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const func = functions.find((f) => f.name === args.function);
-          if (func) for (const id of func.channelIds) channelIds.add(id);
+          filterSets.push(new Set(func?.channelIds ?? []));
         }
 
-        devices = channelIds.size > 0
-          ? devices.filter((d) => d.channels.some((ch) => channelIds.has(ch.id)))
-          : [];
+        devices = devices.filter((d) =>
+          d.channels.some((ch) => filterSets.every((s) => s.has(ch.id))),
+        );
       }
 
       if (args.type) devices = devices.filter((d) => d.type === args.type);
@@ -133,14 +139,19 @@ function registerListInterfaces(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Interfaces",
       description: "List available communication interfaces (BidCos-RF, HmIP-RF, VirtualDevices, etc.).",
+      inputSchema: { target: targetField },
       outputSchema: { interfaces: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => runTool("list_interfaces", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+    async (args) => runTool("list_interfaces", deps.logger, async () => {
+      const { rateLimiter, logger } = deps;
+      const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger);
-      return structuredResult({ interfaces: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Interface.listInterfaces"), "Interface.listInterfaces", logger, { rateLimiter }),
+        "Interface.listInterfaces",
+      );
+      return structuredResult({ interfaces: result }, result);
     }),
   );
 }
@@ -151,14 +162,19 @@ function registerListRooms(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Rooms",
       description: "List all rooms with their assigned channel IDs. Use with list_devices to find devices by room.",
+      inputSchema: { target: targetField },
       outputSchema: { rooms: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => runTool("list_rooms", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+    async (args) => runTool("list_rooms", deps.logger, async () => {
+      const { rateLimiter, logger } = deps;
+      const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger);
-      return structuredResult({ rooms: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Room.getAll"), "Room.getAll", logger, { rateLimiter }),
+        "Room.getAll",
+      );
+      return structuredResult({ rooms: result }, result);
     }),
   );
 }
@@ -169,14 +185,19 @@ function registerListFunctions(server: McpServer, deps: ServerDeps): void {
     {
       title: "List Functions",
       description: "List all function groups (Heating, Lighting, etc.) with their assigned channel IDs.",
+      inputSchema: { target: targetField },
       outputSchema: { functions: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async () => runTool("list_functions", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+    async (args) => runTool("list_functions", deps.logger, async () => {
+      const { rateLimiter, logger } = deps;
+      const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      const result = await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger);
-      return structuredResult({ functions: Array.isArray(result) ? result : [] }, result);
+      const result = expectArray(
+        await withRetry(() => session.call("Subsection.getAll"), "Subsection.getAll", logger, { rateLimiter }),
+        "Subsection.getAll",
+      );
+      return structuredResult({ functions: result }, result);
     }),
   );
 }
@@ -189,14 +210,16 @@ function registerListPrograms(server: McpServer, deps: ServerDeps): void {
       description: "List all automation programs. Use execute_program to trigger them.",
       inputSchema: {
         name: z.string().optional().describe("Filter by program name (substring, case-insensitive)"),
+        target: targetField,
       },
       outputSchema: { programs: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => runTool("list_programs", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
+      const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger) as Array<{ name: string }>;
+      let programs = await withRetry(() => session.call("Program.getAll"), "Program.getAll", logger, { rateLimiter }).then((r) => expectArray<{ name: string }>(r));
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -216,14 +239,16 @@ function registerListSystemVariables(server: McpServer, deps: ServerDeps): void 
       description: "List all system variables with current values and metadata. Use set_system_variable to modify them.",
       inputSchema: {
         name: z.string().optional().describe("Filter by variable name (substring, case-insensitive)"),
+        target: targetField,
       },
       outputSchema: { systemVariables: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => runTool("list_system_variables", deps.logger, async () => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
+      const { session } = resolveTarget(deps.selection, args.target);
       await rateLimiter.acquire();
-      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger) as Array<{ name: string }>;
+      let sysvars = await withRetry(() => session.call("SysVar.getAll"), "SysVar.getAll", logger, { rateLimiter }).then((r) => expectArray<{ name: string }>(r));
 
       if (args.name) {
         const needle = args.name.toLowerCase();
@@ -254,7 +279,7 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
     async (args) => runTool("describe_device_type", deps.logger, async (log) => {
       const { rateLimiter } = deps;
       // resolveTarget may throw NOT_FOUND for an unknown target — runTool maps it.
-      const { session, resolver, deviceTypeCache } = resolveTarget(deps.targets, args.target);
+      const { session, resolver, deviceTypeCache } = resolveTarget(deps.selection, args.target);
 
       let cached = deviceTypeCache.get(args.deviceType);
 
@@ -304,20 +329,23 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         "FALMOT). Read-only. Optionally filter to links involving a specific device or channel address.",
       inputSchema: {
         address: z.string().optional().describe("Device or channel address to filter by (e.g. '000A1BE9A71F15' or '000A1BE9A71F15:1')"),
+        target: targetField,
       },
       outputSchema: { links: z.array(z.unknown()) },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => runTool("list_links", deps.logger, async (log) => {
-      const { session, rateLimiter, logger } = deps;
+      const { rateLimiter, logger } = deps;
+      const { session, resolver } = resolveTarget(deps.selection, args.target);
       // Channel address → name map; SENDER/RECEIVER from getLinks are channel addresses.
       await rateLimiter.acquire();
       const devices = await withRetry(
         () => session.call("Device.listAllDetail"),
         "Device.listAllDetail",
         logger,
-      ) as CcuDevice[];
-      deps.resolver.updateDeviceList(devices);
+        { rateLimiter },
+      ).then((r) => expectArray<CcuDevice>(r));
+      resolver.updateDeviceList(devices);
       const channelName = new Map<string, string>();
       for (const d of devices) for (const ch of d.channels) channelName.set(ch.address, ch.name);
 
@@ -327,7 +355,8 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
         () => session.call("Interface.listInterfaces"),
         "Interface.listInterfaces",
         logger,
-      ) as Array<{ name: string }>;
+        { rateLimiter },
+      ).then((r) => expectArray<{ name: string }>(r));
 
       // Match a channel address against the filter: exact channel, or any
       // channel of the given device address (so a device-level filter works).
@@ -345,6 +374,7 @@ function registerListLinks(server: McpServer, deps: ServerDeps): void {
             () => session.call("Interface.getLinks", { interface: iface.name, address: args.address ?? "", flags: 0 }),
             "Interface.getLinks",
             logger,
+            { rateLimiter },
           );
         } catch {
           continue; // interface doesn't expose getLinks

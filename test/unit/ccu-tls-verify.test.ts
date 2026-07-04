@@ -105,7 +105,10 @@ describe.skipIf(!HAVE_OPENSSL)("CcuClient TLS verification (real HTTPS server)",
       expect.unreachable("should have rejected the cert");
     } catch (err) {
       expect(err).toBeInstanceOf(CcuError);
-      expect((err as CcuError).structured.error).toBe("UNREACHABLE");
+      // Deterministic pin failure: its own non-retriable category with the
+      // mismatch surfaced (not a generic "fetch failed" UNREACHABLE).
+      expect((err as CcuError).structured.error).toBe("TLS_ERROR");
+      expect((err as CcuError).structured.message).toMatch(/fingerprint mismatch/);
     }
   });
 

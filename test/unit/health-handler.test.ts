@@ -19,12 +19,12 @@ function createMockCache(size: number, warming: boolean) {
 }
 
 describe("handleHealthRequest", () => {
-  it("returns healthy when session is valid", () => {
+  it("returns healthy with detailed checks for authenticated callers", () => {
     const res = createMockRes();
     handleHealthRequest({} as IncomingMessage, res, {
       session: createMockSession(true),
       deviceTypeCache: createMockCache(10, false),
-    });
+    }, true);
 
     expect(res.writeHead).toHaveBeenCalledWith(200, { "Content-Type": "application/json" });
     const body = JSON.parse((res.end as any).mock.calls[0][0]);
@@ -39,11 +39,28 @@ describe("handleHealthRequest", () => {
     handleHealthRequest({} as IncomingMessage, res, {
       session: createMockSession(false),
       deviceTypeCache: createMockCache(0, true),
-    });
+    }, true);
 
     expect(res.writeHead).toHaveBeenCalledWith(503, { "Content-Type": "application/json" });
     const body = JSON.parse((res.end as any).mock.calls[0][0]);
     expect(body.status).toBe("degraded");
     expect(body.checks.session_valid).toBe(false);
+  });
+
+  it("answers unauthenticated callers with liveness only (no session state)", () => {
+    // Pre-auth, healthy/degraded (and 200/503) is a pure function of
+    // session_valid — it would tell any unauthenticated scanner whether the
+    // configured CCU admin credentials currently work.
+    for (const loggedIn of [true, false]) {
+      const res = createMockRes();
+      handleHealthRequest({} as IncomingMessage, res, {
+        session: createMockSession(loggedIn),
+        deviceTypeCache: createMockCache(10, false),
+      });
+      expect(res.writeHead).toHaveBeenCalledWith(200, { "Content-Type": "application/json" });
+      const body = JSON.parse((res.end as any).mock.calls[0][0]);
+      expect(body.status).toBe("ok"); // identical regardless of session state
+      expect(body.checks).toBeUndefined();
+    }
   });
 });

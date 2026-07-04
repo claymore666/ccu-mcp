@@ -31,8 +31,29 @@ export async function runTool<R>(
     logger.info("tool_call", { tool, duration_ms: Date.now() - start, status: "ok", ...extra });
     return result;
   } catch (err) {
-    logger.info("tool_call", { tool, duration_ms: Date.now() - start, status: "error" });
-    if (err instanceof CcuError) return err.toMcpError();
+    if (err instanceof CcuError) {
+      // Mapped CCU failure: expected operational error — keep it at info, but
+      // carry the category/message (and the body's extra fields) so a failing
+      // tool is diagnosable from the logs.
+      logger.info("tool_call", {
+        tool,
+        duration_ms: Date.now() - start,
+        status: "error",
+        error: err.structured.error,
+        message: err.structured.message,
+        ...extra,
+      });
+      return err.toMcpError();
+    }
+    // Unexpected crash (TypeError etc.): must stand out from routine CCU errors.
+    logger.error("tool_call", {
+      tool,
+      duration_ms: Date.now() - start,
+      status: "crash",
+      error: (err as Error).name,
+      message: (err as Error).message,
+      ...extra,
+    });
     throw err;
   }
 }

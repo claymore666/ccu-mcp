@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { resolveAuthTokens } from "../../src/auth/token.js";
+import { resolveAuthTokens, AuthTokens } from "../../src/auth/token.js";
+import { createHash } from "node:crypto";
 import { Logger } from "../../src/logger.js";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -150,6 +151,31 @@ describe("resolveAuthTokens", () => {
       expect(tokens.verify(tokenB, tRotate + 24 * HOUR + 1)).toBe(true);
     });
 
+    it("early (lookahead) rotation keeps the old token valid through its promised hard expiry", async () => {
+      const t0 = 1_000_000_000_000;
+      const MIN = 60_000;
+      // Token A, TTL 30 days, tiny grace (3 min) — shorter than the 5-min tick.
+      await resolveAuthTokens({ dataDir: dir, ttlMs: 30 * DAY, graceMs: 3 * MIN }, logger, t0);
+      const tokenA = await fileToken(dir);
+
+      // A tick 4 minutes BEFORE hard expiry rotates early via lookahead.
+      const tTick = t0 + 30 * DAY - 4 * MIN;
+      const tokens = await resolveAuthTokens(
+        { dataDir: dir, ttlMs: 30 * DAY, graceMs: 3 * MIN },
+        logger,
+        tTick,
+        5 * MIN, // lookahead
+      );
+      const tokenB = await fileToken(dir);
+      expect(tokenB).not.toBe(tokenA);
+
+      // A must stay valid until its PROMISED hard expiry (t0 + 30d), even
+      // though tick+grace (3 min) would end 1 min earlier.
+      expect(tokens.verify(tokenA, t0 + 30 * DAY - 1)).toBe(true);
+      expect(tokens.verify(tokenA, t0 + 30 * DAY + 1)).toBe(false);
+      expect(tokens.verify(tokenB, t0 + 30 * DAY + 1)).toBe(true);
+    });
+
     it("drops a rotated-out token from the file once its grace fully elapses", async () => {
       const t0 = 1_000_000_000_000;
       await resolveAuthTokens({ dataDir: dir, ttlMs: 30 * DAY, graceMs: 24 * HOUR }, logger, t0);
@@ -182,5 +208,40 @@ describe("resolveAuthTokens", () => {
     // gets it on stderr. We can't read it from a file, but a bogus token fails.
     expect(tokens.verify("definitely-not-it")).toBe(false);
     expect(tokens.liveCount()).toBe(1);
+  });
+});
+
+describe("AuthTokens grace-entry retention (recovery after broken data dir)", () => {
+  const h = (s: string) => createHash("sha256").update(s).digest();
+  const entry = (token: string, expiresAt: number | null, label = "generated") =>
+    ({ hash: h(token), expiresAt, label });
+
+  it("replaceWith keeps in-memory graced entries until their own expiry", () => {
+    const now = 1_000_000;
+    const tokens = new AuthTokens([entry("startup", null)]);
+    // Recovery adopts the newly persisted token with a grace overlap...
+    tokens.adoptWithGrace(new AuthTokens([entry("persisted", null)]), 60_000, now);
+    expect(tokens.verify("startup", now + 1)).toBe(true);
+    // ...and the NEXT rotation tick, rebuilt from the file alone, must not
+    // wipe that grace (the file knows nothing of the in-memory token).
+    tokens.replaceWith(new AuthTokens([entry("persisted", null)]), now + 2);
+    expect(tokens.verify("startup", now + 3)).toBe(true);
+    expect(tokens.verify("persisted", now + 3)).toBe(true);
+    // The grace still ends at its cutoff.
+    expect(tokens.verify("startup", now + 60_001)).toBe(false);
+    expect(tokens.verify("persisted", now + 60_001)).toBe(true);
+  });
+
+  it("adoptWithGrace prunes expired entries and dedupes, bounding growth", () => {
+    const now = 1_000_000;
+    const tokens = new AuthTokens([
+      entry("dead", now - 1),
+      entry("live", null),
+    ]);
+    tokens.adoptWithGrace(new AuthTokens([entry("live", null)]), 60_000, now);
+    // dead pruned, live deduped against the adopted set → exactly one entry
+    expect(tokens.liveCount(now)).toBe(1);
+    expect(tokens.verify("live", now)).toBe(true);
+    expect(tokens.verify("dead", now)).toBe(false);
   });
 });

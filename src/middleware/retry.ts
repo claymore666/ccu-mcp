@@ -12,6 +12,13 @@ const RETRIABLE_CATEGORIES = new Set(["TIMEOUT", "UNREACHABLE"]);
 export interface RetryOptions {
   maxRetries?: number;
   delayMs?: number;
+  /**
+   * When set, each RETRY attempt acquires a token first (the caller already
+   * paid for the first attempt). Without this, a timeout storm doubles the
+   * real request rate against an already-slow CCU — exactly when the limiter
+   * is supposed to shed load.
+   */
+  rateLimiter?: { acquire(): Promise<void> };
 }
 
 export async function withRetry<T>(
@@ -20,7 +27,7 @@ export async function withRetry<T>(
   logger: Logger,
   options: RetryOptions = {},
 ): Promise<T> {
-  const { maxRetries = 1, delayMs = 1000 } = options;
+  const { maxRetries = 1, delayMs = 1000, rateLimiter } = options;
 
   // Never retry non-idempotent methods
   if (NON_IDEMPOTENT_METHODS.has(method)) {
@@ -40,6 +47,7 @@ export async function withRetry<T>(
         if (attempt < maxRetries) {
           logger.warn("retry", { method, attempt: attempt + 1, maxRetries, delayMs });
           await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (rateLimiter) await rateLimiter.acquire();
           continue;
         }
       }

@@ -25,4 +25,7 @@ export interface CachedParamDescription {
   valueList?: string[];
 }
 
-export const CACHE_VERSION = 1;
+// v2: valueList changed shape — pre-v2 caches stored the raw TCL-list string
+// ("AUTO MANU {Party Mode}") instead of tokenized labels; the bump discards
+// them so stale enum shapes are never served from disk.
+export const CACHE_VERSION = 2;

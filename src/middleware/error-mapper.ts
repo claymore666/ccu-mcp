@@ -7,7 +7,7 @@ const CCU_ERROR_MAP: Record<number, { category: ErrorCategory; hint: string }> =
   402: { category: "INTERNAL", hint: "Missing required argument — this is a bug in ccu-mcp." },
   501: { category: "CCU_ERROR", hint: "CCU internal error. Try again or check CCU logs." },
   502: { category: "NOT_FOUND", hint: "Device or channel not found. Call list_devices to discover valid addresses." },
-  503: { category: "NOT_FOUND", hint: "Invalid paramset key. Valid keys are: VALUES, MASTER, LINK." },
+  503: { category: "NOT_FOUND", hint: "Invalid paramset key. Valid keys are VALUES, MASTER, or a link partner's channel address." },
   505: { category: "INVALID_INPUT", hint: "Invalid valueKey or value. Call describe_device_type to see valid parameters." },
   506: { category: "INVALID_INPUT", hint: "Operation not supported by this device/channel." },
   507: { category: "CCU_ERROR", hint: "Transmission pending in HmIP Legacy API. Try again shortly." },
@@ -27,7 +27,27 @@ export function mapCcuError(ccuError: CcuRpcError, ccuMethod: string): Structure
 }
 
 export function mapNetworkError(err: Error, ccuMethod: string): StructuredError {
-  if (err.name === "AbortError" || err.message.includes("timeout")) {
+  // undici's fetch wraps every dispatch/connect failure in a generic
+  // TypeError("fetch failed") with the real error on `cause` — without
+  // unwrapping it, a TLS fingerprint mismatch (an active-MITM / cert-rotation
+  // signal!) is indistinguishable from an unplugged CCU.
+  const cause = (err as Error & { cause?: unknown }).cause;
+  const causeMsg = cause instanceof Error ? cause.message : "";
+
+  if (causeMsg.includes("fingerprint mismatch")) {
+    return {
+      error: "TLS_ERROR",
+      code: 0,
+      message: `CCU TLS certificate verification failed: ${causeMsg}`,
+      hint:
+        "The CCU presented a DIFFERENT certificate than the pinned one. If the CCU's " +
+        "certificate was legitimately renewed, refresh CCU_TLS_FINGERPRINT; otherwise " +
+        "treat this as a possible interception attempt.",
+      ccuMethod,
+    };
+  }
+
+  if (err.name === "AbortError" || /timeout/i.test(err.message) || /timeout/i.test(causeMsg)) {
     return {
       error: "TIMEOUT",
       code: 0,
@@ -40,7 +60,7 @@ export function mapNetworkError(err: Error, ccuMethod: string): StructuredError 
   return {
     error: "UNREACHABLE",
     code: 0,
-    message: `Cannot connect to CCU: ${err.message}`,
+    message: `Cannot connect to CCU: ${causeMsg ? `${err.message} (${causeMsg})` : err.message}`,
     hint: "Check that the CCU is running and reachable at the configured host/port.",
     ccuMethod,
   };
