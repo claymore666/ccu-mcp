@@ -3,7 +3,7 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
-## v1.7.0 — Unreleased
+## v1.7.0 — 2026-07-04
 
 Execution-safety audit release: seven adversarial review rounds plus two
 fresh-context regression rounds over the whole codebase (~100 verified fixes),
