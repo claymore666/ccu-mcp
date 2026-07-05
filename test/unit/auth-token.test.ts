@@ -209,6 +209,31 @@ describe("resolveAuthTokens", () => {
     expect(tokens.verify("definitely-not-it")).toBe(false);
     expect(tokens.liveCount()).toBe(1);
   });
+
+  // Security regression (CWE-532): a saved token must NOT be echoed to stderr —
+  // stderr (journald/`docker logs`/log shippers) outlives and outreaches the
+  // 0600 .env. Point the operator at the file instead.
+  it("does not print the generated token to stderr when it was saved 0600", async () => {
+    const tokens = await resolveAuthTokens({ dataDir: dir, graceMs: 24 * HOUR }, logger);
+    const token = await fileToken(dir); // the real, persisted token
+    const stderr = (process.stderr.write as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls.map((c) => String(c[0])).join("");
+
+    expect(tokens.verify(token)).toBe(true);   // sanity: this is the live token
+    expect(stderr).not.toContain(token);       // the fix: never on stderr
+    expect(stderr).toContain(".env");          // it points at the file instead
+  });
+
+  // The counterpart: when persistence FAILS, stderr is the operator's only copy,
+  // so the token MUST be echoed there.
+  it("echoes the token to stderr when it could not be saved", async () => {
+    await resolveAuthTokens({ dataDir: "/dev/null/nope", graceMs: 24 * HOUR }, logger);
+    const stderr = (process.stderr.write as unknown as { mock: { calls: unknown[][] } })
+      .mock.calls.map((c) => String(c[0])).join("");
+
+    expect(stderr).toContain("could NOT be saved");
+    expect(stderr).toMatch(/auth token: \S+/); // the token value is present
+  });
 });
 
 describe("AuthTokens grace-entry retention (recovery after broken data dir)", () => {
