@@ -3,6 +3,54 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.8.0 — 2026-07-05
+
+Post-1.7.0 audit-fix release: a fresh multi-agent source review (six dimensions,
+every finding adversarially verified) found no real bugs, and its handful of
+confirmed low/medium items are fixed here. A final review of the fix commit
+itself caught — and this release also fixes — a regression it had introduced.
+
+### Security
+
+- **The auto-generated bearer token is no longer echoed to stderr when it was
+  persisted 0600** (CWE-532). stderr (journald / `docker logs` / log shippers)
+  is retained longer and readable by more principals than the `0600` `.env`, so
+  printing the token there defeated storing it restricted. It is now only echoed
+  when persistence FAILED — then stderr is the operator's sole copy. Nothing
+  changes for an operator-supplied `MCP_AUTH_TOKEN`.
+- The redacting logger now recurses into arrays as well as objects, so a
+  secret-named key nested inside an array element can no longer log in cleartext.
+
+### Behavior changes (read before upgrading)
+
+- **`list_devices` now returns `NOT_FOUND` for an unknown `room` or `function`
+  filter** instead of an empty device list. A typo'd filter name previously
+  looked like a genuinely empty room; it now fails loud with the valid names,
+  matching the write tools and the documented contract. If you relied on the
+  empty-list response for an unknown filter, handle the error instead.
+
+### Fixed
+
+- Session renewal no longer overlaps itself. It moved from `setInterval` to a
+  self-rescheduling `setTimeout` (a slow renew/relogin under a raised
+  `CCU_TIMEOUT` can't stack calls against a struggling box), guarded on timer
+  handle identity so the relogin path can't leak a second, overlapping renewal
+  loop.
+
+### Internal
+
+- Shared `tools/fields.ts` for the `targetField` / `confirmField` schemas (they
+  had drifted between copies).
+- CI: Dependabot PRs into `dev` now auto-merge once `build-and-test` passes;
+  `dev` is branch-protected with that required check.
+- New regression tests for every fix above (array redaction, `list_devices`
+  `NOT_FOUND`, single-renewal-timer-after-relogin, token-not-echoed-when-saved).
+
+### Dependencies
+
+- undici 8.5.0 → 8.6.0, @types/node 25.9.3 → 26.1.0, vitest / @vitest/coverage-v8
+  4.1.8 → 4.1.9, actions/checkout 6 → 7.
+
 ## v1.7.0 — 2026-07-04
 
 Execution-safety audit release: seven adversarial review rounds plus two
