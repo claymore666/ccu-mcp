@@ -12,15 +12,22 @@ const REDACTED_KEYS = new Set(["password", "_session_id_", "MCP_AUTH_TOKEN"]);
 function redact(obj: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (REDACTED_KEYS.has(key)) {
-      result[key] = "[REDACTED]";
-    } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-      result[key] = redact(value as Record<string, unknown>);
-    } else {
-      result[key] = value;
-    }
+    result[key] = REDACTED_KEYS.has(key) ? "[REDACTED]" : redactValue(value);
   }
   return result;
+}
+
+// Recurse through both objects AND arrays so a secret-named key nested inside an
+// array element (e.g. { params: [{ password: "…" }] }) is redacted too — a plain
+// object walk would emit it in cleartext.
+function redactValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactValue);
+  }
+  if (typeof value === "object" && value !== null) {
+    return redact(value as Record<string, unknown>);
+  }
+  return value;
 }
 
 export class Logger {

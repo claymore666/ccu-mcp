@@ -7,11 +7,7 @@ import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { assertWritable } from "../ccu/target-registry.js";
 import { toolResult, parseValue, escapeHmScript, expectArray } from "../utils.js";
-
-// Optional `confirm` field for write tools: required (true) to authorize a write
-// against a `protected` CCU target (e.g. prod). Harmless on unprotected targets.
-const confirmField = z.boolean().optional()
-  .describe("Set true to authorize this write against a protected CCU target (e.g. prod). Unlocks writes to that target for the rest of the session.");
+import { confirmField } from "./fields.js";
 
 export function registerControlTools(server: McpServer, deps: ServerDeps): void {
   registerSetValue(server, deps);

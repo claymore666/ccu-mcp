@@ -2,14 +2,12 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ServerDeps } from "../server.js";
 import type { CcuDevice } from "../ccu/types.js";
+import { CcuError } from "../middleware/error-mapper.js";
 import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { resolveTarget } from "../ccu/target-registry.js";
 import { structuredResult, expectArray } from "../utils.js";
-
-// Optional per-call target override (route one read to a named CCU).
-const targetField = z.string().optional()
-  .describe("CCU target to read from (default: active). See list_ccu_targets.");
+import { targetField } from "./fields.js";
 
 export function registerDiscoveryTools(server: McpServer, deps: ServerDeps): void {
   registerListDevices(server, deps);
@@ -72,7 +70,18 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             { rateLimiter },
           ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const room = rooms.find((r) => r.name === args.room);
-          filterSets.push(new Set(room?.channelIds ?? []));
+          if (!room) {
+            // Fail loud on an unknown filter name rather than returning an empty
+            // list that looks like a genuinely empty room — mirrors the write
+            // tools (assign_channel) and the help text's NOT_FOUND promise.
+            throw new CcuError({
+              error: "NOT_FOUND",
+              code: 0,
+              message: `Room not found: ${args.room}`,
+              hint: `Valid rooms: ${rooms.map((r) => r.name).join(", ")}`,
+            });
+          }
+          filterSets.push(new Set(room.channelIds ?? []));
         }
 
         if (args.function) {
@@ -84,7 +93,15 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             { rateLimiter },
           ).then((r) => expectArray<{ id: string; name: string; channelIds: string[] }>(r));
           const func = functions.find((f) => f.name === args.function);
-          filterSets.push(new Set(func?.channelIds ?? []));
+          if (!func) {
+            throw new CcuError({
+              error: "NOT_FOUND",
+              code: 0,
+              message: `Function not found: ${args.function}`,
+              hint: `Valid functions: ${functions.map((f) => f.name).join(", ")}`,
+            });
+          }
+          filterSets.push(new Set(func.channelIds ?? []));
         }
 
         devices = devices.filter((d) =>
