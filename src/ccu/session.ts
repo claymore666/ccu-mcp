@@ -308,15 +308,21 @@ export class SessionManager {
   // CCU_TIMEOUT (> the 60s interval) can never stack overlapping calls against
   // an already-struggling box. Mirrors ResourcePoller.schedule().
   private scheduleRenewal(): void {
-    this.renewTimer = setTimeout(() => {
+    const handle = setTimeout(() => {
       this.renewOnce().finally(() => {
-        // Only re-arm if we weren't stopped/destroyed while the renew was in flight.
-        if (!this.closed && this.renewTimer !== null) {
+        // Re-arm only if THIS timer is still the active one and we weren't
+        // stopped/destroyed. A plain `renewTimer !== null` check is not enough:
+        // renewOnce()'s relogin path calls login() → startRenewal(), which
+        // already re-arms the timer mid-flight; without the identity check this
+        // finally would arm a SECOND timer and leak an overlapping renewal loop
+        // per relogin — the exact overlap this setTimeout design exists to avoid.
+        if (!this.closed && this.renewTimer === handle) {
           this.scheduleRenewal();
         }
       });
     }, SESSION_RENEW_INTERVAL);
-    this.renewTimer.unref();
+    this.renewTimer = handle;
+    handle.unref();
   }
 
   private async renewOnce(): Promise<void> {
