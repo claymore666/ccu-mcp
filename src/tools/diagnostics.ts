@@ -7,6 +7,7 @@ import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { assertWritable, resolveTarget } from "../ccu/target-registry.js";
 import { toolResult, structuredResult, tryParseJson, escapeHmScript, VERSION, loadBuildInfo, expectArray } from "../utils.js";
+import { targetField, confirmField } from "./fields.js";
 
 export function registerDiagnosticsTools(server: McpServer, deps: ServerDeps): void {
   registerGetServiceMessages(server, deps);
@@ -29,7 +30,7 @@ function registerGetServiceMessages(server: McpServer, deps: ServerDeps): void {
       description:
         "Get all active service messages (low battery, unreachable, etc.) with device details and timestamps.",
       inputSchema: {
-        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
+        target: targetField,
       },
       outputSchema: { messages: z.array(z.unknown()).describe("Active alarms: {id, type, address, channelName, timestamp}") },
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -159,7 +160,7 @@ function registerAcknowledgeServiceMessages(server: McpServer, deps: ServerDeps)
       inputSchema: {
         id: z.string().optional().describe("Alarm id from get_service_messages (confirm a single message)"),
         address: z.string().optional().describe("Channel address — confirm all active messages on this channel (e.g. '000A1BE9A71F15:0')"),
-        confirm: z.boolean().optional().describe("Set true to authorize this write against a protected CCU target (e.g. prod)."),
+        confirm: confirmField,
       },
       annotations: {
         destructiveHint: true,
@@ -292,7 +293,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         "on the CCU, so they show \"N/A\" for a non-admin (USER) login. Also reports the running " +
         "server's build identification (git branch/commit/tag and build time) under `build`.",
       inputSchema: {
-        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
+        target: targetField,
       },
       outputSchema: {
         serverVersion: z.string().optional(),
@@ -386,7 +387,7 @@ function registerGetRssi(server: McpServer, deps: ServerDeps): void {
         "Use to answer 'why is this sensor flaky?'. Higher (closer to 0) dBm is better; null = no measurement.",
       inputSchema: {
         name: z.string().optional().describe("Filter by device name or address (substring, case-insensitive)"),
-        target: z.string().optional().describe("CCU target to read from (default: active). See list_ccu_targets."),
+        target: targetField,
       },
       outputSchema: {
         devices: z.array(z.unknown()).describe("Per device: {address, name, interface, links:[{peer, rssiDevice, rssiPeer}]}"),

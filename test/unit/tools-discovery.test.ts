@@ -55,10 +55,25 @@ describe("list_devices handler", () => {
     cleanupDeps(deps);
   });
 
-  it("returns empty when room not found", async () => {
+  it("throws NOT_FOUND (with valid names) when the room filter is unknown", async () => {
     const { server, deps } = createServer();
-    const result = parseToolResult(await callTool(server, "list_devices", { room: "Nonexistent" })) as any[];
-    expect(result.length).toBe(0);
+    // An unknown filter name must fail loud, not return an empty list that looks
+    // like a genuinely empty room — consistent with the write tools.
+    const result = await callTool(server, "list_devices", { room: "Nonexistent" }) as any;
+    expect(result.isError).toBe(true);
+    const err = JSON.parse(result.content[0].text);
+    expect(err.error).toBe("NOT_FOUND");
+    expect(err.hint).toContain("Wohnzimmer");
+    cleanupDeps(deps);
+  });
+
+  it("throws NOT_FOUND (with valid names) when the function filter is unknown", async () => {
+    const { server, deps } = createServer();
+    const result = await callTool(server, "list_devices", { function: "Nonexistent" }) as any;
+    expect(result.isError).toBe(true);
+    const err = JSON.parse(result.content[0].text);
+    expect(err.error).toBe("NOT_FOUND");
+    expect(err.hint).toContain("Heizung");
     cleanupDeps(deps);
   });
 
