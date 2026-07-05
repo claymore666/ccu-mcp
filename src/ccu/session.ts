@@ -1,4 +1,4 @@
-import { readFile, writeFile, rename, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, mkdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
 import type { CcuConfig } from "./types.js";
@@ -18,7 +18,7 @@ export class SessionManager {
   private readonly cacheDir: string;
   private readonly sessionFile: string;
   private sessionId: string | null = null;
-  private renewTimer: ReturnType<typeof setInterval> | null = null;
+  private renewTimer: ReturnType<typeof setTimeout> | null = null;
   private loginPromise: Promise<void> | null = null;
   // Set on logout/destroy: an in-flight call failing AUTH after logout must
   // not lazily re-login — that would mint a CCU session nobody ever logs out,
@@ -292,7 +292,6 @@ export class SessionManager {
 
   private async clearPersistedSession(): Promise<void> {
     try {
-      const { unlink } = await import("node:fs/promises");
       await unlink(join(this.cacheDir, this.sessionFile));
     } catch {
       // Ignore
@@ -301,26 +300,43 @@ export class SessionManager {
 
   private startRenewal(): void {
     this.stopRenewal();
-    this.renewTimer = setInterval(async () => {
-      if (!this.sessionId) return;
-      try {
-        await this.client.call("Session.renew", { _session_id_: this.sessionId });
-        this.logger.debug("session_renewed");
-      } catch {
-        this.logger.warn("session_renew_failed");
-        try {
-          await this.login();
-        } catch (loginErr) {
-          this.logger.error("session_relogin_failed", { error: (loginErr as Error).message });
+    this.scheduleRenewal();
+  }
+
+  // Self-rescheduling setTimeout (not setInterval): the next renew is armed only
+  // AFTER the current one settles, so a slow renew/relogin under a raised
+  // CCU_TIMEOUT (> the 60s interval) can never stack overlapping calls against
+  // an already-struggling box. Mirrors ResourcePoller.schedule().
+  private scheduleRenewal(): void {
+    this.renewTimer = setTimeout(() => {
+      this.renewOnce().finally(() => {
+        // Only re-arm if we weren't stopped/destroyed while the renew was in flight.
+        if (!this.closed && this.renewTimer !== null) {
+          this.scheduleRenewal();
         }
-      }
+      });
     }, SESSION_RENEW_INTERVAL);
     this.renewTimer.unref();
   }
 
+  private async renewOnce(): Promise<void> {
+    if (!this.sessionId) return;
+    try {
+      await this.client.call("Session.renew", { _session_id_: this.sessionId });
+      this.logger.debug("session_renewed");
+    } catch {
+      this.logger.warn("session_renew_failed");
+      try {
+        await this.login();
+      } catch (loginErr) {
+        this.logger.error("session_relogin_failed", { error: (loginErr as Error).message });
+      }
+    }
+  }
+
   private stopRenewal(): void {
     if (this.renewTimer) {
-      clearInterval(this.renewTimer);
+      clearTimeout(this.renewTimer);
       this.renewTimer = null;
     }
   }

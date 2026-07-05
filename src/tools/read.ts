@@ -6,11 +6,7 @@ import { withRetry } from "../middleware/retry.js";
 import { runTool } from "../middleware/tool-handler.js";
 import { resolveTarget } from "../ccu/target-registry.js";
 import { structuredResult, tryParseJson, escapeHmScript, parseValue, parseValues } from "../utils.js";
-
-// Optional per-call target override for read tools: route this one read to a
-// named CCU without switching the active target (handy for prod-vs-dev compares).
-const targetField = z.string().optional()
-  .describe("CCU target to read from (default: active). See list_ccu_targets.");
+import { targetField } from "./fields.js";
 
 export function registerReadTools(server: McpServer, deps: ServerDeps): void {
   registerGetValue(server, deps);

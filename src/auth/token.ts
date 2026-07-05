@@ -185,16 +185,24 @@ async function persist(dataDir: string, state: PersistedToken, logger: Logger): 
 function announce(token: string, dataDir: string, rotated: boolean, saved: boolean): void {
   const envPath = join(dataDir, ENV_FILENAME);
   const what = rotated ? "Rotated auth token" : "Generated auth token";
-  // stderr so the operator can copy it; never goes through the structured logger.
-  process.stderr.write(`\n[ccu-mcp] ${what}: ${token}\n`);
+  // stderr so the operator can find it; never goes through the structured logger.
+  // When the token was persisted 0600, point at the file rather than echoing the
+  // secret: stderr (journald / `docker logs` / a log shipper) is retained longer
+  // and readable by more principals than the 0600 .env, so printing the token
+  // here would defeat storing it restricted (CWE-532). Only echo it when it could
+  // NOT be saved — then stderr is the operator's sole way to recover it.
   if (saved) {
-    process.stderr.write(`[ccu-mcp] Token saved to ${envPath}\n`);
+    process.stderr.write(
+      `\n[ccu-mcp] ${what}, saved to ${envPath} (mode 0600).\n` +
+        `[ccu-mcp] Read MCP_AUTH_TOKEN from that file for your MCP client configuration.\n\n`,
+    );
   } else {
     process.stderr.write(
-      `[ccu-mcp] WARNING: the token could NOT be saved to ${envPath} — it is valid for this run only. Fix the data dir permissions.\n`,
+      `\n[ccu-mcp] ${what}: ${token}\n` +
+        `[ccu-mcp] WARNING: the token could NOT be saved to ${envPath} — it is valid for this run only. Fix the data dir permissions.\n` +
+        `[ccu-mcp] Use this token in your MCP client configuration.\n\n`,
     );
   }
-  process.stderr.write(`[ccu-mcp] Use this token in your MCP client configuration.\n\n`);
 }
 
 /**

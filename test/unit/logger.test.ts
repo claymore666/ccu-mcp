@@ -60,4 +60,14 @@ describe("Logger", () => {
     expect(line.params.password).toBe("[REDACTED]");
     expect(line.params.user).toBe("admin");
   });
+
+  it("redacts sensitive fields nested inside arrays", () => {
+    const logger = new Logger("debug");
+    logger.debug("array", { items: [{ password: "secret", user: "admin" }], _session_id_: "top" });
+
+    const line = JSON.parse((stderrSpy.mock.calls[0]![0] as string).trim());
+    expect(line.items[0].password).toBe("[REDACTED]");
+    expect(line.items[0].user).toBe("admin");
+    expect(line._session_id_).toBe("[REDACTED]");
+  });
 });
