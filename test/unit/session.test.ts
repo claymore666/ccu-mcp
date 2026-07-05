@@ -290,6 +290,40 @@ describe("SessionManager", () => {
       expect(session.getSessionId()).toBe("new-sess");
       session.destroy();
     });
+
+    // Regression: a relogin must leave EXACTLY ONE renewal timer. The relogin
+    // path (renewOnce → login → startRenewal) re-arms the timer mid-flight; the
+    // outer scheduleRenewal().finally must not then arm a SECOND one, or an
+    // overlapping renewal loop leaks per relogin (the overlap this design avoids).
+    it("keeps exactly one renewal timer after a relogin", async () => {
+      const client = createMockClient();
+      client.call.mockResolvedValueOnce("sess"); // initial login
+      const session = createSession(client);
+      await session.login();
+
+      vi.spyOn(session as any, "tryRestoreSession").mockResolvedValue(false);
+      vi.spyOn(session as any, "persistSession").mockResolvedValue(undefined);
+
+      // t=60s: renew fails → relogin succeeds → new session, renewal re-armed.
+      client.call.mockImplementation(async (method: string) => {
+        if (method === "Session.renew") throw new Error("renew fail");
+        if (method === "Session.login") return "new-sess";
+        return null;
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(session.getSessionId()).toBe("new-sess");
+
+      // Renew now succeeds. Advancing one interval must fire the renewal EXACTLY
+      // once — two calls would prove a leaked, overlapping second timer.
+      client.call.mockReset();
+      client.call.mockResolvedValue(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      const renews = client.call.mock.calls.filter((c) => c[0] === "Session.renew");
+      expect(renews.length).toBe(1);
+      session.destroy();
+    });
   });
 
   describe("destroy", () => {
