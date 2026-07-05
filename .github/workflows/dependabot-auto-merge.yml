@@ -1,0 +1,30 @@
+name: Dependabot auto-merge
+
+# Arm auto-merge on Dependabot PRs into dev. GitHub holds the merge until the
+# required `build-and-test` check (dev branch protection) goes green, then
+# squash-merges and deletes the branch (repo setting). Nothing merges on red CI.
+#
+# Uses only the preinstalled `gh` CLI + the built-in GITHUB_TOKEN — no
+# third-party actions, so there is no SHA to pin. `pull_request_target` runs in
+# the base-repo context so the token can enable auto-merge; we never check out
+# or execute the PR's code, so the untrusted-code risk of that trigger does not
+# apply here.
+
+on:
+  pull_request_target:
+    branches: [dev]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
