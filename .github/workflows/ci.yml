@@ -11,6 +11,18 @@ permissions:
   contents: read
 
 jobs:
+  # HERMETIC ONLY. Every step below is a function of the commit under test:
+  # same tree in, same verdict out. That contract is what makes this a
+  # required status check on main and dev.
+  #
+  # `npm audit` used to live here and broke it. Its verdict is a function of
+  # the GitHub Advisory DB — global mutable state that moves with no diff. Two
+  # advisories landing against TRANSITIVE deps turned every branch red at 11s
+  # and deadlocked Dependabot, whose PRs bump one DIRECT dep at a time and so
+  # can never clear a transitive advisory. Scanning now lives where state
+  # belongs:
+  #   - .github/workflows/audit.yml          — daily, prod-only, files ONE issue
+  #   - release-gate.yml job `release-audit` — blocks PRs into main
   build-and-test:
     runs-on: ubuntu-latest
 
@@ -30,9 +42,6 @@ jobs:
 
       - name: Version sync check
         run: npm run check:versions
-
-      - name: Audit dependencies
-        run: npm audit --audit-level=high
 
       - name: Type check
         run: npm run lint
