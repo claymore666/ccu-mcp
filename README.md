@@ -218,6 +218,31 @@ All configuration is via environment variables:
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
+To drive **several CCUs** from one server, these flat `CCU_*` vars are replaced
+by named profiles — see [Multiple CCU targets](#multiple-ccu-targets-profiles)
+below.
+
+### Command-line flags
+
+```sh
+ccu-mcp --stdio        # serve over stdin/stdout (overrides MCP_TRANSPORT)
+ccu-mcp --http         # serve over HTTP (default)
+ccu-mcp --version      # print the installed version and exit
+ccu-mcp --help         # print usage and exit
+```
+
+`--version` and `--help` need no configuration — use them to check what an
+installed copy actually is, e.g. after updating:
+
+```console
+$ npx ccu-mcp@latest --version
+1.8.1
+```
+
+Note that a bare `npx ccu-mcp` reuses the copy cached in `~/.npm/_npx` without
+re-resolving against the registry; pin `@latest` (or clear that cache) when you
+want the newest release.
+
 ### How to supply these (inline, `.env`, or export)
 
 The required `CCU_HOST` / `CCU_PASSWORD` (and everything else) are **environment
