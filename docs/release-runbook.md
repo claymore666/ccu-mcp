@@ -172,6 +172,18 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    auto-closes them and lets the milestone close. `main` is protected, so
    this PR is the only way in; merge it when the checks are green.
 
+   **The workflow runs on this PR may sit at `action_required`** — GitHub
+   holds the `pull_request` runs on the merge ref pending approval, and the
+   PR stays `BLOCKED` with the required checks simply never reporting. It
+   looks like a broken gate; it is just an unapproved run. Approve both:
+   ```sh
+   gh run list --limit 6 --json databaseId,workflowName,conclusion \
+     --jq '.[] | select(.conclusion=="action_required") | .databaseId'
+   # then, per id:
+   gh api -X POST repos/claymore666/ccu-mcp/actions/runs/<id>/approve
+   ```
+   They re-queue immediately and report normally.
+
    Required checks here: `build-and-test`, `release-title`, and
    **`release-audit`** — the last asserts no high/critical advisories in
    production dependencies (`npm audit --omit=dev`). It is the one gate that
