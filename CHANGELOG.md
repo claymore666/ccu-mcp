@@ -54,6 +54,7 @@ changes; no behavior changes.
   2.0.12, `hono` 4.12.25 → 4.12.32, `fast-uri` 3.1.2 → 3.1.4, `postcss` 8.5.16 →
   8.5.24, `body-parser` 2.2.2 → 2.3.0, plus `type-is`, `nanoid`, and a nested
   `content-type` carried along by the re-resolution.
+- `undici` 8.8.0 → 8.9.0 (#104) — a routine Dependabot bump, no advisory.
 
 ## v1.8.0 — 2026-07-05
 
