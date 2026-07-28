@@ -37,3 +37,6 @@ coverage/
 
 # Local review reports
 code-review-report.md
+
+# Drafts of upstream (OCCU/OpenCCU) issue reports — written here, filed there
+occu-issue-*.md
