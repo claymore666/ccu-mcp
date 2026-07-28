@@ -145,21 +145,43 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    harder, not to wave through. Then still read the README top-to-bottom for
    anything the per-PR pass missed.
 
-4. **Write the release notes.** This repo has no `RELEASE_NOTES.md` /
-   `CHANGELOG.md`; the notes live in the **GitHub Release body** (step 8).
-   Draft them now while the change set is fresh — summarise in user-visible
-   terms and call out any compatibility notes (new required env var, changed
-   tool contract, dropped behaviour). If you'd rather have an in-repo
-   changelog, that's a separate decision — introduce it before, not during, a
-   release.
+4. **Write the release notes — into `CHANGELOG.md`, then reuse them.** Add a
+   `## vX.Y.Z — YYYY-MM-DD` section at the top of `CHANGELOG.md` following the
+   existing convention: a short prose paragraph summarising the release, then
+   `###` subsections (`Security`, `Behavior changes (read before upgrading)`,
+   `Fixed`, `Added`, `Internal`, `Dependencies` — only the ones that apply).
+   Draft it while the change set is fresh; summarise in user-visible terms and
+   call out compatibility notes (new required env var, changed tool contract,
+   dropped behaviour). The same text becomes the **GitHub Release body** in
+   step 8, so write it once here.
 
-5. **PR `release/vX.Y.Z` → `dev`.** Required check: `CI` (build + test +
-   `npm audit --audit-level=high`). Merge when green.
+   `CHANGELOG.md` is **not** covered by `npm run check:versions` — nothing
+   fails if you forget it. It's on you.
+
+5. **PR `release/vX.Y.Z` → `dev`.** Required check: `build-and-test` (version
+   sync + type check + build + test). Merge when green.
+
+   Note it does **not** include a dependency audit: `build-and-test` is
+   hermetic by contract, and `npm audit`'s verdict depends on the GitHub
+   Advisory DB rather than on the commit. Scanning happens in
+   `.github/workflows/audit.yml` (daily, files a tracking issue) and at the
+   release gate in step 6.
 
 6. **Open the release PR `dev` → `main`** titled `Release vX.Y.Z`, with a
    `Closes #N` line for **every issue** in the milestone — that list is what
    auto-closes them and lets the milestone close. `main` is protected, so
-   this PR is the only way in; merge it when CI is green.
+   this PR is the only way in; merge it when the checks are green.
+
+   Required checks here: `build-and-test`, `release-title`, and
+   **`release-audit`** — the last asserts no high/critical advisories in
+   production dependencies (`npm audit --omit=dev`). It is the one gate that
+   can go red with no diff, because a new advisory landed since the branch was
+   cut; that is deliberate and correct at this point — don't tag and publish a
+   known-vulnerable tree. To clear it, fix on `dev` with
+   `npm audit fix --package-lock-only`, re-run `npm ci && npm run lint &&
+   npm test`, land it, then update the release PR. If the advisory is
+   genuinely unreachable from shipped code, an admin can override
+   (`enforce_admins` is off) — record the reasoning in the PR.
 
 7. **Tag `vX.Y.Z` on `main`:**
    ```sh
