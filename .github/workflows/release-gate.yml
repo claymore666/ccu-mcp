@@ -1,15 +1,15 @@
 name: Release gate
 
-# Enforce the release convention (see CLAUDE.md): main only advances via a PR
-# titled "Release vX.Y.Z". Runs solely on PRs targeting main, so everyday dev
-# PRs are unaffected. It's a required status check, but branch protection keeps
-# enforce_admins off, so an admin can still override for emergency hotfixes.
+# Gates on PRs into main — the deliberate, attended moment. Runs solely on PRs
+# targeting main, so everyday dev PRs are unaffected. Both jobs are required
+# status checks (see CLAUDE.md), but branch protection keeps enforce_admins
+# off, so an admin can still override for emergency hotfixes.
 on:
   pull_request:
     branches: [main]
     types: [opened, edited, reopened, synchronize]
 
-# No repo access needed: the title comes from the event payload.
+# Default for jobs that declare nothing: no token scopes at all.
 permissions: {}
 
 jobs:
@@ -29,3 +29,46 @@ jobs:
             echo "::error::PRs into main must be titled 'Release vX.Y.Z' (e.g. 'Release v1.3.0'). See CLAUDE.md. An admin can override for hotfixes."
             exit 1
           fi
+
+  # NON-HERMETIC, and deliberately so — same GitHub Advisory DB dependency as
+  # audit.yml. It belongs here and NOT in ci.yml's `build-and-test` because of
+  # who is standing in front of it: a human, opening a release PR, who can read
+  # the finding, fix the lockfile, or knowingly override. That is a completely
+  # different cost from a Dependabot PR deadlocking at 03:00 with nobody
+  # watching and no path to a fix.
+  #
+  # Scope matches audit.yml: production dependencies only (package.json `files`
+  # ships dist/ alone, so a devDependency advisory never reaches a user), high
+  # and critical only, read straight from the committed lockfile.
+  #
+  # Consequence to accept knowingly: a release PR that was green yesterday can
+  # be red today with no diff, because a new advisory landed. That is the
+  # correct behaviour AT THIS gate — you should not tag and npm-publish a
+  # known-vulnerable tree just because the advisory is newer than the branch.
+  release-audit:
+    runs-on: ubuntu-latest
+    # release-title needs no repo access; this job needs the lockfile. A
+    # job-level permissions block replaces the workflow-level {} for this job
+    # only, so release-title keeps its zero-scope token.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+
+      - name: No high/critical advisories in shipped dependencies
+        run: |
+          set -uo pipefail
+          # --package-lock-only: audit exactly the dependency set that will be
+          # resolved at install time. No `npm ci`, nothing built — this job
+          # asserts one thing and can only fail for that one reason.
+          rc=0
+          npm audit --omit=dev --package-lock-only --audit-level=high || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::Release blocked: high/critical advisories in production dependencies. Fix on dev with 'npm audit fix --package-lock-only', re-run 'npm ci && npm run lint && npm test', land it, then update this release PR. If the advisory is genuinely unreachable from shipped code, an admin can override (enforce_admins is off) — but record the reasoning in the PR."
+            exit 1
+          fi
+          echo "No high or critical advisories in production dependencies."

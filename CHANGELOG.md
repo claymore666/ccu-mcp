@@ -3,6 +3,58 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.8.1 — 2026-07-28
+
+Security patch release. Clears all six open dependency advisories — two of them
+high severity — and fixes the CI gate that had made them unfixable. No source
+changes; no behavior changes.
+
+### Security
+
+- **`fast-uri` (high)** — host confusion via literal backslash authority
+  delimiter and via failed IDN canonicalization (GHSA-v2hh-gcrm-f6hx,
+  GHSA-4c8g-83qw-93j6). Reached as `@modelcontextprotocol/sdk → ajv → fast-uri`;
+  resolved to 3.1.4.
+- **`postcss` (high)** — path traversal in source-map auto-loading
+  (GHSA-r28c-9q8g-f849). A devDependency (`vitest → vite`), so it never shipped;
+  fixed anyway.
+- **`@hono/node-server` (moderate)** — path traversal in `serve-static` on
+  Windows via encoded backslash (GHSA-frvp-7c67-39w9). This one is on the live
+  HTTP code path: the SDK's streamable-HTTP transport imports `getRequestListener`
+  from it. Resolved to 2.0.12.
+- **`hono` (moderate)** — three advisories covering JSX per-request context
+  isolation, `cx()` escaping bypass, and API-Gateway header de-duplication. None
+  of those surfaces are used here; resolved to 4.12.32 regardless.
+- **`body-parser` (moderate)** — denial of service when an invalid `limit`
+  silently disables size enforcement (GHSA-v422-hmwv-36x6). Dormant — reachable
+  only through SDK modules this server never imports.
+- **The floor for `@modelcontextprotocol/sdk` is now `^1.30.0`** (was `^1.29.0`).
+  This is the part of the fix that reaches you: `package-lock.json` is not
+  published, so an installed copy resolves from the declared ranges. SDK 1.29.0
+  pins `@hono/node-server: ^1.19.9`, a range with no non-vulnerable member — only
+  1.30.0 widens it to `^1.19.9 || ^2.0.5`. Raising the floor is what makes the
+  patched transport binding rather than incidental.
+
+### Internal
+
+- **CI now separates hermetic from non-hermetic checks.** `npm audit` ran inside
+  `build-and-test`, a required status check on both branches, but its verdict
+  depends on the GitHub Advisory DB rather than on the commit under test. When
+  the two transitive advisories landed, every branch went red at 11s — before
+  lint, build, or tests ran — and Dependabot, which bumps one direct dependency
+  per PR, could not clear a transitive advisory no matter how many PRs it opened.
+  `build-and-test` is now hermetic only. Scanning moved to a daily workflow that
+  maintains a single tracking issue, plus a `release-audit` gate on PRs into
+  `main` where a human is present to act on it.
+- The release runbook no longer claims this repo has no changelog.
+
+### Dependencies
+
+- `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0, `@hono/node-server` 1.19.14 →
+  2.0.12, `hono` 4.12.25 → 4.12.32, `fast-uri` 3.1.2 → 3.1.4, `postcss` 8.5.16 →
+  8.5.24, `body-parser` 2.2.2 → 2.3.0, plus `type-is`, `nanoid`, and a nested
+  `content-type` carried along by the re-resolution.
+
 ## v1.8.0 — 2026-07-05
 
 Post-1.7.0 audit-fix release: a fresh multi-agent source review (six dimensions,

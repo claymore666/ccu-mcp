@@ -1,6 +1,6 @@
 {
   "name": "ccu-mcp",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
   "mcpName": "io.github.claymore666/ccu-mcp",
   "type": "module",
@@ -53,14 +53,14 @@
   },
   "homepage": "https://github.com/claymore666/ccu-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "undici": "^8.5.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.8",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.8"
   }
 }

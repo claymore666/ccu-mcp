@@ -1,0 +1,219 @@
+name: Dependency audit
+
+# NON-HERMETIC BY CONSTRUCTION — never make this a required status check.
+# Its verdict is a function of the GitHub Advisory DB (global mutable state),
+# not of the commit under test. A required check whose result can flip
+# overnight with no diff deadlocks every open PR: that is exactly why the
+# `npm audit` step was removed from ci.yml's `build-and-test`.
+#
+# Scope: PRODUCTION dependencies only, high + critical only.
+#   - prod-only: package.json `files` publishes dist/ alone, so a
+#     devDependency advisory (vitest -> vite -> postcss) never reaches a user.
+#   - high+critical only: moderate and low ride the weekly Dependabot cadence.
+#
+# Signal: ONE long-lived tracking issue, found by the `dependency-audit`
+# label. Dirty -> open it, or rewrite it in place. Clean -> comment + close.
+# The JOB stays GREEN whenever the audit ran, however ugly the findings; it
+# goes red only when the audit could NOT run. A red scheduled workflow must
+# mean "no audit happened", not "an advisory exists" — otherwise the daily
+# failure mail earns a filter rule within a week and the mechanism is dead.
+#
+# Uses only the preinstalled `gh` CLI + the built-in GITHUB_TOKEN — no
+# third-party actions, so there is no SHA to pin. Same convention as
+# dependabot-auto-merge.yml.
+#
+# Scheduled workflows only run from the DEFAULT branch (`dev`), so this file
+# must be on `dev` to fire at all, and it audits dev's lockfile. `main` is
+# covered by the `release-audit` job in release-gate.yml.
+
+on:
+  schedule:
+    # 04:17 UTC daily. Deliberately off the hour: GitHub's cron queue is
+    # heavily oversubscribed at :00 and delays runs by tens of minutes.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read # checkout, to read the committed package-lock.json
+  issues: write # create/edit/comment/close the tracking issue + its label
+
+# A scheduled run racing a manual dispatch would file two tracking issues.
+concurrency:
+  group: dependency-audit
+  cancel-in-progress: false
+
+env:
+  AUDIT_LABEL: dependency-audit
+  ISSUE_TITLE: "Dependency audit: high/critical advisories in production dependencies"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+
+      - name: Audit production dependencies
+        id: audit
+        run: |
+          set -uo pipefail
+
+          # --package-lock-only audits the committed lockfile directly: no
+          # `npm ci`, no node_modules, nothing built. That removes an install
+          # step whose failure would masquerade as an audit result.
+          #
+          # npm audit exits 1 whenever it finds anything, and `run:` uses
+          # `bash -e`, so the exit code MUST be captured here or the step dies
+          # before the tracking issue is ever filed.
+          rc=0
+          npm audit --omit=dev --package-lock-only --json > audit.json || rc=$?
+          echo "npm audit exit code: $rc"
+
+          # Exit 1 == "vulnerabilities found" and is expected. Anything else,
+          # or an unparseable report, means the audit did not run (registry
+          # 5xx, DNS, npm bug). Fail loudly rather than let a broken audit be
+          # mistaken for a clean one and auto-close the tracking issue.
+          if ! jq -e 'has("metadata") and (.metadata.vulnerabilities | type == "object")' \
+               audit.json >/dev/null 2>&1; then
+            echo "::error::npm audit produced no parseable report (exit $rc) — infrastructure failure, NOT a clean audit."
+            head -c 4000 audit.json || true
+            exit 1
+          fi
+
+          high=$(jq -r '.metadata.vulnerabilities.high' audit.json)
+          crit=$(jq -r '.metadata.vulnerabilities.critical' audit.json)
+          count=$(( high + crit ))
+
+          # Fingerprint the SET of high/critical findings. The issue body is
+          # rewritten every run (editing a body notifies nobody); a comment is
+          # posted only when this fingerprint changes, so a long-lived
+          # advisory does not generate a notification every single morning.
+          fingerprint=$(jq -r '
+            [ .vulnerabilities[]
+              | select(.severity == "high" or .severity == "critical")
+              | "\(.name)@\(.range)" ] | sort | join(" ")' audit.json)
+          fingerprint=$(printf '%s' "$fingerprint" | sha256sum | cut -c1-12)
+
+          {
+            echo "count=$count"
+            echo "high=$high"
+            echo "critical=$crit"
+            echo "fingerprint=$fingerprint"
+          } >> "$GITHUB_OUTPUT"
+
+          # Human-readable report -> report.md, reused verbatim as the issue body.
+          {
+            echo "\`npm audit --omit=dev --package-lock-only\` on \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA:0:7}\`"
+            echo
+            if [ "$count" -eq 0 ]; then
+              echo "**No high or critical advisories in production dependencies.**"
+            else
+              echo "**${count} high/critical in production dependencies** (${high} high, ${crit} critical)."
+            fi
+            echo
+            jq -r '
+              .vulnerabilities
+              | to_entries
+              | map(select(.value.severity == "high" or .value.severity == "critical"))
+              | sort_by(.key)[]
+              | .value as $v
+              | "### `\($v.name)` \($v.range) — \($v.severity)\n"
+                + "- direct dependency: `\($v.isDirect)`\n"
+                + "- fix available: " + (
+                    $v.fixAvailable
+                    | if type == "boolean" then (if . then "`yes` (in-range lockfile bump)" else "`no`" end)
+                      else "`\(.name)@\(.version)` — **semver-major: \(.isSemVerMajor)**"
+                      end
+                  ) + "\n"
+                + ( [ $v.via[] | select(type == "object") | "- \(.title)\n  \(.url)" ] | join("\n") )
+                + "\n"
+            ' audit.json
+          } > report.md
+
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sync the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          COUNT: ${{ steps.audit.outputs.count }}
+          FINGERPRINT: ${{ steps.audit.outputs.fingerprint }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent: creates the label on the first run, refreshes it after.
+          # Labels live under the Issues API, so `issues: write` covers this.
+          gh label create "$AUDIT_LABEL" \
+            --color EE9900 \
+            --description "Automated production-dependency audit tracking issue" \
+            --force
+
+          # Label filter, NOT --search. `gh issue list --label` hits the REST
+          # list endpoint, which is read-your-writes. `--search` hits the
+          # search index, which lags by seconds to minutes and would let two
+          # runs each conclude "nothing open" and file a duplicate.
+          issue=$(gh issue list --state open --label "$AUDIT_LABEL" --limit 1 \
+                  --json number --jq '.[0].number // empty')
+
+          # ---- now clean -------------------------------------------------
+          if [ "$COUNT" -eq 0 ]; then
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body \
+                "Production dependencies are clean — no high or critical advisories in \`npm audit --omit=dev\`. Closing. ([run]($RUN_URL))"
+              gh issue close "$issue" --reason completed
+              echo "Closed tracking issue #$issue."
+            else
+              echo "Clean, no tracking issue open. Nothing to do."
+            fi
+            exit 0
+          fi
+
+          # ---- dirty: build the issue body -------------------------------
+          {
+            cat report.md
+            echo
+            echo "---"
+            echo
+            echo "### Remediation"
+            echo
+            echo "These are almost always TRANSITIVE. Dependabot bumps direct dependencies one"
+            echo "PR at a time and structurally cannot clear a transitive advisory that is"
+            echo "already fixable inside the existing semver ranges. The fix is a lockfile-only"
+            echo "re-resolution — run it from a worktree, per CLAUDE.md:"
+            echo
+            echo '```sh'
+            echo "git worktree add ../ccu-mcp-audit -b fix/audit-$FINGERPRINT origin/dev"
+            echo "cd ../ccu-mcp-audit"
+            echo "npm audit fix --package-lock-only"
+            echo "npm ci && npm run lint && npm test    # a lockfile bump is still a code change"
+            echo "git commit -am 'fix(deps): clear high/critical prod advisories (lockfile only)'"
+            echo '```'
+            echo
+            echo "If \`fix available\` above reports **semver-major: true**, the fix needs a"
+            echo "deliberate direct-dependency major bump instead — do NOT reach for"
+            echo "\`npm audit fix --force\`."
+            echo
+            echo "<sub>Maintained automatically by [\`.github/workflows/audit.yml\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/dev/.github/workflows/audit.yml). The body is rewritten on every run; a comment is added only when the advisory set changes; the issue closes itself when clean. Do not rename or unlabel it — the \`$AUDIT_LABEL\` label is how the workflow finds it.</sub>"
+            echo "<!-- audit-fingerprint: $FINGERPRINT -->"
+          } > issue-body.md
+
+          if [ -z "$issue" ]; then
+            url=$(gh issue create --title "$ISSUE_TITLE" \
+                    --label "$AUDIT_LABEL" --body-file issue-body.md)
+            echo "Opened tracking issue: $url"
+          else
+            prev=$(gh issue view "$issue" --json body --jq '.body' \
+                   | grep -oE 'audit-fingerprint: [0-9a-f]+' | head -1 | cut -d' ' -f2 || true)
+            gh issue edit "$issue" --body-file issue-body.md
+            if [ "${prev:-}" != "$FINGERPRINT" ]; then
+              gh issue comment "$issue" --body \
+                "Advisory set changed (\`${prev:-none}\` → \`$FINGERPRINT\`): now $COUNT high/critical in production dependencies. ([run]($RUN_URL))"
+              echo "Advisory set changed on #$issue; commented."
+            else
+              echo "Advisory set unchanged on #$issue; body refreshed silently."
+            fi
+          fi
