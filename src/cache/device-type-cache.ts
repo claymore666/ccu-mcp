@@ -185,7 +185,9 @@ export class DeviceTypeCache {
       );
 
       // Get all devices per interface
-      const devicesByType = new Map<string, { interface: string; address: string; channels: string[] }>();
+      // `address` used to be stored here and never read — processType's own
+      // parameter type omitted it (issue #121).
+      const devicesByType = new Map<string, { interface: string; channels: string[] }>();
 
       for (const iface of interfaces) {
         await rateLimiter.acquire();
@@ -207,7 +209,6 @@ export class DeviceTypeCache {
 
           devicesByType.set(device.type, {
             interface: iface.name,
-            address: device.address,
             channels: device.children,
           });
         }
@@ -220,43 +221,9 @@ export class DeviceTypeCache {
       // half while the rate limiter still caps overall CCU load.
       const processType = async (deviceType: string, info: { interface: string; channels: string[] }) => {
         try {
-          const channels: CachedDeviceType["channels"] = {};
-
-          // Get description for each channel
-          for (const channelAddr of info.channels) {
-            const channelIndex = channelAddr.split(":")[1] || "0";
-
-            const paramsets: Record<string, Record<string, CachedParamDescription>> = {};
-
-            for (const paramsetKey of ["VALUES", "MASTER"]) {
-              await rateLimiter.acquire();
-              try {
-                const desc = await session.call("Interface.getParamsetDescription", {
-                  interface: info.interface,
-                  address: channelAddr,
-                  paramsetKey,
-                });
-
-                const params = parseParamDescriptions(desc as RawParamDesc[]);
-
-                if (Object.keys(params).length > 0) {
-                  paramsets[paramsetKey] = params;
-                }
-              } catch {
-                // Some channels don't support all paramset keys — skip
-              }
-            }
-
-            // Determine channel type from the first param or address pattern
-            channels[channelIndex] = {
-              type: channelAddr, // Will be enriched if we add channel type info later
-              paramsets,
-            };
-          }
-
           this.cache.set(deviceType, {
             interface: info.interface,
-            channels,
+            channels: await this.fetchChannels(info.interface, info.channels, session, rateLimiter),
           });
         } catch (err) {
           this.logger.warn("cache_warm_type_failed", { deviceType, error: (err as Error).message });
@@ -289,12 +256,61 @@ export class DeviceTypeCache {
   }
 
   /**
+   * Fetch every channel's VALUES/MASTER paramset descriptions for one device
+   * type. Shared by the background warm and the live query fallback — they had
+   * near-identical copies of this loop that had already drifted apart in error
+   * handling (issue #121).
+   *
+   * A channel that doesn't support a paramset key is normal and skipped; the
+   * result guard is `expectArray`, so a malformed CCU/proxy answer (`result:
+   * null`) is a diagnosable CCU_ERROR rather than a TypeError swallowed as
+   * "this channel has no such paramset".
+   */
+  private async fetchChannels(
+    interfaceName: string,
+    channels: string[],
+    session: SessionManager,
+    rateLimiter: RateLimiter,
+  ): Promise<CachedDeviceType["channels"]> {
+    const out: CachedDeviceType["channels"] = {};
+
+    for (const channelAddr of channels) {
+      const channelIndex = channelAddr.split(":")[1] || "0";
+      const paramsets: Record<string, Record<string, CachedParamDescription>> = {};
+
+      for (const paramsetKey of ["VALUES", "MASTER"]) {
+        await rateLimiter.acquire();
+        try {
+          const desc = await session.call("Interface.getParamsetDescription", {
+            interface: interfaceName,
+            address: channelAddr,
+            paramsetKey,
+          });
+          const params = parseParamDescriptions(
+            expectArray<RawParamDesc>(desc, "Interface.getParamsetDescription"),
+          );
+          if (Object.keys(params).length > 0) {
+            paramsets[paramsetKey] = params;
+          }
+        } catch {
+          // Channel doesn't support this paramset key — expected, skip.
+        }
+      }
+
+      // `type` carries the channel address for now; enriched if we ever add
+      // real channel-type info.
+      out[channelIndex] = { type: channelAddr, paramsets };
+    }
+
+    return out;
+  }
+
+  /**
    * Add a single type to cache (live query fallback).
    * Single-flight per device type: concurrent calls share one live query.
    */
   async queryAndCache(
     deviceType: string,
-    deviceAddress: string,
     interfaceName: string,
     channels: string[],
     session: SessionManager,
@@ -318,31 +334,10 @@ export class DeviceTypeCache {
     session: SessionManager,
     rateLimiter: RateLimiter,
   ): Promise<CachedDeviceType | undefined> {
-    const cached: CachedDeviceType = { interface: interfaceName, channels: {} };
-
-    for (const channelAddr of channels) {
-      const channelIndex = channelAddr.split(":")[1] || "0";
-      const paramsets: Record<string, Record<string, CachedParamDescription>> = {};
-
-      for (const paramsetKey of ["VALUES", "MASTER"]) {
-        await rateLimiter.acquire();
-        try {
-          const desc = await session.call("Interface.getParamsetDescription", {
-            interface: interfaceName,
-            address: channelAddr,
-            paramsetKey,
-          });
-
-          const params = parseParamDescriptions(desc as RawParamDesc[]);
-
-          if (Object.keys(params).length > 0) {
-            paramsets[paramsetKey] = params;
-          }
-        } catch { /* skip */ }
-      }
-
-      cached.channels[channelIndex] = { type: channelAddr, paramsets };
-    }
+    const cached: CachedDeviceType = {
+      interface: interfaceName,
+      channels: await this.fetchChannels(interfaceName, channels, session, rateLimiter),
+    };
 
     this.cache.set(deviceType, cached);
     // Don't block on disk save
