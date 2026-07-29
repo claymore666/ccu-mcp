@@ -328,7 +328,9 @@ would otherwise fail *silently* and much later, so the exit is deliberate:
 | `TLS_FINGERPRINT/CA_CERT/TLS_VERIFY is set but HTTPS is disabled` | The verification code path only exists over HTTPS. Ignoring these would leave you believing the connection is verified while credentials travel in cleartext. Set `CCU_HTTPS=true` (or `CCU_<NAME>_HTTPS=true`) or remove them. |
 | `MCP_TLS_CERT and MCP_TLS_KEY must both be set (or both unset)` | Half a TLS config can't serve HTTPS. |
 | `MCP_TRANSPORT must be "http" or "stdio"` | Case matters. A typo like `STDIO` must not silently select HTTP and leave a stdio-spawning client waiting forever. |
-| `<VAR> must be a positive number` | Any of the numeric settings (ports, timeouts, rate limits, poll interval). |
+| `<VAR> must be a positive integer` | Ports, timeouts, `CACHE_TTL`, rate limits, `RESOURCE_POLL_INTERVAL`. The *whole* value has to be digits — `CCU_TIMEOUT=30s` is rejected rather than read as 30 ms, and `30.5` or `1e4` are rejected rather than truncated. |
+| `<VAR> must be a positive number` | The two duration settings, `MCP_AUTH_TOKEN_TTL_DAYS` and `MCP_AUTH_TOKEN_GRACE_HOURS`, where a fractional value is meaningful. |
+| `<VAR> must be "true" or "false"` | Any boolean setting (`CCU_HTTPS`, `CCU_TLS_VERIFY`, `CCU_<NAME>_PROTECTED`, `CCU_<NAME>_READONLY`, `MCP_ALLOW_PLAINTEXT`). Surrounding whitespace and capitalisation are fine; `yes`, `1` and `on` are not, because treating them as *false* would quietly switch a protection off. |
 | `CCU_CA_CERT could not be read` | Path is wrong or unreadable by the server user. |
 
 `ccu-mcp --version` and `--help` work without any configuration, so they stay
