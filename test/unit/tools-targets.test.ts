@@ -152,8 +152,9 @@ describe("per-call confirm for high-impact tools (issue #72)", () => {
   });
 
   it("delete_system_variable refuses without confirm even after the session is unlocked", async () => {
+    // "true" is what deletesysvarbyname.tcl really answers; the tool checks it (#118).
     const sessionCall = vi.fn().mockImplementation(async (method: string) =>
-      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : null);
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : "true");
     const t = createTestServer({ protected: true, sessionCall });
     deps = t.deps;
     await unlockSession(t.server);

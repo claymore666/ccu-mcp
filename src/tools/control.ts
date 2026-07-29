@@ -129,6 +129,17 @@ function registerPutParamset(server: McpServer, deps: ServerDeps): void {
       const active = deps.selection.active;
       const { session, resolver, deviceTypeCache } = active;
       assertWritable(deps.selection, active, args.confirm);
+      // An empty set sends an empty struct; putparamset.tcl iterates nothing and
+      // answers true, so the tool reported a write that touched nothing as a
+      // success (issue #131). Every sibling tool rejects its degenerate input.
+      if (Object.keys(args.set).length === 0) {
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: "'set' is empty — there is nothing to write.",
+          hint: "Pass the parameters to write, e.g. {TEMPERATURE_WINDOW_OPEN: 5.0}. Use describe_device_type for valid names.",
+        });
+      }
       const iface = args.interface ?? await resolver.resolveInterface(args.address, session, rateLimiter, logger);
 
       // CCU expects set as array of {name, type, value} objects. Types must be
@@ -278,7 +289,19 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         // historical contract) — label matching applies to strings only, so
         // an enum whose labels are numeric strings ("1;2;3") can't silently
         // redefine what a numeric input means.
-        const labels = (sysVar.valueList ?? "").split(";");
+        // "".split(";") is [""], not [] — so an ENUM/LIST variable with no
+        // value list would otherwise present as a one-state enum: index 0
+        // accepted, and a hint reading "Pass an index 0-0 or one of: "
+        // (issue #122). That variable is unwritable by index; say so.
+        if (!sysVar.valueList) {
+          throw new CcuError({
+            error: "CCU_ERROR",
+            code: 0,
+            message: `System variable "${args.name}" is an enum but the CCU reports no value list for it`,
+            hint: "The variable is misconfigured on the CCU — open it in the WebUI and define its value list, or recreate it with create_system_variable.",
+          });
+        }
+        const labels = sysVar.valueList.split(";");
         let index: number;
         if (typeof args.value === "number") {
           index = args.value;
@@ -344,12 +367,37 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
       }
 
       await rateLimiter.acquire();
-      await withRetry(
+      const setResult = await withRetry(
         () => session.call(method, { name: args.name, value: rpcValue }),
         method,
         logger,
         { rateLimiter },
       );
+
+      // setbool.tcl/setfloat.tcl end with:
+      //   if {[hmscript $script args]} { jsonrpc_response $args(value) }
+      //   else                         { jsonrpc_response -1 }
+      // so -1 is the CCU saying "the script engine failed" — the write never
+      // reached the variable. Discarding this result reported a lost write as a
+      // success (issue #118).
+      //
+      // Only the sentinel is treated as failure, deliberately: comparing the
+      // echoed value against what we sent would misfire the moment a firmware
+      // reformats it ("21.5" vs "21.500000"). A false "your write failed" on a
+      // write that landed is worse than the narrow blind spot below.
+      //
+      // Blind spot, and it is safe: setting a float to exactly -1 makes success
+      // and failure indistinguishable. That direction fails open — we report
+      // success for the value the CCU would have stored anyway.
+      if (isCcuScriptFailure(setResult) && String(rpcValue) !== "-1") {
+        throw new CcuError({
+          error: "CCU_ERROR",
+          code: 0,
+          message: `${method} reported failure for "${args.name}" — the value was NOT written`,
+          hint: "The CCU's script engine failed (busy or errored). Verify with list_system_variables and retry.",
+          ccuMethod: method,
+        });
+      }
 
       // setbool.tcl/setfloat.tcl answer success even when dom.GetObject finds
       // no variable (verified in the OCCU TCL) — a delete racing the 30s type
@@ -376,12 +424,18 @@ function registerSetSystemVariable(server: McpServer, deps: ServerDeps): void {
         logger.warn("sysvar_write_unverified", { name: args.name, error: (err as Error).message });
         verified = false;
       }
+      // An empty result has TWO causes and getvaluebyname.tcl cannot tell them
+      // apart — it returns `json_toString [hmscript …]`, and hmscript yields ""
+      // both when the variable is gone AND when the script engine itself failed.
+      // Say so rather than asserting a concurrent delete that may not have
+      // happened (issue #118). The setter's own return value is checked above,
+      // so a write that never landed has already been caught by this point.
       if (verified && (typeof verifyResult !== "string" || verifyResult === "")) {
         throw new CcuError({
           error: "NOT_FOUND",
           code: 0,
-          message: `System variable disappeared before the write could land: ${args.name}`,
-          hint: "It was likely deleted concurrently (the CCU's setBool/setFloat report success even without a target). Call list_system_variables to confirm.",
+          message: `Could not confirm the write to "${args.name}": the CCU returned no value for it`,
+          hint: "Either the variable was deleted concurrently, or the CCU's script engine failed during verification. The write itself was acknowledged. Call list_system_variables to see which.",
         });
       }
 
@@ -432,6 +486,36 @@ function registerCreateSystemVariable(server: McpServer, deps: ServerDeps): void
           code: 0,
           message: "An enum system variable requires a non-empty 'values' list.",
           hint: "Pass values, e.g. [\"off\", \"low\", \"high\"].",
+        });
+      }
+      // Arguments that don't apply to the chosen type used to be dropped on the
+      // floor by the switch below — create(type:"bool", min:0, max:40, unit:"°C")
+      // silently made a plain boolean (issue #122). Reject instead, matching the
+      // enum-without-values check directly above.
+      const ignored: string[] = [];
+      if (args.type !== "float") {
+        for (const [k, v] of [["min", args.min], ["max", args.max], ["unit", args.unit]] as const) {
+          if (v !== undefined) ignored.push(k);
+        }
+      }
+      if (args.type !== "enum" && args.values !== undefined) ignored.push("values");
+      if (ignored.length > 0) {
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: `${ignored.join(", ")} ${ignored.length === 1 ? "does" : "do"} not apply to a "${args.type}" system variable`,
+          hint: "min/max/unit are float-only; values is enum-only. Drop them, or change 'type'.",
+        });
+      }
+      // ValueMin >= ValueMax makes a variable the WebUI cannot set a value in.
+      // hmNumberLiteral checks each bound is representable; nothing checked
+      // them against each other (issue #122).
+      if (args.type === "float" && args.min !== undefined && args.max !== undefined && args.min >= args.max) {
+        throw new CcuError({
+          error: "INVALID_INPUT",
+          code: 0,
+          message: `min (${args.min}) must be less than max (${args.max})`,
+          hint: "Swap them, or omit both for the 0-100 default range.",
         });
       }
       // ";" is the CCU's in-band ValueList separator: a label containing it
@@ -627,12 +711,27 @@ function registerDeleteSystemVariable(server: McpServer, deps: ServerDeps): void
       }
 
       await rateLimiter.acquire();
-      await withRetry(
+      const deleteResult = await withRetry(
         () => session.call("SysVar.deleteSysVarByName", { name: args.name }),
         "SysVar.deleteSysVarByName",
         logger,
         { rateLimiter },
       );
+
+      // deletesysvarbyname.tcl is `jsonrpc_response [hmscript $script args]`,
+      // and the script's only output is Write("true"). So anything other than
+      // "true" means hmscript failed and the variable is still there — which
+      // this tool used to report as `deleted: true` (issue #118). Same strict
+      // shape as execute_program's Program.execute check.
+      if (deleteResult !== true && deleteResult !== "true") {
+        throw new CcuError({
+          error: "CCU_ERROR",
+          code: 0,
+          message: `SysVar.deleteSysVarByName reported failure for "${args.name}" — it was NOT deleted`,
+          hint: "The CCU's script engine failed (busy or errored). Confirm with list_system_variables and retry.",
+          ccuMethod: "SysVar.deleteSysVarByName",
+        });
+      }
 
       typeCacheHolder.entry = null; typeCacheHolder.gen++; // removed variable must not linger in the cache
       return toolResult({ name: args.name, deleted: true });
@@ -841,6 +940,16 @@ function registerExecuteProgram(server: McpServer, deps: ServerDeps): void {
       return toolResult({ id: args.id, name: program.name, executed: true });
     }),
   );
+}
+
+/**
+ * True when a CCU response carries the `-1` sentinel that SysVar.setBool /
+ * SysVar.setFloat return when their ReGa script failed to run (verified in the
+ * OCCU sources: `setbool.tcl`, `setfloat.tcl`). Accepts both the numeric and
+ * the string form — the CCU's JSON layer is not consistent about which.
+ */
+function isCcuScriptFailure(result: unknown): boolean {
+  return result === -1 || result === "-1";
 }
 
 /**
