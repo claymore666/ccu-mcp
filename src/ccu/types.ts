@@ -169,6 +169,14 @@ export interface CcuProfile {
   protected: boolean;
   /** When true, write tools are refused outright (even with confirm). */
   readonly: boolean;
+  /**
+   * True only for the back-compat profile synthesised from the FLAT `CCU_*`
+   * variables when `CCU_PROFILES` is unset. Not the same as `name === "default"`:
+   * `CCU_PROFILES=default,dev` is legal and produces a profile genuinely named
+   * "default" that reads `CCU_DEFAULT_*`. Error messages must name the variable
+   * the profile actually reads, so they key off this instead of the name.
+   */
+  isFlat?: boolean;
   /** Connection details for this target. */
   ccu: CcuConfig;
 }
