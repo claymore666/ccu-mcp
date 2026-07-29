@@ -46,6 +46,43 @@ function envKeysInExample(): Set<string> {
   return keys;
 }
 
+// server.json is the MCP REGISTRY manifest — what someone installing from the
+// registry reads. It drifted to 10 of 30 variables because nothing checked it
+// (issue #126). It is not a straight mirror of the code: the manifest declares
+// the STDIO package, so the HTTP-transport variables genuinely do not apply.
+// List those exemptions explicitly, so the exemption is a decision on the
+// record rather than an omission.
+const SERVER_JSON = join(__dirname, "../../server.json");
+const HTTP_ONLY_VARS = new Set([
+  "MCP_TRANSPORT", "MCP_PORT", "MCP_HOST",
+  "MCP_AUTH_TOKEN", "MCP_AUTH_TOKEN_PREVIOUS", "MCP_AUTH_TOKEN_TTL_DAYS", "MCP_AUTH_TOKEN_GRACE_HOURS",
+  "MCP_TLS_CERT", "MCP_TLS_KEY", "MCP_ALLOW_PLAINTEXT",
+  "MCP_ALLOWED_ORIGINS", "MCP_ALLOWED_HOSTS",
+]);
+
+describe("server.json (MCP registry manifest)", () => {
+  const manifest = () => JSON.parse(readFileSync(SERVER_JSON, "utf-8"));
+
+  it("documents every env var that applies to the stdio package", () => {
+    const declared = new Set<string>(
+      (manifest().packages[0].environmentVariables ?? []).map((v: { name: string }) => v.name),
+    );
+    const missing = [...envKeysReferencedInCode()]
+      .filter((k) => !HTTP_ONLY_VARS.has(k) && !declared.has(k))
+      .sort();
+    expect(missing, `env vars read in code but missing from server.json: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("does not declare env vars the code never reads", () => {
+    const code = envKeysReferencedInCode();
+    const stale = ((manifest().packages[0].environmentVariables ?? []) as Array<{ name: string }>)
+      .map((v) => v.name)
+      .filter((n) => !code.has(n))
+      .sort();
+    expect(stale, `env vars in server.json not read anywhere in code: ${stale.join(", ")}`).toEqual([]);
+  });
+});
+
 describe(".env.example", () => {
   it("documents every env var the code reads", () => {
     const code = envKeysReferencedInCode();

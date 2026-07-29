@@ -48,6 +48,19 @@ if (pkg.mcpName !== server.name) {
 rows.push([`${PKG} mcpName`, pkg.mcpName]);
 rows.push([`${SERVER} name`, server.name]);
 
+// 4. The npm package the registry tells people to install must BE this package.
+// Unchecked until now: this repo renamed its npm package once already
+// (debmatic-mcp -> ccu-mcp, v1.5.0), and had `identifier` been missed in that
+// rename every gate in the release runbook would still have gone green while
+// the registry pointed users at the deprecated package.
+packages.forEach((p, i) => {
+  if (p.registryType === "npm" && p.identifier !== pkg.name) {
+    problems.push(`${SERVER} packages[${i}].identifier "${p.identifier}" != ${PKG} name "${pkg.name}"`);
+  }
+  rows.push([`${SERVER} packages[${i}].identifier`, p.identifier]);
+});
+rows.push([`${PKG} name`, pkg.name]);
+
 const width = Math.max(...rows.map(([label]) => label.length));
 for (const [label, value] of rows) {
   console.log(`  ${label.padEnd(width)}  ${value}`);
