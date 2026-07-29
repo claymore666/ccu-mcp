@@ -2,17 +2,17 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, request, type Server, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
+import { DIST, distMissing, e2ePort } from "./_dist.js";
 
 // End-to-end test of the HTTP transport against the BUILT server (dist/) with a
 // mocked CCU. Regression test for issue #17: a reused stateless transport broke
 // every request after the first; the server must support multiple requests per
 // session and multiple concurrent sessions.
 
-const DIST = join(__dirname, "../../dist/index.js");
 const AUTH_TOKEN = "e2e-test-token";
 
 /**
@@ -90,14 +90,14 @@ async function parseSse(res: Response): Promise<any> {
 // Degraded startup: the server must come up and speak MCP even when the CCU
 // is unreachable (required for CCU outages and for Glama's containerized
 // build checks, which start the server with placeholder credentials).
-describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () => {
+describe.skipIf(distMissing)("degraded startup e2e (CCU unreachable)", () => {
   let child: ChildProcess;
   let mcpPort: number;
   let cacheDir: string;
 
   beforeAll(async () => {
     cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-degraded-"));
-    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+    mcpPort = e2ePort(0);
 
     child = spawn("node", [DIST], {
       env: {
@@ -176,16 +176,17 @@ describe.skipIf(!existsSync(DIST))("degraded startup e2e (CCU unreachable)", () 
   });
 });
 
-describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU)", () => {
+describe.skipIf(distMissing)("HTTP transport e2e (built server, mocked CCU)", () => {
   let ccu: { server: Server; port: number };
   let child: ChildProcess;
   let mcpPort: number;
   let cacheDir: string;
+  let stderrLines: string[];
 
   beforeAll(async () => {
     ccu = await startCcuMock();
     cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-"));
-    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+    mcpPort = e2ePort(1);
 
     child = spawn("node", [DIST], {
       env: {
@@ -203,9 +204,18 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
         MCP_ALLOWED_ORIGINS: ALLOWED_ORIGIN,
         CACHE_DIR: cacheDir,
         RESOURCE_POLL_INTERVAL: "3600",
-        LOG_LEVEL: "error",
+        // warn, not error: auth_failed is a warn-level line, and the fail2ban
+        // filter test below asserts against the real thing (issue #129).
+        LOG_LEVEL: "warn",
       },
       stdio: ["ignore", "ignore", "pipe"],
+    });
+    // Drain stderr — both to keep the assertion below honest and so the pipe
+    // buffer can't fill and stall the child.
+    stderrLines = [];
+    child.stderr!.setEncoding("utf-8");
+    child.stderr!.on("data", (chunk: string) => {
+      for (const line of chunk.split("\n")) if (line.trim()) stderrLines.push(line);
     });
 
     // Wait for the port to accept connections
@@ -227,6 +237,39 @@ describe.skipIf(!existsSync(DIST))("HTTP transport e2e (built server, mocked CCU
     ccu?.server.close();
     rmSync(cacheDir, { recursive: true, force: true });
   });
+
+  // Issue #129: the fail2ban unit test asserts against a hand-mirrored copy of
+  // this log line, not the line src/index.ts actually writes — so adding a
+  // field ahead of `client` would break every deployed jail while that test
+  // stayed green. Close the loop against the real process here.
+  it("emits an auth_failed line the committed fail2ban filter matches", async () => {
+    const res = await fetch(`http://127.0.0.1:${mcpPort}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer wrong-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    expect(res.status).toBe(401);
+
+    // give the child a moment to flush the line
+    const deadline = Date.now() + 5_000;
+    let line: string | undefined;
+    while (Date.now() < deadline) {
+      line = stderrLines.find((l) => l.includes('"msg":"auth_failed"'));
+      if (line) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(line, `no auth_failed line in stderr: ${stderrLines.join(" | ")}`).toBeTruthy();
+
+    // the SHIPPED filter regex, read from the file operators install
+    const conf = readFileSync(join(__dirname, "../../fail2ban/filter.d/ccu-mcp.conf"), "utf-8");
+    const pattern = conf.match(/^failregex\s*=\s*(.+)$/m)?.[1];
+    expect(pattern, "filter must define a failregex").toBeTruthy();
+    const re = new RegExp(pattern!.replace("<HOST>", "([0-9a-fA-F:.]+)"));
+
+    const m = line!.match(re);
+    expect(m, `shipped fail2ban filter did not match the real line: ${line}`).not.toBeNull();
+    expect(m![1]).toMatch(/^(127\.0\.0\.1|::1)$/); // <HOST> captures the peer IP
+  }, 15_000);
 
   it("serves the health endpoint without auth (liveness only)", async () => {
     const res = await fetch(`http://127.0.0.1:${mcpPort}/health`);
@@ -451,7 +494,7 @@ const INIT_BODY = {
   params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "secure", version: "1" } },
 };
 
-describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebinding on)", () => {
+describe.skipIf(distMissing)("secure HTTP defaults e2e (no CORS, DNS-rebinding on)", () => {
   let ccu: { server: Server; port: number };
   let child: ChildProcess;
   let mcpPort: number;
@@ -460,7 +503,7 @@ describe.skipIf(!existsSync(DIST))("secure HTTP defaults e2e (no CORS, DNS-rebin
   beforeAll(async () => {
     ccu = await startCcuMock();
     cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-secure-"));
-    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+    mcpPort = e2ePort(2);
 
     child = spawn("node", [DIST], {
       env: {
@@ -571,7 +614,7 @@ function httpsJson(
   });
 }
 
-describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native TLS, mocked CCU)", () => {
+describe.skipIf(distMissing || !HAVE_OPENSSL)("HTTPS transport e2e (native TLS, mocked CCU)", () => {
   let ccu: { server: Server; port: number };
   let child: ChildProcess;
   let mcpPort: number;
@@ -581,7 +624,7 @@ describe.skipIf(!existsSync(DIST) || !HAVE_OPENSSL)("HTTPS transport e2e (native
   beforeAll(async () => {
     ccu = await startCcuMock();
     cacheDir = mkdtempSync(join(tmpdir(), "debmatic-e2e-tls-"));
-    mcpPort = 20000 + Math.floor(Math.random() * 20000);
+    mcpPort = e2ePort(3);
 
     // Mint a throwaway self-signed cert. The SAN must include IP:127.0.0.1 —
     // Node (>=17) no longer falls back to the subject CN for identity checks,

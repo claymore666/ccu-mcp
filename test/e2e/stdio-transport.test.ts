@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
+import { DIST, distMissing } from "./_dist.js";
 
 // End-to-end test of the STDIO transport against the BUILT server (dist/) with
 // a mocked CCU. stdio is the documented default install path
@@ -17,7 +18,6 @@ import { AddressInfo } from "node:net";
 // exit via event-loop drain with no Session.logout — leaking a CCU session
 // toward "too many sessions" — and no cache save.
 
-const DIST = join(__dirname, "../../dist/index.js");
 
 /** process.env with every server config var scrubbed (see http-transport e2e). */
 function cleanEnv(): Record<string, string | undefined> {
@@ -108,7 +108,7 @@ class StdioClient {
   }
 }
 
-describe.skipIf(!existsSync(DIST))("stdio transport e2e (built server, mocked CCU)", () => {
+describe.skipIf(distMissing)("stdio transport e2e (built server, mocked CCU)", () => {
   let ccu: CcuMock;
   let child: ChildProcess;
   let client: StdioClient;

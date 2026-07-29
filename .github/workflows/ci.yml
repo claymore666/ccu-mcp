@@ -3,12 +3,24 @@ name: CI
 on:
   push:
     branches: ["**"]
+  # `dev` must be listed, not just `main`. build-and-test is a required check on
+  # BOTH branches, but on dev it only ever reported via the `push` trigger above
+  # — and a pull request from a FORK pushes to the fork, so no push event fires
+  # here. A fork PR into dev therefore ran no checks at all (issue #127), while
+  # dev is the documented branch to target.
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 # Least privilege: CI only reads the repo (build + test).
 permissions:
   contents: read
+
+# A same-repo branch with an open PR now matches both triggers above, and
+# pushing twice in quick succession used to run the full job to completion for
+# every commit. Supersede instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # HERMETIC ONLY. Every step below is a function of the commit under test:
@@ -46,8 +58,12 @@ jobs:
       - name: Type check
         run: npm run lint
 
-      - name: Build
-        run: npm run build
-
+      # No separate Build step: package.json's `pretest` already runs
+      # `npm run build`, so an explicit one compiled the tree twice per run.
+      # A compile error surfaces in Type check above, which covers both
+      # tsconfigs, so nothing is lost in failure attribution.
+      # --coverage so vitest.config.ts's thresholds are actually enforced; a
+      # floor nothing measures is decoration. Still hermetic: coverage is a
+      # function of this commit alone.
       - name: Test
-        run: npm test
+        run: npm test -- --coverage
