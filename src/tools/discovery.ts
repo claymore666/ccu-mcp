@@ -313,7 +313,7 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
         if (device) {
           try {
             cached = await deviceTypeCache.queryAndCache(
-              args.deviceType, device.address, device.interface,
+              args.deviceType, device.interface,
               device.channels.map((ch) => ch.address),
               session, rateLimiter,
             );

@@ -143,8 +143,8 @@ describe("DeviceTypeCache", () => {
     const rateLimiter = { acquire: async () => {} } as any;
 
     const [a, b] = await Promise.all([
-      cache.queryAndCache("HmIP-X", "ADDR", "HmIP-RF", ["ADDR:1"], session, rateLimiter),
-      cache.queryAndCache("HmIP-X", "ADDR", "HmIP-RF", ["ADDR:1"], session, rateLimiter),
+      cache.queryAndCache("HmIP-X", "HmIP-RF", ["ADDR:1"], session, rateLimiter),
+      cache.queryAndCache("HmIP-X", "HmIP-RF", ["ADDR:1"], session, rateLimiter),
     ]);
 
     // 1 channel × 2 paramset keys = 2 CCU calls if coalesced, 4 if duplicated
@@ -225,7 +225,7 @@ describe("warm edge cases (coverage round)", () => {
     } as any;
     const rateLimiter = { acquire: async () => {} } as any;
 
-    const cached = await cache.queryAndCache("HmIP-X", "A1", "HmIP-RF", ["A1:1"], session, rateLimiter);
+    const cached = await cache.queryAndCache("HmIP-X", "HmIP-RF", ["A1:1"], session, rateLimiter);
     const param = cached!.channels["1"]!.paramsets["VALUES"]!["LEVEL"]!;
     expect(param).toMatchObject({ type: "FLOAT", operations: 7, min: 0, max: 1.01, unit: "%", valueList: ["a", "b"] });
     await new Promise((r) => setTimeout(r, 25)); // let background save finish
