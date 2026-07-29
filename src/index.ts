@@ -19,6 +19,7 @@ import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthTokens, startAutoRotation } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
+import { endWithInternalError } from "./http/error-response.js";
 import { createMcpServer, serverSubscriptions, type ServerDeps } from "./server.js";
 import { extractBearerToken, normalizeClientIp, VERSION, loadBuildInfo } from "./utils.js";
 
@@ -412,10 +413,7 @@ async function main(): Promise<void> {
       } catch (err) {
         // One bad request must not take down the process (unhandled rejection)
         logger.error("http_handler_error", { error: (err as Error).message });
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-        }
-        res.end(JSON.stringify({ error: "Internal error" }));
+        endWithInternalError(res);
       }
     };
 
