@@ -27,8 +27,10 @@ function envKeysReferencedInCode(): Set<string> {
     for (const m of text.matchAll(/process\.env(?:\.([A-Z][A-Z0-9_]*)|\["([A-Z][A-Z0-9_]*)"\])/g)) {
       keys.add(m[1] ?? m[2]);
     }
-    // parseIntEnv("FOO", ...) / parseDurationEnv("FOO", ...) — indirect reads
-    for (const m of text.matchAll(/parse(?:Int|Duration)Env\("([A-Z][A-Z0-9_]*)"/g)) {
+    // parseIntEnv("FOO", …) / parseDurationEnv("FOO", …) / parseBoolEnv("FOO")
+    // — indirect reads. Keep this alternation in step with the helpers in
+    // config.ts, or a var read only through a new helper looks undocumented.
+    for (const m of text.matchAll(/parse(?:Int|Duration|Bool)Env\("([A-Z][A-Z0-9_]*)"/g)) {
       keys.add(m[1]);
     }
   }
