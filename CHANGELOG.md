@@ -96,9 +96,12 @@ all of them.
   change. The concern was that `put_paramset` sends `String(value)` where
   `set_value` sends values raw, which looked like it could turn `false` into a
   truthy `"false"`. Settled by loading the CCU's compiled XML-RPC extension
-  (`tclrpc.so`) in a lab VM and capturing what it actually emits: it follows
-  `Tcl_GetBooleanFromObj`, so `"false"` encodes to `<boolean>0</boolean>` and
-  anything that isn't a boolean is *rejected* rather than coerced.
+  (`tclrpc.so`) in a lab VM and capturing what it actually emits: `"false"`
+  encodes to `<boolean>0</boolean>`, and anything that isn't a boolean is
+  *rejected* rather than coerced. Since confirmed against the extension's source,
+  published in the meantime as `src/tclrpc/tclrpc.cpp` in `OpenCCU/OpenCCU-Base`:
+  the `bool` branch converts with `Tcl_GetBoolean` and propagates its error,
+  which is exactly the observed behaviour.
 
 ### Dependencies
 
