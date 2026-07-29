@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DIST, distMissing } from "./_dist.js";
 
 // Issue #112: --version and --help must work with NO environment at all.
 // main() used to call loadConfig() before looking at argv, so both flags died
@@ -11,7 +12,6 @@ import { join } from "node:path";
 // Running with a scrubbed env is the whole point of these tests: the bug was
 // precisely that these paths depended on the environment.
 
-const DIST = join(__dirname, "../../dist/index.js");
 const PKG_VERSION = JSON.parse(
   readFileSync(join(__dirname, "../../package.json"), "utf-8"),
 ) as { version: string };
@@ -25,7 +25,7 @@ function runBare(...args: string[]) {
   });
 }
 
-describe.skipIf(!existsSync(DIST))("CLI info flags (no environment)", () => {
+describe.skipIf(distMissing)("CLI info flags (no environment)", () => {
   it("--version prints the package version and exits 0", () => {
     const res = runBare("--version");
     expect(res.status).toBe(0);
