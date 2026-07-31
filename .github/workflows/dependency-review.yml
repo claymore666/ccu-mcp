@@ -1,0 +1,55 @@
+name: Dependency review
+
+# Blocks a PR that INTRODUCES a vulnerable or non-permissively-licensed
+# dependency, at PR time. That is the gap the other two scanners leave:
+#
+#   ci.yml `build-and-test`   — hermetic; never looks at advisories at all
+#   audit.yml                 — daily, reports on dev's lockfile AFTER the merge
+#   release-gate `release-audit` — blocks PRs into main, i.e. one release late
+#
+# Nothing stopped a newly vulnerable dependency from landing on dev and sitting
+# there until the next morning's audit or the next release PR. This closes it.
+#
+# NON-HERMETIC, like the other two: the verdict comes from the GitHub Advisory
+# DB. It is therefore NOT a candidate for a required check on dev — that is the
+# npm-audit deadlock ci.yml documents at length.
+#
+# It is much better behaved than `npm audit` though, and the difference is worth
+# being precise about: this action reviews only the dependency DIFF of the PR.
+# An advisory landing overnight against a dependency the PR never touches does
+# not turn it red, so the "green yesterday, red today with no diff" failure mode
+# is mostly absent. Mostly, not entirely — a PR that adds a dependency can flip
+# to red if an advisory later lands against that newly added version.
+#
+# The natural place to make it blocking is main, alongside release-audit, where
+# a human is already standing in front of the result. Adding it to main's
+# required checks is a repo setting, not something this file can do.
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+# Supersede a superseded PR head, same as ci.yml.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Posture and the licence policy live in the config file so an
+          # accepted finding carries a justification and a review date next to
+          # it, rather than being an unexplained id inline here.
+          config-file: ./.github/dependency-review-config.yml

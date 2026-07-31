@@ -1,0 +1,62 @@
+# Config for the Dependency Review gate (.github/workflows/dependency-review.yml).
+#
+# Scope and severity deliberately mirror audit.yml and release-gate.yml's
+# `release-audit`, so the three scanners cannot disagree about what counts as a
+# problem — only about when they look.
+
+# High and critical only. Moderate and low ride the weekly Dependabot cadence,
+# exactly as in audit.yml.
+fail-on-severity: high
+
+# Production dependencies only. package.json's `files` publishes dist/ alone, so
+# a devDependency advisory never reaches a user; the same reasoning that scopes
+# audit.yml to `--omit=dev`. This is also the action's default — stated
+# explicitly because it is a decision, not an accident of the default.
+fail-on-scopes:
+  - runtime
+
+# The summary is not posted as a PR comment: that needs `pull-requests: write`,
+# and a forked PR gets a read-only token regardless of what the workflow asks
+# for, so the comment could not post there anyway. The findings are in the job
+# summary and the step log, which is where you land when the check goes red.
+comment-summary-in-pr: never
+
+# Licence policy. This package is MIT and publishes dist/ with its dependencies
+# resolved at the user's install time, so the thing actually worth catching is a
+# strong-copyleft dependency arriving in the shipped tree.
+#
+# An allowlist, not `deny-licenses` — that option is deprecated for removal in
+# the action's next major (actions/dependency-review-action#938).
+#
+# The list is deliberately generous: it covers the permissive licences that
+# recur across npm trees, not just the six present today (MIT, ISC, BSD-2/3,
+# Apache-2.0, MPL-2.0 — the last two dev-only, via typescript and lightningcss).
+# Anything outside it is the GPL/AGPL/SSPL/BUSL family, which genuinely wants a
+# human decision before it lands.
+#
+# When a legitimate permissive licence is missing here, the check goes red with
+# the offending identifier named in the log; add it in the same PR. A dependency
+# whose licence cannot be detected does NOT fail the action — it is reported
+# only, so missing metadata never blocks a merge.
+allow-licenses:
+  - 0BSD
+  - Apache-2.0
+  - BlueOak-1.0.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - CC0-1.0
+  - ISC
+  - MIT
+  - MPL-2.0
+  - Python-2.0
+  - Unlicense
+
+# Accepted advisories go here, and follow the same rules as any accepted
+# finding in this repo: never a bare id.
+#   - Every entry carries a justification and a review date.
+#   - Only for a finding with no fixed release available on the path we depend
+#     on. The moment a fix ships, the bump lands and the entry is removed.
+#   - An entry is acceptable only while the vulnerable code path is genuinely
+#     unreachable from what ships in dist/.
+# Empty is the correct state; it is not a placeholder to fill.
+allow-ghsas: []
