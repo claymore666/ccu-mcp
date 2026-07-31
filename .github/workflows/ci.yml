@@ -37,12 +37,20 @@ jobs:
   #   - release-gate.yml job `release-audit` — blocks PRs into main
   build-and-test:
     runs-on: ubuntu-latest
+    # Without this a wedged `npm ci` (registry hang, DNS black hole) burns the
+    # 6-hour default before anyone sees a verdict.
+    timeout-minutes: 15
 
     steps:
       # Third-party actions pinned to a commit SHA (supply-chain hardening):
       # a retargeted mutable tag can't inject code into CI. Dependabot bumps
       # the SHA + comment together.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes to git — npm pulls from the registry. Don't
+          # leave the token behind in .git/config where a later step (or a
+          # postinstall script) could reach it.
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
         with:
@@ -67,3 +75,90 @@ jobs:
       # function of this commit alone.
       - name: Test
         run: npm test -- --coverage
+
+  # Lints every workflow file, plus shellcheck over the `run:` blocks — and
+  # those blocks are where the real bash in this repo lives (audit.yml's issue
+  # sync, release-gate.yml's audit step).
+  #
+  # The reason this job exists at all: a workflow parse error does NOT fail
+  # loudly on GitHub. It produces zero-job "failed" runs and silently disables
+  # that workflow's triggers — including tag pushes, which is how releases are
+  # cut here. You find out when the tag lands and nothing happens.
+  #
+  # Hermetic, like build-and-test: pinned linter, pinned shellcheck, fixture in
+  # the tree. Same tree in, same verdict out.
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: false
+
+      # actionlint shells out to shellcheck for `run:` blocks. The linter is
+      # pinned below, but the runner-supplied shellcheck is not — a hosted-image
+      # bump would silently change what this gate reports and could redden
+      # unrelated PRs. Pin it; bump deliberately alongside actionlint.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.10.0
+        run: |
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ
+          sudo install -m 0755 "shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Install actionlint (pinned)
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Lint workflows
+        run: actionlint -color
+
+      # A linter that stopped catching the bug class is worse than none: it
+      # reports green and everyone stops looking. This asserts it still flags
+      # the fixture, so a toothless upgrade turns the job red.
+      - name: Verify actionlint catches known-bad patterns
+        run: bash scripts/test-actionlint.sh actionlint
+
+      # The gate scripts are code too — their self-tests run here so a broken
+      # gate fails like any other test.
+      - name: Gate script self-tests
+        run: bash scripts/test-check-no-ai-attribution.sh
+
+  # CLAUDE.md has said "no Claude/AI attribution in commit messages or PRs"
+  # since day one. This enforces it, because the rule lives in a gitignored
+  # file and a convention is one distracted rebase away from a public branch.
+  # Checks trailers, "generated with" lines, session links — and the commit
+  # AUTHOR IDENTITY, which rebase and cherry-pick preserve even when the
+  # message gets rewritten.
+  #
+  # pull_request only: the gate needs a base..head range and the PR
+  # description, neither of which a push event supplies.
+  attribution:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate walks base..head; a shallow clone cannot resolve it.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check commits and PR body for AI attribution
+        env:
+          # Through env, never inlined into the run: body — a PR description is
+          # attacker-controlled text, and interpolating it directly would paste
+          # it into the shell.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          bash scripts/check-no-ai-attribution.sh \
+            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
