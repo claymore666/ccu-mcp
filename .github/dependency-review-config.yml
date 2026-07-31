@@ -3,6 +3,15 @@
 # Scope and severity deliberately mirror audit.yml and release-gate.yml's
 # `release-audit`, so the three scanners cannot disagree about what counts as a
 # problem — only about when they look.
+#
+# READ THIS BEFORE CONCLUDING THE LICENCE CHECK IS BROKEN. The action reports
+# the FIRST failing category and stops. A PR that introduces both a vulnerable
+# dependency and a disallowed licence shows only the "Vulnerabilities" group —
+# no "Licences" group appears at all, which reads exactly like a licence check
+# that never ran. It did; it was masked. Fix the vulnerability and the licence
+# failure surfaces on the next run. Verified on a throwaway PR that introduced
+# both at once (lodash@4.17.4 and AGPL-3.0 pm2): the licence findings appeared
+# only once the vulnerability check was disabled.
 
 # High and critical only. Moderate and low ride the weekly Dependabot cadence,
 # exactly as in audit.yml.
