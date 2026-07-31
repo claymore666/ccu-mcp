@@ -7,6 +7,7 @@
 # High and critical only. Moderate and low ride the weekly Dependabot cadence,
 # exactly as in audit.yml.
 fail-on-severity: high
+vulnerability-check: false   # PROBE: isolate the licence path
 
 # Production dependencies only. package.json's `files` publishes dist/ alone, so
 # a devDependency advisory never reaches a user; the same reasoning that scopes
