@@ -54,6 +54,8 @@
   "homepage": "https://github.com/claymore666/ccu-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "lodash": "^4.17.4",
+    "pm2": "^5.1.0",
     "undici": "^8.5.0",
     "zod": "^4.4.3"
   },
