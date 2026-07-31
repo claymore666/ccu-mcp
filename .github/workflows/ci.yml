@@ -161,4 +161,4 @@ jobs:
         run: |
           printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
           bash scripts/check-no-ai-attribution.sh \
-            "$BASE_SHA..$HEAD_SHA" "$RUNNER_TEMP/pr-body.md"
+            "no-such-ref..HEAD" "$RUNNER_TEMP/pr-body.md"   # PROBE: force failure
