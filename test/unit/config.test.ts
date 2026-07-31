@@ -159,14 +159,66 @@ describe("loadConfig", () => {
     process.env.CCU_PASSWORD = "pw";
 
     process.env.CCU_TIMEOUT = "0";
-    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive number/);
+    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive integer/);
 
     process.env.CCU_TIMEOUT = "-5000";
-    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive number/);
+    expect(() => loadConfig()).toThrow(/CCU_TIMEOUT must be a positive integer/);
     delete process.env.CCU_TIMEOUT;
 
     process.env.RESOURCE_POLL_INTERVAL = "-60";
-    expect(() => loadConfig()).toThrow(/RESOURCE_POLL_INTERVAL must be a positive number/);
+    expect(() => loadConfig()).toThrow(/RESOURCE_POLL_INTERVAL must be a positive integer/);
+  });
+
+  // Issue #119: parseInt() stopped at the first non-digit, so a unit suffix was
+  // silently truncated — "30s" became a 30 MILLISECOND timeout, and every call
+  // then failed looking like a slow CCU rather than a config typo.
+  it("rejects numeric env vars with a trailing unit or non-decimal notation", () => {
+    process.env.CCU_HOST = "test";
+    process.env.CCU_PASSWORD = "pw";
+
+    for (const bad of ["30s", "10000ms", "1e4", "0x10", "3000/tcp", "21.5", " "]) {
+      process.env.CCU_TIMEOUT = bad;
+      expect(() => loadConfig(), `should reject CCU_TIMEOUT=${JSON.stringify(bad)}`)
+        .toThrow(/CCU_TIMEOUT must be a positive integer/);
+    }
+    // surrounding whitespace on an otherwise valid value is still fine
+    process.env.CCU_TIMEOUT = " 30000 ";
+    expect(loadConfig().ccu.timeout).toBe(30000);
+    delete process.env.CCU_TIMEOUT;
+  });
+
+  // Issue #120: the raw comparison `=== "true"` made a trailing space read as
+  // false. For PROTECTED/READONLY that failed OPEN — the production write gate
+  // silently disabled. Docker passes `environment:` values verbatim.
+  it("trims boolean env vars so a trailing space cannot disable a safety gate", () => {
+    process.env.CCU_PROFILES = "prod";
+    process.env.CCU_PROD_HOST = "ccu";
+    process.env.CCU_PROD_PASSWORD = "pw";
+    process.env.CCU_PROD_PROTECTED = "true ";
+    process.env.CCU_PROD_READONLY = " TRUE";
+
+    const prod = loadConfig().profiles[0]!;
+    expect(prod.protected).toBe(true);
+    expect(prod.readonly).toBe(true);
+  });
+
+  it("rejects a non-boolean value instead of reading it as false", () => {
+    process.env.CCU_PROFILES = "prod";
+    process.env.CCU_PROD_HOST = "ccu";
+    process.env.CCU_PROD_PASSWORD = "pw";
+    process.env.CCU_PROD_PROTECTED = "yes";
+    expect(() => loadConfig()).toThrow(/CCU_PROD_PROTECTED must be "true" or "false"/);
+  });
+
+  // Issue #124: `name === "default"` conflated the flat back-compat profile with
+  // a profile literally NAMED "default", which reads CCU_DEFAULT_*. The hint
+  // named a variable that profile never reads.
+  it("names the variable the profile actually reads in the TLS-on-plain-HTTP error", () => {
+    process.env.CCU_PROFILES = "default";
+    process.env.CCU_DEFAULT_HOST = "ccu";
+    process.env.CCU_DEFAULT_PASSWORD = "pw";
+    process.env.CCU_DEFAULT_TLS_VERIFY = "true"; // TLS setting without HTTPS
+    expect(() => loadConfig()).toThrow(/Set CCU_DEFAULT_HTTPS=true/);
   });
 
   // Issue #28 / #37: HTTP transport hardening

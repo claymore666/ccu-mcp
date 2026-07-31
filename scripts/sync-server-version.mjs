@@ -16,8 +16,9 @@ const PKG = process.env.PKG_FILE ?? "package.json";
 const SERVER = process.env.SERVER_FILE ?? "server.json";
 
 const pkg = JSON.parse(readFileSync(PKG, "utf8"));
-const raw = readFileSync(SERVER, "utf8");
-const server = JSON.parse(raw);
+// (the raw text is not needed beyond parsing — JSON.stringify(…, 2) below is
+// what preserves the 2-space indentation and trailing newline)
+const server = JSON.parse(readFileSync(SERVER, "utf8"));
 
 const version = pkg.version;
 if (!version) {

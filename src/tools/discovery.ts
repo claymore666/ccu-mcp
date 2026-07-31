@@ -144,8 +144,11 @@ function registerListDevices(server: McpServer, deps: ServerDeps): void {
             })),
           }));
 
-      log({ deviceCount: devices.length });
-      return structuredResult({ devices: Array.isArray(output) ? output : [] }, output);
+      // Count what is RETURNED, not what was fetched: the unfiltered path drops
+      // the 50-channel virtual receivers below, so the old pre-filter count was
+      // 1-2 higher than the list the caller got (issue #124).
+      log({ deviceCount: output.length });
+      return structuredResult({ devices: output }, output);
     }),
   );
 }
@@ -243,7 +246,7 @@ function registerListPrograms(server: McpServer, deps: ServerDeps): void {
         programs = programs.filter((p) => p.name.toLowerCase().includes(needle));
       }
 
-      return structuredResult({ programs: Array.isArray(programs) ? programs : [] }, programs);
+      return structuredResult({ programs }, programs);
     }),
   );
 }
@@ -272,7 +275,7 @@ function registerListSystemVariables(server: McpServer, deps: ServerDeps): void 
         sysvars = sysvars.filter((v) => v.name.toLowerCase().includes(needle));
       }
 
-      return structuredResult({ systemVariables: Array.isArray(sysvars) ? sysvars : [] }, sysvars);
+      return structuredResult({ systemVariables: sysvars }, sysvars);
     }),
   );
 }
@@ -313,7 +316,7 @@ function registerDescribeDeviceType(server: McpServer, deps: ServerDeps): void {
         if (device) {
           try {
             cached = await deviceTypeCache.queryAndCache(
-              args.deviceType, device.address, device.interface,
+              args.deviceType, device.interface,
               device.channels.map((ch) => ch.address),
               session, rateLimiter,
             );

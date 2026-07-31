@@ -19,10 +19,70 @@ import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
 import { ResourcePoller } from "./resources/poller.js";
 import { resolveAuthTokens, startAutoRotation } from "./auth/token.js";
 import { handleHealthRequest } from "./health/handler.js";
+import { endWithInternalError } from "./http/error-response.js";
 import { createMcpServer, serverSubscriptions, type ServerDeps } from "./server.js";
-import { extractBearerToken, normalizeClientIp } from "./utils.js";
+import { extractBearerToken, normalizeClientIp, VERSION, loadBuildInfo } from "./utils.js";
+
+const USAGE = `ccu-mcp — MCP server for a HomeMatic CCU (debmatic, CCU3, OpenCCU/RaspberryMatic)
+
+Usage:
+  ccu-mcp [--stdio | --http]
+  ccu-mcp --version
+  ccu-mcp --help
+
+Options:
+  --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT)
+  --http           Serve MCP over HTTP (default)
+  -v, --version    Print the version and exit
+  -h, --help       Print this help and exit
+
+Required environment:
+  CCU_HOST         Hostname or IP of the CCU
+  CCU_PASSWORD     Password for CCU_USER
+
+Common environment:
+  CCU_USER         CCU username (default: Admin)
+  CCU_PORT         API port (default: 80, or 443 with CCU_HTTPS=true)
+  CCU_HTTPS        Connect over HTTPS (default: false)
+  MCP_TRANSPORT    "http" or "stdio" (default: http)
+  MCP_PORT         HTTP listener port (default: 3000)
+  CACHE_DIR        Cache, session and generated token (default: /data)
+  LOG_LEVEL        error | warn | info | debug (default: info)
+
+Multiple CCUs, TLS pinning, auth-token rotation and the full variable list:
+https://github.com/claymore666/ccu-mcp#configuration`;
+
+/**
+ * Handle the flags that must work with NO environment at all (issue #112).
+ *
+ * Deliberately runs before createLogger()/loadConfig(): asking an installed
+ * copy "which version are you?" must not require a reachable CCU, and
+ * loadConfig() throws on a missing CCU_HOST. Returns true when the process
+ * should exit without starting a server.
+ */
+function handleInfoFlags(argv: string[]): boolean {
+  if (argv.includes("--version") || argv.includes("-v")) {
+    const { describe, commit, dirty } = loadBuildInfo();
+    // Prefer the git describe stamped at build time; fall back to the bare
+    // version for an npm install, which carries no build-info.json.
+    const stamp = describe ?? commit;
+    // `git describe --dirty` already carries the marker; the commit fallback
+    // does not. Appending unconditionally would print "...-dirty-dirty".
+    const dirtyMark = stamp && dirty && !stamp.endsWith("-dirty") ? "-dirty" : "";
+    process.stdout.write(`${VERSION}${stamp ? ` (${stamp}${dirtyMark})` : ""}\n`);
+    return true;
+  }
+  if (argv.includes("--help") || argv.includes("-h")) {
+    // stdout, not stderr, so `ccu-mcp --help | less` works.
+    process.stdout.write(`${USAGE}\n`);
+    return true;
+  }
+  return false;
+}
 
 async function main(): Promise<void> {
+  if (handleInfoFlags(process.argv.slice(2))) return;
+
   const logger = createLogger();
   const config = loadConfig();
 
@@ -353,10 +413,7 @@ async function main(): Promise<void> {
       } catch (err) {
         // One bad request must not take down the process (unhandled rejection)
         logger.error("http_handler_error", { error: (err as Error).message });
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-        }
-        res.end(JSON.stringify({ error: "Internal error" }));
+        endWithInternalError(res);
       }
     };
 

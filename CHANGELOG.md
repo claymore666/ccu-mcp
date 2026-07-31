@@ -3,6 +3,115 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.9.0 — 2026-07-31
+
+A correctness release. A sustained review pass over the whole source tree found
+two classes of problem worth a version of their own: places where a *failed*
+CCU write was reported to the client as success, and places where a malformed
+environment variable was silently reinterpreted as something else rather than
+rejected. Both fail in the same direction — quietly, and in the direction that
+looks like everything worked.
+
+### Behavior changes (read before upgrading)
+
+- **Malformed numeric settings now abort startup instead of being partially
+  parsed.** The old code used `parseInt`, which stops at the first non-digit and
+  keeps what it has: `CCU_TIMEOUT=30s` became a **30 millisecond** timeout, so
+  every call failed and the value that caused it looked entirely reasonable in
+  the env file. `30.5` truncated to 30, and `1e4` became 1. All of these are now
+  rejected by name. Affects ports, timeouts, `CACHE_TTL`, the rate limits and
+  `RESOURCE_POLL_INTERVAL`.
+- **Boolean settings are trimmed, and anything that isn't a boolean aborts
+  startup.** They were previously compared with `=== "true"` against the raw
+  value, so `CCU_PROD_PROTECTED=true ` — one trailing space, invisible in an env
+  file — evaluated to *false* and silently switched the write-confirmation gate
+  off on the protected target. That trailing space now works as intended. The
+  other half of the change: `yes`, `1` and `on` used to mean false and now abort
+  instead, for the same reason — a value that reads as "on" must never quietly
+  disable a protection. Affects `CCU_HTTPS`, `CCU_TLS_VERIFY`,
+  `CCU_<NAME>_PROTECTED`, `CCU_<NAME>_READONLY` and `MCP_ALLOW_PLAINTEXT`.
+
+If either of these stops your server starting, the message names the variable
+and shows the value it rejected. The README's *Configuration errors* table lists
+all of them.
+
+### Fixed
+
+- **`set_system_variable` and `delete_system_variable` no longer report success
+  when the CCU says the write failed.** `SysVar.setBool` and `SysVar.setFloat`
+  answer `-1` when the ReGa script engine fails, and `SysVar.deleteSysVarByName`
+  answers a boolean — both were being discarded, so a variable that was never
+  written or never deleted came back as a clean success. They now raise
+  `CCU_ERROR` stating explicitly that the value was **not** written. (One
+  deliberate limit: a float legitimately set to exactly `-1` is
+  indistinguishable from the failure sentinel and is reported as success — the
+  value the CCU would have stored either way.)
+- **The HTTP error path no longer writes a JSON body into an already-streaming
+  response.** An error raised after an SSE stream had started appended a JSON
+  object to the event stream, corrupting it for the connected client. It now
+  ends the response cleanly when headers are already sent.
+- **System-variable creation validates its arguments** instead of accepting
+  input the CCU will reject or silently distort: an `enum` with an empty
+  `valueList`, a `float` with `min >= max`, and arguments that are meaningless
+  for the chosen type (which were being silently ignored, so a typo'd type left
+  you with a variable configured nothing like what you asked for).
+- **`put_paramset` rejects an empty `set` object** rather than reporting a
+  successful write of nothing.
+- The `getValueByName` empty-string error now names both of its causes instead
+  of only one; a TLS configuration hint pointed at the wrong variable name for
+  profile-based setups; and the device-discovery log line counted devices before
+  filtering, so it over-reported.
+
+### Added
+
+- **`--version` and `--help` work without a configured CCU.** Both previously
+  needed a complete environment, which made them useless for the case you most
+  want them in — checking what you have installed while fixing a config.
+- **The README documents every configuration error that aborts startup**, with
+  the cause and the reason the exit is deliberate rather than tolerant.
+- **`server.json` documents 20 environment variables, up from 10.** The missing
+  half included every TLS verification setting — `CCU_TLS_VERIFY`,
+  `CCU_TLS_FINGERPRINT`, `CCU_CA_CERT` — so a registry-driven install had no way
+  to discover that certificate verification was configurable at all. A test now
+  fails when a new stdio-relevant variable is added without a manifest entry.
+
+### Internal
+
+- `DeviceTypeCache`'s paramset-fetch loop was duplicated between `warm()` and
+  `doQueryAndCache()` and the copies had already drifted; it is now one shared
+  method. A swallowed non-array response from `getParamsetDescription` now
+  surfaces as an error, and two dead parameters are gone.
+- CI: `pull_request` runs on `dev`, closing a gap where a fork PR into `dev` ran
+  **no checks at all**; a concurrency group so superseded runs are cancelled; a
+  redundant duplicate build removed; and a coverage floor (85% statements/lines,
+  79% branches, 87% functions) so the ratchet can't slip backwards.
+- The e2e suites no longer skip themselves silently. Every block was guarded on
+  `dist/` existing, so running the tests without a build reported a green run
+  that had executed none of them; in CI a missing `dist/` is now a hard failure.
+  Fixed e2e port slots replace random allocation, which could collide.
+- The fail2ban filter test asserted against a hand-mirrored copy of the log line
+  rather than the one `src/index.ts` emits, so the two could drift apart without
+  failing. It now runs the real server output through the real filter.
+- **`put_paramset`'s value stringification was investigated and is correct** — no
+  change. The concern was that `put_paramset` sends `String(value)` where
+  `set_value` sends values raw, which looked like it could turn `false` into a
+  truthy `"false"`. Settled by loading the CCU's compiled XML-RPC extension
+  (`tclrpc.so`) in a lab VM and capturing what it actually emits: `"false"`
+  encodes to `<boolean>0</boolean>`, and anything that isn't a boolean is
+  *rejected* rather than coerced. Since confirmed against the extension's source,
+  published in the meantime as `src/tclrpc/tclrpc.cpp` in `OpenCCU/OpenCCU-Base`:
+  the `bool` branch converts with `Tcl_GetBoolean` and propagates its error,
+  which is exactly the observed behaviour.
+
+- The `help` tool's per-tool text now states the error contracts this release
+  added, so the in-band documentation matches the code: `put_paramset` on an
+  empty `set`, the `CCU_ERROR` raised when a system-variable write or delete
+  fails, and the widened `INVALID_INPUT` cases in `create_system_variable`.
+
+### Dependencies
+
+- @types/node 26.1.1 → 26.1.2.
+
 ## v1.8.1 — 2026-07-28
 
 Security patch release. Clears all six open dependency advisories — two of them
@@ -54,6 +163,7 @@ changes; no behavior changes.
   2.0.12, `hono` 4.12.25 → 4.12.32, `fast-uri` 3.1.2 → 3.1.4, `postcss` 8.5.16 →
   8.5.24, `body-parser` 2.2.2 → 2.3.0, plus `type-is`, `nanoid`, and a nested
   `content-type` carried along by the re-resolution.
+- `undici` 8.8.0 → 8.9.0 (#104) — a routine Dependabot bump, no advisory.
 
 ## v1.8.0 — 2026-07-05
 

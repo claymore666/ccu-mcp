@@ -268,6 +268,51 @@ describe("set_system_variable handler", () => {
     expect(result.note).toMatch(/could not be verified/);
     cleanupDeps(deps);
   });
+
+  it("reports CCU_ERROR when setBool answers the -1 script-failure sentinel (#118)", async () => {
+    // setbool.tcl: `if {[hmscript ...]} { response $value } else { response -1 }`.
+    // The old code discarded this, and getValueByName still returned the OLD
+    // value — so a lost write read as a success.
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Anwesenheit", type: "LOGIC" }];
+      if (method === "SysVar.setBool") return -1;
+      if (method === "SysVar.getValueByName") return "false"; // stale value still present
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "set_system_variable", { name: "Anwesenheit", value: true });
+    expect(result.isError).toBe(true);
+    const err = JSON.parse(result.content[0].text);
+    expect(err.error).toBe("CCU_ERROR");
+    expect(err.message).toMatch(/NOT written/);
+    cleanupDeps(deps);
+  });
+
+  it("accepts a legitimate -1 on a numeric variable (the sentinel is ambiguous there, and fails open)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) => {
+      if (method === "SysVar.getAll") return [{ name: "Delta", type: "NUMBER" }];
+      if (method === "SysVar.setFloat") return -1; // indistinguishable from success here
+      if (method === "SysVar.getValueByName") return "-1";
+      return true;
+    });
+    const { server, deps } = createTestServer({ sessionCall });
+    const result = parseToolResult(await callTool(server, "set_system_variable", { name: "Delta", value: -1 })) as any;
+    expect(result.value).toBe(-1);
+    expect(result.method).toBe("SysVar.setFloat");
+    cleanupDeps(deps);
+  });
+
+  it("rejects an enum variable the CCU reports with no value list (#122)", async () => {
+    const sessionCall = vi.fn().mockImplementation(async (method: string) =>
+      method === "SysVar.getAll" ? [{ name: "Modus", type: "LIST" }] : true);
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "set_system_variable", { name: "Modus", value: 0 });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("CCU_ERROR");
+    // never attempts the write
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "SysVar.setFloat")).toBe(false);
+    cleanupDeps(deps);
+  });
 });
 
 describe("create_system_variable handler", () => {
@@ -337,6 +382,31 @@ describe("create_system_variable handler", () => {
     cleanupDeps(deps);
   });
 
+  it("rejects min >= max on a float variable (#122)", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "create_system_variable", { name: "T", type: "float", min: 100, max: 0 });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).message).toMatch(/must be less than max/);
+    expect(sessionCall).not.toHaveBeenCalled();
+    cleanupDeps(deps);
+  });
+
+  it("rejects arguments that don't apply to the chosen type instead of dropping them (#122)", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    // min/max/unit are float-only — silently ignored before, so this created a plain bool
+    const bad: any = await callTool(server, "create_system_variable", { name: "B", type: "bool", min: 0, max: 40, unit: "°C" });
+    expect(bad.isError).toBe(true);
+    expect(JSON.parse(bad.content[0].text).message).toMatch(/do not apply to a "bool"/);
+    // values is enum-only
+    const bad2: any = await callTool(server, "create_system_variable", { name: "F", type: "float", values: ["a", "b"] });
+    expect(bad2.isError).toBe(true);
+    expect(JSON.parse(bad2.content[0].text).message).toMatch(/values does not apply/);
+    expect(sessionCall).not.toHaveBeenCalled();
+    cleanupDeps(deps);
+  });
+
   it("rejects min/max magnitudes that stringify to exponent notation", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => (method === "SysVar.getAll" ? [] : null));
     const { server, deps } = createTestServer({ sessionCall });
@@ -386,13 +456,29 @@ describe("create_system_variable handler", () => {
 
 describe("delete_system_variable handler", () => {
   it("deletes an existing variable via deleteSysVarByName", async () => {
+    // deletesysvarbyname.tcl echoes hmscript's output, whose only Write is "true".
     const sessionCall = vi.fn().mockImplementation(async (method: string) =>
-      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : null);
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : "true");
     const { server, deps } = createTestServer({ sessionCall });
 
     const result = parseToolResult(await callTool(server, "delete_system_variable", { name: "Urlaub" })) as any;
     expect(result).toEqual({ name: "Urlaub", deleted: true });
     expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "SysVar.deleteSysVarByName")).toBe(true);
+    cleanupDeps(deps);
+  });
+
+  it("reports CCU_ERROR when the delete script failed, instead of deleted:true (#118)", async () => {
+    // hmscript returns "" on any script error; the old code ignored the result
+    // and reported a successful delete for a variable that is still there.
+    const sessionCall = vi.fn().mockImplementation(async (method: string) =>
+      method === "SysVar.getAll" ? [{ name: "Urlaub", type: "BOOL" }] : "");
+    const { server, deps } = createTestServer({ sessionCall });
+
+    const result: any = await callTool(server, "delete_system_variable", { name: "Urlaub" });
+    expect(result.isError).toBe(true);
+    const err = JSON.parse(result.content[0].text);
+    expect(err.error).toBe("CCU_ERROR");
+    expect(err.message).toMatch(/NOT deleted/);
     cleanupDeps(deps);
   });
 
@@ -578,6 +664,16 @@ describe("remaining error paths (coverage round)", () => {
 
     const call = sessionCall.mock.calls.find((c: unknown[]) => c[0] === "Interface.putParamset");
     expect((call![1] as any).set).toEqual([{ name: "SET_POINT_TEMPERATURE", type: "double", value: "21.5" }]);
+    cleanupDeps(deps);
+  });
+
+  it("put_paramset rejects an empty set instead of reporting a no-op write as success (#131)", async () => {
+    const sessionCall = vi.fn();
+    const { server, deps } = createTestServer({ sessionCall });
+    const result: any = await callTool(server, "put_paramset", { address: "AAA:1", paramsetKey: "VALUES", set: {}, interface: "HmIP-RF" });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("INVALID_INPUT");
+    expect(sessionCall.mock.calls.some((c: unknown[]) => c[0] === "Interface.putParamset")).toBe(false);
     cleanupDeps(deps);
   });
 

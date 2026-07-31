@@ -17,6 +17,7 @@ dist/
 CLAUDE.md
 features.md
 QA-FINDINGS.md
+TESTCHAIN.md
 
 # OS
 .DS_Store
@@ -37,3 +38,6 @@ coverage/
 
 # Local review reports
 code-review-report.md
+
+# Drafts of upstream (OCCU/OpenCCU) issue reports — written here, filed there
+occu-issue-*.md

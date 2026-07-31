@@ -218,6 +218,31 @@ All configuration is via environment variables:
 | `CCU_RATE_LIMIT_RATE` | `10` | Sustained CCU requests per second |
 | `RESOURCE_POLL_INTERVAL` | `60` | Seconds between polls for MCP resource change notifications |
 
+To drive **several CCUs** from one server, these flat `CCU_*` vars are replaced
+by named profiles — see [Multiple CCU targets](#multiple-ccu-targets-profiles)
+below.
+
+### Command-line flags
+
+```sh
+ccu-mcp --stdio        # serve over stdin/stdout (overrides MCP_TRANSPORT)
+ccu-mcp --http         # serve over HTTP (default)
+ccu-mcp --version      # print the installed version and exit
+ccu-mcp --help         # print usage and exit
+```
+
+`--version` and `--help` need no configuration — use them to check what an
+installed copy actually is, e.g. after updating:
+
+```console
+$ npx ccu-mcp@latest --version
+1.8.1
+```
+
+Note that a bare `npx ccu-mcp` reuses the copy cached in `~/.npm/_npx` without
+re-resolving against the registry; pin `@latest` (or clear that cache) when you
+want the newest release.
+
 ### How to supply these (inline, `.env`, or export)
 
 The required `CCU_HOST` / `CCU_PASSWORD` (and everything else) are **environment
@@ -284,6 +309,32 @@ profile (unchanged behavior). At runtime, `list_ccu_targets` shows the targets,
 `get_connection_info` reports the active one, and `use_ccu` switches it. Read
 tools also accept an optional `target` to read from another CCU for a single call
 without switching.
+
+### Configuration errors
+
+Some mistakes stop the server at startup instead of being ignored. Each of these
+would otherwise fail *silently* and much later, so the exit is deliberate:
+
+| Message | Cause and why it's fatal |
+|---|---|
+| `CCU_HOST environment variable is required` | No CCU configured (and no `CCU_PROFILES`). |
+| `CCU_PASSWORD environment variable is required` | Unset **or empty**. Note the asymmetry: a *profile* password may be empty (`CCU_<NAME>_PASSWORD=`, e.g. an OpenCCU dev box), the flat one may not. |
+| `CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not` | A leftover from a profile setup. Ignoring it would point writes at the flat `CCU_HOST` box while the env file suggests a named target. |
+| `CCU_PROFILES is set but lists no profile names` | Empty or comma-only value. |
+| `CCU_PROFILES lists "<name>" more than once` | Duplicate profile name. |
+| `... both map to the same env prefix CCU_<P>_* — rename one` | Distinct names can collide once sanitised: `prod-a` and `prod.a` both read `CCU_PROD_A_*`, so they would silently be the *same* target. |
+| `CCU_DEFAULT_PROFILE="x" is not one of CCU_PROFILES (...)` | Typo in the startup profile. |
+| `profile "<name>" is missing CCU_<P>_HOST` | Every profile needs a host; the password may be empty. |
+| `TLS_FINGERPRINT/CA_CERT/TLS_VERIFY is set but HTTPS is disabled` | The verification code path only exists over HTTPS. Ignoring these would leave you believing the connection is verified while credentials travel in cleartext. Set `CCU_HTTPS=true` (or `CCU_<NAME>_HTTPS=true`) or remove them. |
+| `MCP_TLS_CERT and MCP_TLS_KEY must both be set (or both unset)` | Half a TLS config can't serve HTTPS. |
+| `MCP_TRANSPORT must be "http" or "stdio"` | Case matters. A typo like `STDIO` must not silently select HTTP and leave a stdio-spawning client waiting forever. |
+| `<VAR> must be a positive integer` | Ports, timeouts, `CACHE_TTL`, rate limits, `RESOURCE_POLL_INTERVAL`. The *whole* value has to be digits — `CCU_TIMEOUT=30s` is rejected rather than read as 30 ms, and `30.5` or `1e4` are rejected rather than truncated. |
+| `<VAR> must be a positive number` | The two duration settings, `MCP_AUTH_TOKEN_TTL_DAYS` and `MCP_AUTH_TOKEN_GRACE_HOURS`, where a fractional value is meaningful. |
+| `<VAR> must be "true" or "false"` | Any boolean setting (`CCU_HTTPS`, `CCU_TLS_VERIFY`, `CCU_<NAME>_PROTECTED`, `CCU_<NAME>_READONLY`, `MCP_ALLOW_PLAINTEXT`). Surrounding whitespace and capitalisation are fine; `yes`, `1` and `on` are not, because treating them as *false* would quietly switch a protection off. |
+| `CCU_CA_CERT could not be read` | Path is wrong or unreadable by the server user. |
+
+`ccu-mcp --version` and `--help` work without any configuration, so they stay
+usable while you sort one of these out.
 
 ## Tools
 

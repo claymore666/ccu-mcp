@@ -85,6 +85,16 @@ export interface AppConfig {
   resourcePollInterval: number;
 }
 
+/**
+ * The env-var prefix a profile name maps to: `prod-a` → `PROD_A`, read as
+ * `CCU_PROD_A_*`. Single definition — this was written out three times, once as
+ * the actual prefix, once in the duplicate-detection loop, and once inside an
+ * error message that had to agree with both (issue #124).
+ */
+function envPrefix(name: string): string {
+  return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
 export function loadConfig(): AppConfig {
   // CLI flags override env vars for transport. Validate the env value: a typo
   // ("STDIO", "Stdio") must fail loudly, not silently select HTTP and leave a
@@ -98,12 +108,38 @@ export function loadConfig(): AppConfig {
   if (args.includes("--stdio")) transport = "stdio";
   if (args.includes("--http")) transport = "http";
 
+  // Strict: the whole value must be a plain positive integer. parseInt() used to
+  // do this and stopped at the first non-digit, so "30s" silently became 30 —
+  // a 30 MILLISECOND CCU_TIMEOUT, whose every failure then looked like a slow
+  // CCU rather than a config typo (issue #119). The units are documented only
+  // in comments, so a "30s" is a natural thing to write.
+  // Rejecting via regex rather than Number() also excludes forms Number()
+  // accepts but nobody means here: hex ("0x10"), exponent ("1e4"), decimals.
   const parseIntEnv = (name: string, fallback: string): number => {
-    const val = parseInt(process.env[name] || fallback, 10);
-    if (isNaN(val) || val <= 0) {
-      throw new Error(`${name} must be a positive number, got: "${process.env[name]}"`);
+    // Unset or explicitly empty ("VAR=" in a compose file) means "use the
+    // default", as before. Whitespace-only does NOT — it is a typo, and the old
+    // parseInt(" ") → NaN rejected it. Trim only after that distinction.
+    const raw = process.env[name];
+    const source = raw === undefined || raw === "" ? fallback : raw.trim();
+    if (!/^\d+$/.test(source) || !Number.isSafeInteger(Number(source)) || Number(source) <= 0) {
+      throw new Error(`${name} must be a positive integer, got: "${process.env[name]}"`);
     }
-    return val;
+    return Number(source);
+  };
+
+  // Booleans were compared as `process.env[name] === "true"` against the RAW value,
+  // so a trailing space or CR made the setting silently false (issue #120).
+  // For CCU_<P>_PROTECTED / _READONLY that failed OPEN — the production write
+  // gate quietly disabled. Docker passes `environment:` values verbatim, and
+  // docker-compose.yml documents exactly those variables, so this was reachable.
+  // Garbage is rejected rather than read as false, matching MCP_TRANSPORT:
+  // `CCU_PROD_PROTECTED=yes` must not mean "unprotected".
+  const parseBoolEnv = (name: string): boolean => {
+    const raw = process.env[name]?.trim().toLowerCase();
+    if (raw === undefined || raw === "") return false;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    throw new Error(`${name} must be "true" or "false", got: "${process.env[name]}"`);
   };
 
   // Optional positive duration in `unitMs` units; fractional values allowed
@@ -173,20 +209,20 @@ export function loadConfig(): AppConfig {
   // literal scan doesn't see them — intentional; they're documented as comments
   // in .env.example. Password may be empty (OpenCCU dev boxes default to it).
   const buildProfile = (name: string): CcuProfile => {
-    const p = name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+    const p = envPrefix(name);
     const get = (suffix: string): string | undefined => process.env[`CCU_${p}_${suffix}`]?.trim() || undefined;
     const host = get("HOST");
     if (!host) throw new Error(`profile "${name}" is missing CCU_${p}_HOST`);
-    const https = process.env[`CCU_${p}_HTTPS`] === "true";
+    const https = parseBoolEnv(`CCU_${p}_HTTPS`);
     return {
       name,
-      protected: process.env[`CCU_${p}_PROTECTED`] === "true",
-      readonly: process.env[`CCU_${p}_READONLY`] === "true",
+      protected: parseBoolEnv(`CCU_${p}_PROTECTED`),
+      readonly: parseBoolEnv(`CCU_${p}_READONLY`),
       ccu: {
         host,
         port: parseIntEnv(`CCU_${p}_PORT`, https ? "443" : "80"),
         https,
-        tlsVerify: process.env[`CCU_${p}_TLS_VERIFY`] === "true",
+        tlsVerify: parseBoolEnv(`CCU_${p}_TLS_VERIFY`),
         tlsFingerprint: get("TLS_FINGERPRINT"),
         caCert: readCaCert(`CCU_${p}_CA_CERT`, get("CA_CERT")),
         user: get("USER") || "Admin",
@@ -216,15 +252,17 @@ export function loadConfig(): AppConfig {
     if (!host) throw new Error("CCU_HOST environment variable is required");
     const password = process.env.CCU_PASSWORD;
     if (!password) throw new Error("CCU_PASSWORD environment variable is required");
+    const flatHttps = parseBoolEnv("CCU_HTTPS");
     profiles = [{
       name: "default",
       protected: false,
       readonly: false,
+      isFlat: true,
       ccu: {
         host,
-        port: parseIntEnv("CCU_PORT", process.env.CCU_HTTPS === "true" ? "443" : "80"),
-        https: process.env.CCU_HTTPS === "true",
-        tlsVerify: process.env.CCU_TLS_VERIFY === "true",
+        port: parseIntEnv("CCU_PORT", flatHttps ? "443" : "80"),
+        https: flatHttps,
+        tlsVerify: parseBoolEnv("CCU_TLS_VERIFY"),
         tlsFingerprint: process.env.CCU_TLS_FINGERPRINT?.trim() || undefined,
         caCert: readCaCert("CCU_CA_CERT", process.env.CCU_CA_CERT?.trim() || undefined),
         user: process.env.CCU_USER || "Admin",
@@ -246,7 +284,7 @@ export function loadConfig(): AppConfig {
       const key = n.toLowerCase();
       if (seen.has(key)) throw new Error(`CCU_PROFILES lists "${n}" more than once`);
       seen.add(key);
-      const prefix = n.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+      const prefix = envPrefix(n);
       const clash = seenPrefix.get(prefix);
       if (clash) {
         throw new Error(
@@ -272,9 +310,15 @@ export function loadConfig(): AppConfig {
   // Fail fast instead of silently ignoring the settings.
   for (const p of profiles) {
     if (!p.ccu.https && (p.ccu.tlsFingerprint || p.ccu.caCert || p.ccu.tlsVerify)) {
+      // `isFlat`, not `name === "default"`: CCU_PROFILES=default,dev is legal
+      // and yields a profile genuinely NAMED "default" that reads
+      // CCU_DEFAULT_HTTPS. Keying off the name told that operator to set
+      // CCU_HTTPS, which the profile path never reads — following the hint
+      // would not clear the error (issue #124).
+      const httpsVar = p.isFlat ? "CCU_HTTPS" : `CCU_${envPrefix(p.name)}_HTTPS`;
       throw new Error(
         `CCU profile "${p.name}": TLS_FINGERPRINT/CA_CERT/TLS_VERIFY is set but HTTPS is disabled — ` +
-        `these settings only apply over HTTPS. Set ${p.name === "default" ? "CCU_HTTPS" : `CCU_${p.name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_HTTPS`}=true or remove them.`,
+        `these settings only apply over HTTPS. Set ${httpsVar}=true or remove them.`,
       );
     }
   }
@@ -300,7 +344,7 @@ export function loadConfig(): AppConfig {
       host: process.env.MCP_HOST?.trim() || undefined,
       tlsCertPath,
       tlsKeyPath,
-      allowPlaintext: process.env.MCP_ALLOW_PLAINTEXT === "true",
+      allowPlaintext: parseBoolEnv("MCP_ALLOW_PLAINTEXT"),
     },
     cache: {
       dir: process.env.CACHE_DIR || "/data",

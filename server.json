@@ -6,12 +6,12 @@
     "url": "https://github.com/claymore666/ccu-mcp",
     "source": "github"
   },
-  "version": "1.8.1",
+  "version": "1.9.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "ccu-mcp",
-      "version": "1.8.1",
+      "version": "1.9.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -78,6 +78,64 @@
         {
           "name": "CCU_DEFAULT_PROFILE",
           "description": "Which profile from CCU_PROFILES is active at startup (default: the first listed)",
+          "format": "string"
+        },
+        {
+          "name": "CCU_TLS_VERIFY",
+          "description": "Verify the CCU's TLS certificate against the system trust store. Only meaningful with CCU_HTTPS=true. Default false, because a CCU ships a self-signed certificate — prefer CCU_TLS_FINGERPRINT or CCU_CA_CERT to verify one of those",
+          "default": "false",
+          "format": "boolean"
+        },
+        {
+          "name": "CCU_TLS_FINGERPRINT",
+          "description": "Pin the CCU's self-signed leaf certificate by its SHA-256 fingerprint (hex, colons optional). The strongest option for an appliance: the connection is rejected unless the presented certificate matches. Takes precedence over CCU_CA_CERT",
+          "format": "string"
+        },
+        {
+          "name": "CCU_CA_CERT",
+          "description": "Path to a PEM file holding the CCU's CA or self-signed certificate. The connection is then validated against it with standard chain verification",
+          "format": "string"
+        },
+        {
+          "name": "CCU_TIMEOUT",
+          "description": "Timeout for a CCU JSON-RPC call, in MILLISECONDS",
+          "default": "10000",
+          "format": "number"
+        },
+        {
+          "name": "CCU_SCRIPT_TIMEOUT",
+          "description": "Timeout for HomeMatic Script execution (ReGa), in MILLISECONDS — scripts are slower than plain API calls",
+          "default": "30000",
+          "format": "number"
+        },
+        {
+          "name": "CACHE_TTL",
+          "description": "Lifetime of the on-disk device-type schema cache, in SECONDS",
+          "default": "86400",
+          "format": "number"
+        },
+        {
+          "name": "CCU_RATE_LIMIT_BURST",
+          "description": "Token-bucket burst size for CCU requests — how many may be issued back to back",
+          "default": "20",
+          "format": "number"
+        },
+        {
+          "name": "CCU_RATE_LIMIT_RATE",
+          "description": "Sustained CCU request rate, in requests per second",
+          "default": "10",
+          "format": "number"
+        },
+        {
+          "name": "RESOURCE_POLL_INTERVAL",
+          "description": "How often MCP resources are polled for change notifications, in SECONDS",
+          "default": "60",
+          "format": "number"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "description": "error | warn | info | debug. Logs are structured JSON on stderr",
+          "default": "info",
           "format": "string"
         }
       ]
