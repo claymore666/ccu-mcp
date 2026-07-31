@@ -3,7 +3,7 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
-## v1.9.0 — unreleased
+## v1.9.0 — 2026-07-31
 
 A correctness release. A sustained review pass over the whole source tree found
 two classes of problem worth a version of their own: places where a *failed*
@@ -102,6 +102,11 @@ all of them.
   published in the meantime as `src/tclrpc/tclrpc.cpp` in `OpenCCU/OpenCCU-Base`:
   the `bool` branch converts with `Tcl_GetBoolean` and propagates its error,
   which is exactly the observed behaviour.
+
+- The `help` tool's per-tool text now states the error contracts this release
+  added, so the in-band documentation matches the code: `put_paramset` on an
+  empty `set`, the `CCU_ERROR` raised when a system-variable write or delete
+  fails, and the widened `INVALID_INPUT` cases in `create_system_variable`.
 
 ### Dependencies
 

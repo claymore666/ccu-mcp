@@ -133,12 +133,14 @@ Idempotent: yes`,
 Args: address (string), paramsetKey ("VALUES"|"MASTER"), set (object with key:value pairs, e.g. {"TEMPERATURE_WINDOW_OPEN": 5.0}), interface? (auto), confirm? (true to authorize on a protected target)
 The set object uses simple key:value format — types are auto-resolved from the device type cache. Values are converted to strings internally.
 Returns: {address, paramsetKey, written}
+INVALID_INPUT if 'set' is empty — there is nothing to write.
 Idempotent: yes`,
 
   set_system_variable: `Set a system variable (type auto-detected).
 Args: name (string), value (string|number|boolean), confirm? (true to authorize on a protected target)
 Enum (LIST) variables accept a 0-based index or one of the enum's labels.
 Returns: {name, value, method}
+CCU_ERROR if the CCU reports the write failed — the value was NOT written.
 Idempotent: yes`,
 
   create_system_variable: `Create a new system variable.
@@ -146,12 +148,13 @@ Args: name (string), type ("bool"|"float"|"enum"|"string"), description? (string
   unit?/min?/max? (float only), values? (string[], required for enum; labels must not contain ";"),
   confirm? (true to authorize on a protected target)
 Returns: {name, type, created: true}
-INVALID_INPUT if the name already exists (or enum without values). Use set_system_variable to write it.`,
+INVALID_INPUT if the name already exists, an enum has no values, min >= max, or an
+argument doesn't apply to the chosen type. Use set_system_variable to write it.`,
 
   delete_system_variable: `Delete a system variable by name.
 Args: name (string, exact match), confirm (REQUIRED true on every call against a protected target — never rides on the session unlock)
 Returns: {name, deleted: true}
-NOT_FOUND if the name doesn't exist.`,
+NOT_FOUND if the name doesn't exist; CCU_ERROR if the CCU reports the delete failed.`,
 
   assign_channel: `Assign a channel to a room and/or function group.
 Args: channel (address), room? (name), function? (name) — at least one of room/function; confirm? (true to authorize on a protected target)
