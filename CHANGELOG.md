@@ -3,6 +3,84 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.9.1 — 2026-08-01
+
+A supply-chain and verification release. Nothing here changes what the tools do;
+it changes what can be trusted about the artifact and what CI will let through.
+
+The three source fixes were all found by testing that did not exist before this
+version — property-based tests and a fuzzer, applied to the code that parses
+whatever the CCU sends back. None is exploitable, and the values involved are
+implausible on real hardware, so this is not an urgent upgrade.
+
+### Behavior changes (read before upgrading)
+
+Both are robustness fixes, and both are only observable if you were relying on
+the old failure:
+
+- **`parseValue` returns `null` instead of throwing.** Given an object with no
+  usable primitive conversion (`{"toString": false}`), `String()` throws
+  `TypeError: Cannot convert object to primitive value`. Because this parses
+  JSON-RPC payloads arriving over the network, a malformed response crashed the
+  tool call rather than degrading. Anything catching that throw will now see a
+  `null` value instead.
+- **`normalizeClientIp` returns `"unknown"` for a bare `::ffff:`.** It returned
+  an empty string, which matches no fail2ban `<HOST>` rule and collapses every
+  such client into a single rate-limit bucket. Not reachable from the network —
+  `remoteAddress` comes from the OS — but it contradicted the function's own
+  documented contract that it is total.
+
+### Fixed
+
+- **Keys that collide with `Object.prototype` no longer disappear.** Building an
+  object with `obj[key] = …`, where the key comes from outside, routes a
+  `"__proto__"` key through the prototype setter instead of creating an own
+  property — so the field silently vanished. Four sites: log redaction (a field
+  dropped out of the log line; redaction itself was never affected), the device
+  type cache in two places (a CCU parameter or channel index named `__proto__`
+  fell out of the cached schema), and the resolver, which additionally now
+  checks `Object.hasOwn` before indexing with a caller-supplied channel index,
+  paramset key or parameter name.
+- **A trailing-colon address resolves to channel 0.** `"ABC123:"` produced an
+  empty channel index in the resolver while the device type cache derived `"0"`
+  for the same address. The disagreement was harmless — an unresolved type makes
+  a write ineligible for auto-retry, so a one-shot `ACTION` trigger was never at
+  risk — but the two now agree.
+
+### Added
+
+- **npm releases are published with provenance.** Publishing moves from a token
+  on a maintainer's machine to [npm trusted publishing](https://docs.npmjs.com/trusted-publishers)
+  (OIDC) in a GitHub Actions workflow gated on a required approval. There is no
+  publish token any more: the package is set to *require two-factor
+  authentication and disallow tokens*, so a leaked token cannot publish it. This
+  is the first ccu-mcp release whose npm artifact can be cryptographically traced
+  back to the commit and workflow that built it.
+- **Property-based tests and coverage-guided fuzzing.** `fast-check` with a
+  pinned seed runs in the required build, and a nightly Jazzer.js workflow fuzzes
+  the parsing and escaping surface. The oracle for HM Script escaping is
+  differential — escape, then decode with an independent reader for ReGa's string
+  literal — so both under-escaping (injection) and over-escaping (corruption) are
+  caught by one property.
+- **A per-directory coverage ratchet.** Global thresholds hide local collapse:
+  deleting one test file takes `src/http` from 100% to 0% while the global
+  statement figure moves only 86.05% → 85.79%, staying clear of its floor — so
+  the build passes and nothing reports the loss. Floors are now enforced per
+  directory as well as globally.
+- **`SECURITY.md` and `CONTRIBUTING.md`**, including a published vulnerability
+  reporting process and the project's test policy. ccu-mcp now carries the
+  [OpenSSF Best Practices](https://www.bestpractices.dev/projects/13919) badge at
+  *passing*.
+
+### Changed
+
+- CI now lints its own workflows (actionlint + shellcheck), gates AI attribution
+  in commits and PR bodies, bounds every job's runtime, and blocks pull requests
+  that introduce vulnerable or non-permissively-licensed dependencies.
+- Tool and environment-variable documentation is guarded by tests: a tool added
+  to the server but missing from the README or the in-server `help` text now
+  fails the build rather than reaching a user.
+
 ## v1.9.0 — 2026-07-31
 
 A correctness release. A sustained review pass over the whole source tree found

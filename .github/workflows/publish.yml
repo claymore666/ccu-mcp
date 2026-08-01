@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run — verify OIDC and the tarball without uploading"
+        description: "Dry run — check packaging and workflow wiring, upload nothing (does NOT exercise OIDC)"
         type: boolean
         default: true
 

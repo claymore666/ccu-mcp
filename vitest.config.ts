@@ -22,10 +22,12 @@ export default defineConfig({
       // artifact rather than a real gap.
       //
       // These numbers alone are not enough, because an average hides local
-      // collapse — deleting the src/http tests takes that directory from 100%
-      // to 0% and moves the global statement figure UP, to 85.51%. The
-      // per-directory floors in .github/coverage-baseline.txt cover that gap;
-      // src/index.ts is exempted there for the reason above.
+      // collapse. Deleting the src/http tests takes that directory from 100%
+      // to 0%, and the global statement figure moves 86.05% -> 85.79% — a
+      // quarter of a point, still clear of the 85% floor, so `npm test` passes
+      // and nothing reports the loss. The per-directory floors in
+      // .github/coverage-baseline.txt cover that gap; src/index.ts is exempted
+      // there for the reason above.
       thresholds: {
         statements: 85,
         branches: 79,
