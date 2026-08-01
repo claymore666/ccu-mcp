@@ -1,0 +1,185 @@
+name: Fuzz
+
+# NON-HERMETIC BY CONSTRUCTION — never make this a required status check.
+# Coverage-guided fuzzing is a function of how long it ran and which mutations
+# it happened to try, not of the commit under test. Tonight's run can go red on
+# a tree that was green this morning with no diff between them — the same
+# property that got `npm audit` removed from ci.yml's `build-and-test`.
+#
+# The hermetic half of this project's dynamic analysis lives in
+# test/unit/utils-properties.test.ts: fixed seed, fixed run count, inside
+# build-and-test. This workflow is the half that trades reproducibility for
+# reach.
+#
+# Signal, copied deliberately from audit.yml: ONE long-lived tracking issue
+# found by the `fuzz-finding` label. The JOB stays GREEN whenever fuzzing RAN,
+# findings or not; it goes red only when fuzzing COULD NOT run. A scheduled
+# workflow that mails a failure every time it finds something earns a filter
+# rule within a week, and then the mechanism is dead.
+#
+# Corpus: the committed seeds under fuzz/corpus/ only — nothing is persisted
+# between runs. That is a deliberate trade. These targets are small pure
+# functions, so the marginal value of a grown corpus is low, while a cache is
+# one more moving part that fails silently. The seeds carry the inputs that
+# matter: byte-level mutation will never invent the literal key "__proto__",
+# and without that seed the parse target reports green while testing nothing.
+#
+# Scheduled workflows only run from the DEFAULT branch (`dev`), so this file
+# must be on `dev` to fire at all.
+
+on:
+  schedule:
+    # 03:41 UTC daily, deliberately off the hour — GitHub's cron queue is
+    # heavily oversubscribed at :00.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Per-target fuzzing budget in seconds"
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+env:
+  FUZZ_LABEL: fuzz-finding
+  ISSUE_TITLE: "Fuzzing: crashing input found"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    # Three targets x 300s, plus install and build. Generous headroom, but
+    # bounded — an unbounded fuzz job would burn the 6-hour default.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gh step below authenticates via GH_TOKEN. Nothing pushes to git.
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The fuzz targets import from dist/, so a stale or missing build would
+      # fuzz the wrong code — or nothing at all.
+      - name: Build
+        run: npm run build
+
+      - name: Fuzz
+        id: fuzz
+        env:
+          FUZZ_SECONDS: ${{ github.event.inputs.seconds || '300' }}
+        run: |
+          set -uo pipefail
+
+          # scripts/fuzz.sh exits 0 clean / 1 found / 2 could-not-run, and the
+          # three must stay distinct: "found a bug" and "never started" look
+          # identical in a red job and mean opposite things.
+          rc=0
+          bash scripts/fuzz.sh 2>&1 | tee fuzz.log || rc=$?
+
+          case "$rc" in
+            0) echo "found=0" >> "$GITHUB_OUTPUT" ;;
+            1) echo "found=1" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::Fuzzing could not run (exit $rc). This is an infrastructure failure, NOT a clean run."
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "### Fuzzing on \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA:0:7}\`"
+            echo
+            echo '```'
+            grep -E "^(===|PASS|FOUND|FAIL)" fuzz.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Reproducers are the whole point of a finding — without the input the
+      # report is unactionable.
+      - name: Upload reproducers
+        if: steps.fuzz.outputs.found == '1'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-reproducers
+          path: findings/
+          retention-days: 30
+
+      - name: Sync the tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          FOUND: ${{ steps.fuzz.outputs.found }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          gh label create "$FUZZ_LABEL" \
+            --color B60205 \
+            --description "Automated fuzzing found a crashing input" \
+            --force
+
+          # Label filter, not --search: the REST list endpoint is
+          # read-your-writes, the search index lags and would file duplicates.
+          issue=$(gh issue list --state open --label "$FUZZ_LABEL" --limit 1 \
+                  --json number --jq '.[0].number // empty')
+
+          if [ "$FOUND" -eq 0 ]; then
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body \
+                "Fuzzing is clean — all targets ran to their time limit with no crashing input. Closing. ([run]($RUN_URL))"
+              gh issue close "$issue" --reason completed
+              echo "Closed tracking issue #$issue."
+            else
+              echo "Clean, no tracking issue open. Nothing to do."
+            fi
+            exit 0
+          fi
+
+          {
+            echo "A fuzz target produced a crashing input on \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA:0:7}\`."
+            echo
+            echo '```'
+            grep -E "^(===|PASS|FOUND|FAIL)" fuzz.log || true
+            echo '```'
+            echo
+            echo "The reproducer is attached to [the run]($RUN_URL) as the \`fuzz-reproducers\` artifact."
+            echo
+            echo "### Reproducing locally"
+            echo
+            echo '```sh'
+            echo "git worktree add ../ccu-mcp-fuzz -b fix/fuzz-finding origin/dev"
+            echo "cd ../ccu-mcp-fuzz && npm ci && npm run build"
+            echo "# download the artifact into ./findings, then replay the single input:"
+            echo "npx jazzer fuzz/<target>.fuzz.mjs --sync -- findings/<file>"
+            echo '```'
+            echo
+            echo "Once fixed, promote the reproducer into \`fuzz/corpus/<target>/\` so it is"
+            echo "regression-tested forever, and add a named case to"
+            echo "\`test/unit/utils-properties.test.ts\` so the hermetic suite pins it too."
+            echo
+            echo "<sub>Maintained automatically by [\`.github/workflows/fuzz.yml\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/dev/.github/workflows/fuzz.yml). The body is rewritten on every run and the issue closes itself when fuzzing comes back clean. Do not rename or unlabel it — the \`$FUZZ_LABEL\` label is how the workflow finds it.</sub>"
+          } > issue-body.md
+
+          if [ -z "$issue" ]; then
+            url=$(gh issue create --title "$ISSUE_TITLE" \
+                    --label "$FUZZ_LABEL" --body-file issue-body.md)
+            echo "Opened tracking issue: $url"
+          else
+            gh issue edit "$issue" --body-file issue-body.md
+            gh issue comment "$issue" --body \
+              "Fuzzing found a crashing input again. ([run]($RUN_URL))"
+            echo "Updated tracking issue #$issue."
+          fi
