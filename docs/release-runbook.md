@@ -256,10 +256,25 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    mcp-publisher publish             # reads server.json
    ```
 
-   **Rehearsing it.** `workflow_dispatch` on `publish.yml` defaults to
-   `dry_run: true`, which exercises OIDC and packaging and uploads nothing.
-   Worth doing once after any change to the workflow, the environment, or the
-   npmjs trusted-publisher config.
+   **Rehearsing it, and the limit of a rehearsal.** `workflow_dispatch` on
+   `publish.yml` defaults to `dry_run: true`. That checks the workflow wiring,
+   the environment gate and the tarball contents, and uploads nothing.
+
+   It does **not** exercise the OIDC credential exchange, and cannot:
+   `npm publish --dry-run` never issues the PUT, so no credential is ever
+   requested. A dry run against an already-published version stops earlier
+   still, at `You cannot publish over the previously published versions`,
+   which the registry answers without authentication. **The first real publish
+   is the only test of the OIDC path.**
+
+   That is acceptable because it fails closed. If the exchange fails,
+   `npm publish` errors on authentication, the job goes red and nothing
+   reaches the registry; if something published without provenance, the
+   "Verify provenance landed" step re-reads the registry and fails the run.
+
+   Rehearse after any change to the workflow, the environment, or the npmjs
+   trusted-publisher config — just don't read a green dry run as proof the
+   credentials work.
 
    **If CI publishing is broken mid-release**, fall back to `npm publish` from
    the tagged checkout with `--otp=<code>`. It works, but produces no
