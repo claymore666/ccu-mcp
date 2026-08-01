@@ -58,15 +58,44 @@ is first wired up.
 (`package.json` `name`). Publishing needs an authenticated npm session with
 publish rights on that package.
 
-1. `npm login` (or set `NPM_TOKEN` / `~/.npmrc` with an automation token).
-   Confirm with `npm whoami`.
-2. If the npm account has 2FA set to **auth-and-publish**, `npm publish`
-   prompts for a one-time code — pass it with `--otp=<code>` in
-   non-interactive shells. 2FA set to **auth-only** doesn't prompt on
-   publish.
+**The normal path is CI, not your laptop.** `.github/workflows/publish.yml`
+publishes through npm **trusted publishing** (OIDC): npm mints a short-lived
+credential from the OIDC claim GitHub issues for that workflow file, in this
+repo, in the `release` environment. There is no `NPM_TOKEN` secret and there
+must never be one.
 
-Symptom if missed: `npm publish` ends `ENEEDAUTH` (not logged in) or
-`EOTP` (OTP required). Neither mutates anything — fix auth and re-run.
+That also means **provenance is generated automatically** — no `--provenance`
+flag — which is what makes the published artifact verifiable.
+
+The package is set to **"Require two-factor authentication and disallow
+tokens"** on npmjs.com. Granular and automation tokens cannot publish it at
+all, regardless of their bypass-2FA setting. Do not add one back; it would not
+work, and it would reintroduce exactly the credential this removed.
+
+Three things are pinned together and must not drift apart — npmjs.com's trusted
+publisher config names all three, and a mismatch fails the publish closed:
+
+| | |
+| --- | --- |
+| Workflow filename | `publish.yml` |
+| Environment | `release` |
+| Repository | `claymore666/ccu-mcp` |
+
+The `release` environment requires review from `claymore666` before the publish
+job runs. That approval click is the deliberate replacement for the YubiKey
+touch a local publish demanded. Its branch policy allows only `v*` tags and
+`main`, so a run from `dev` is refused before any job starts.
+
+**Manual fallback.** Interactive publishing still works and is unaffected by
+the token restriction — only tokens are disallowed, not humans:
+
+1. `npm login` (interactive; the web flow). Confirm with `npm whoami`.
+2. `npm publish` prompts for a one-time code — pass `--otp=<code>` in
+   non-interactive shells.
+
+A manual publish produces **no provenance**, so prefer CI. Symptom if auth is
+missed: `ENEEDAUTH` (not logged in) or `EOTP` (OTP required). Neither mutates
+anything — fix auth and re-run.
 
 ### MCP registry — publisher auth
 
@@ -205,16 +234,36 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    configured; plain `git tag vX.Y.Z` is acceptable if not. Confirm with
    `git tag -v vX.Y.Z` when signed.
 
-8. **Publish — npm, then the MCP registry, then the GitHub Release.** All
-   from the tagged `main` checkout, so the artifacts match the tag:
+8. **Publish.** npm goes first — the MCP registry entry points consumers at the
+   npm package — but the order is now inverted from the old manual flow,
+   because npm publishing is triggered *by* the GitHub Release:
+
    ```sh
-   npm publish                       # add --otp=<code> if 2FA prompts
-   mcp-publisher publish             # reads server.json
    gh release create vX.Y.Z --title "vX.Y.Z" --notes "<step 4 notes>"
    ```
-   `prepublishOnly` re-runs `npm run lint && npm test` before the upload, so a
-   broken build can't ship. Order matters only in that npm must succeed first
-   — the registry entry points consumers at the npm package.
+
+   That fires `publish.yml`. It runs `verify` (version sync, tag-vs-
+   package.json agreement, lint, tests, `npm pack --dry-run`) with no human
+   present, then **waits for your approval** on the `release` environment
+   before publishing. Approve it in the run's UI.
+
+   The workflow refuses to publish when the tag and `package.json` disagree,
+   and fails the run if the uploaded version comes back without provenance
+   attestations. `prepublishOnly` re-runs `lint && test` on top of that.
+
+   Then the MCP registry, from the tagged `main` checkout:
+   ```sh
+   mcp-publisher publish             # reads server.json
+   ```
+
+   **Rehearsing it.** `workflow_dispatch` on `publish.yml` defaults to
+   `dry_run: true`, which exercises OIDC and packaging and uploads nothing.
+   Worth doing once after any change to the workflow, the environment, or the
+   npmjs trusted-publisher config.
+
+   **If CI publishing is broken mid-release**, fall back to `npm publish` from
+   the tagged checkout with `--otp=<code>`. It works, but produces no
+   provenance — note it in the release and re-check `signed_releases`.
 
 9. **Fast-forward `dev` to `main`** so the version bump and any release-branch
    edits land on `dev` too:
@@ -252,8 +301,12 @@ After publishing:
 
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
-| `npm publish` ends `EOTP` | npm 2FA set to auth-and-publish | re-run with `--otp=<code>` |
-| `npm publish` ends `ENEEDAUTH` | not logged in / token expired | `npm login`, confirm `npm whoami`, re-run |
+| `npm publish` ends `EOTP` | manual fallback path; npm 2FA prompts | re-run with `--otp=<code>` |
+| `npm publish` ends `ENEEDAUTH` | manual fallback path; not logged in / session expired | `npm login`, confirm `npm whoami`, re-run |
+| `publish.yml` never starts | environment branch policy allows only `v*` tags and `main` | check the run was triggered from a tag, not `dev` |
+| `publish.yml` waits forever | `release` environment needs your approval | approve the deployment in the run's UI |
+| npm rejects the OIDC exchange | workflow filename, environment name or repo does not match the trusted-publisher config on npmjs.com | all three are pinned — reconcile them, don't add a token |
+| Published, but "Verify provenance landed" fails | published without attestations (e.g. a manual fallback publish) | the version is immutable; note it, and fix the path before the next release |
 | `npm publish` ends `403 cannot publish over previously published version` | version already on npm (npm is immutable) | bump to the next patch; never re-use a version |
 | `mcp-publisher publish` rejects the version | `server.json` version ≠ npm package version, or `mcpName` missing in `package.json` | align all three version spots (step 2); ensure `package.json` `mcpName` matches `server.json` `name` |
 | `mcp-publisher` 401 / auth error | publisher login expired | `mcp-publisher login github` again |
