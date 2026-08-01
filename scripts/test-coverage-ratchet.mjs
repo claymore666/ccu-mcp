@@ -284,6 +284,43 @@ check("corrupt coverage summary exits 2", 2, writeBaseline("corrupt", "{not json
   }
 }
 
+// Without this, --print-measured reported src at 47.1 instead of 96.3 on the
+// real repo, because it ignored the src/index.ts exemption. Pasting that back
+// would have dropped the floor 49 points and looked like routine maintenance.
+{
+  const res = spawnSync(
+    process.execPath,
+    [RATCHET, WITH_ENTRY, "--print-measured", EXEMPT_BASE],
+    { cwd: TMP, encoding: "utf-8" },
+  );
+  // src/a is 80/100 once the 0/100 entry.ts is dropped; 40.0 if it is not.
+  const ok =
+    res.status === 0 &&
+    res.stdout.includes("src/a 80.0 70.0") &&
+    !res.stdout.includes("src/a 40.0") &&
+    res.stdout.includes("src/a/entry.ts");
+  console.log(`${ok ? "PASS" : "FAIL"}: --print-measured applies the baseline's exemptions`);
+  if (!ok) {
+    console.log(`    exit ${res.status}\n${res.stdout}${res.stderr}`);
+    failures++;
+  }
+}
+
+// A missing baseline must say so rather than quietly print unexempted numbers.
+{
+  const res = spawnSync(
+    process.execPath,
+    [RATCHET, WITH_ENTRY, "--print-measured", join(TMP, "no-such-baseline.txt")],
+    { cwd: TMP, encoding: "utf-8" },
+  );
+  const ok = res.status === 0 && res.stdout.includes("exemptions NOT applied");
+  console.log(`${ok ? "PASS" : "FAIL"}: --print-measured warns when it has no baseline`);
+  if (!ok) {
+    console.log(`    exit ${res.status}\n${res.stdout}${res.stderr}`);
+    failures++;
+  }
+}
+
 // --- summary ---------------------------------------------------------------
 
 if (failures) {

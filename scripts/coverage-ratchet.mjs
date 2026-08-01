@@ -10,7 +10,10 @@
 //
 // Usage:
 //   node scripts/coverage-ratchet.mjs <coverage-summary.json> <baseline-file>
-//   node scripts/coverage-ratchet.mjs <coverage-summary.json> --print-measured
+//   node scripts/coverage-ratchet.mjs <coverage-summary.json> --print-measured [baseline]
+//
+// --print-measured reads the baseline (default .github/coverage-baseline.txt)
+// for its !exempt lines, so its output can be pasted back safely.
 //
 // Exit codes: 0 pass, 1 ratchet failure, 2 cannot check (usage/harness error).
 // 1 and 2 are kept distinct so a broken harness can never read as a pass OR
@@ -22,10 +25,11 @@
 // drift: a different Node patch release can shift v8's statement attribution
 // slightly, and CI's Node is not pinned to the developer's.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { relative, dirname } from "node:path";
 
 const METRICS = ["statements", "branches"];
+const DEFAULT_BASELINE = ".github/coverage-baseline.txt";
 const EPSILON = Number(process.env.RATCHET_EPSILON ?? "0.5");
 
 function die(msg) {
@@ -36,7 +40,7 @@ function die(msg) {
 const [summaryPath, baselinePath] = process.argv.slice(2);
 if (!summaryPath || !baselinePath) {
   die(
-    "usage: coverage-ratchet.mjs <coverage-summary.json> <baseline-file|--print-measured>",
+    "usage: coverage-ratchet.mjs <coverage-summary.json> <baseline-file|--print-measured [baseline]>",
   );
 }
 if (!Number.isFinite(EPSILON) || EPSILON < 0) {
@@ -145,7 +149,22 @@ if (baselinePath === "--print-measured") {
   // Seeding/raising aid. Deliberately prints to stdout instead of writing the
   // baseline: floors move only through a reviewed edit with the reason
   // recorded in the file, never as a side effect of running the tool.
-  const { groups } = measuredGroups(new Set());
+  //
+  // It MUST apply the existing exemptions. Ignoring them reported src at 47.1
+  // instead of 96.3, because src/index.ts measures 0% as a subprocess artifact
+  // — and pasting that number would have dropped the floor 49 points while
+  // looking like routine maintenance.
+  const existing = process.argv[4] ?? DEFAULT_BASELINE;
+  let exempt = new Set();
+  if (existsSync(existing)) {
+    exempt = parseBaseline(existing).exempt;
+    if (exempt.size) {
+      console.log(`# exemptions applied from ${existing}: ${[...exempt].sort().join(", ")}`);
+    }
+  } else {
+    console.log(`# WARNING: no baseline at ${existing} — exemptions NOT applied`);
+  }
+  const { groups } = measuredGroups(exempt);
   for (const [dir, got] of [...groups].sort()) {
     console.log(
       `${dir} ${METRICS.map((m) => (Math.floor(got[m] * 10) / 10).toFixed(1)).join(" ")}`,

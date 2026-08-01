@@ -49,7 +49,9 @@ src/cache 99.2 97.7
 src/ccu 91.6 87.1
 src/health 100.0 100.0
 src/http 100.0 100.0
-src/middleware 99.2 92.2
+# src/middleware 99.2/92.2 -> 99.2/95.2 (prototype-key PR): branches RAISED,
+# earned by test/unit/prototype-key-handling.test.ts covering the hasOwn arms.
+src/middleware 99.2 95.2
 src/prompts 100.0 100.0
 src/resources 98.6 83.3
 src/tools 96.1 84.4
