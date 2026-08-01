@@ -409,6 +409,18 @@ Release notes — including **behavior changes to check before upgrading**
 (stricter config validation, `/health` response shape, per-session write
 confirmation, retry semantics) — live in [CHANGELOG.md](CHANGELOG.md).
 
+## Getting help and contributing
+
+- **Something broken, or an idea for a feature?** Open an issue:
+  [github.com/claymore666/ccu-mcp/issues](https://github.com/claymore666/ccu-mcp/issues)
+- **Questions, setup help, general HomeMatic talk?** The
+  [HomeMatic forum](https://homematic-forum.de/) — the maintainer reads it as
+  `claymore666`.
+- **Found a security problem?** Please don't post it publicly. See
+  [SECURITY.md](SECURITY.md) for private reporting.
+- **Want to send a patch?** [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup,
+  the branch to target, and the test policy.
+
 ## Related projects
 
 - [OpenCCU](https://github.com/OpenCCU/OpenCCU) — community-maintained, cloud-free CCU firmware for Raspberry Pi, x86/ARM, and CCU3/ELV-Charly hardware (formerly **RaspberryMatic**; built on the OCCU framework)
