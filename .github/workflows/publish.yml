@@ -127,12 +127,16 @@ jobs:
           set -euo pipefail
           have=$(npm --version)
           echo "npm $have"
+          # String concatenation rather than template literals: shellcheck
+          # cannot tell a JS `${…}` inside a single-quoted heredoc from a shell
+          # expansion that will not expand, and flags SC2016.
           node -e '
-            const [have, want] = [process.argv[1], "11.5.1"];
+            const have = process.argv[1], want = "11.5.1";
             const cmp = (a, b) => a.split(".").map(Number)
               .reduce((r, n, i) => r !== 0 ? r : n - Number(b.split(".")[i]), 0);
             if (cmp(have, want) < 0) {
-              console.error(`::error::npm ${have} is older than ${want}; trusted publishing needs ${want}+`);
+              console.error("::error::npm " + have + " is older than " + want +
+                "; trusted publishing needs " + want + " or newer");
               process.exit(1);
             }
           ' "$have"
