@@ -256,6 +256,59 @@ jobs:
           echo "::error::The registry read path is intermittently flaky — re-check by hand before assuming the publish failed."
           exit 1
 
+      # Smithery last, and it is the odd one out. npm and the MCP registry both
+      # authenticate by OIDC, so neither needs a stored credential. Smithery has
+      # no OIDC path, and its restricted service tokens cap at a 24-hour TTL —
+      # too short to sit in a secret between releases. So this step needs a
+      # long-lived API key, which is the class of credential the other two
+      # deliberately removed.
+      #
+      # Mitigations, in order of how much they matter:
+      #   - The key is an ENVIRONMENT secret on `release`, not a repo secret.
+      #     Only a job that named this environment can read it, and reaching
+      #     this environment requires a human approval.
+      #   - It runs after both real registries. A Smithery failure cannot
+      #     abort an npm or MCP publish that already succeeded.
+      #   - The job does NOT take `contents: write`. Attaching the bundle to
+      #     the Release would be convenient, but granting write to the same job
+      #     that holds a publish credential is a worse trade than a download.
+      - name: Build the MCPB bundle
+        if: steps.publish.outputs.published == 'true'
+        run: npm run build:mcpb
+
+      - name: Publish to Smithery
+        if: steps.publish.outputs.published == 'true'
+        env:
+          SMITHERY_API_KEY: ${{ secrets.SMITHERY_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SMITHERY_API_KEY:-}" ]; then
+            echo "::error::SMITHERY_API_KEY is not set on the 'release' environment."
+            echo "::error::npm and the MCP registry have already published; only the Smithery listing is missing."
+            exit 1
+          fi
+          version=$(node -p "require('./package.json').version")
+          npx -y @smithery/cli@4.11.1 mcp publish "ccu-mcp-${version}.mcpb" \
+            -n christian-kamien/ccu-mcp
+
+      # Smithery is a thin discovery listing for this project — a stdio bundle
+      # is not hosted, so `tools` stays null however the publish goes. Checking
+      # the qualified name came back is all this can honestly assert.
+      - name: Verify the Smithery listing responds
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsS "https://registry.smithery.ai/servers/christian-kamien/ccu-mcp" -o smithery.json
+          node -e '
+            const j = require("./smithery.json");
+            if (j.qualifiedName !== "christian-kamien/ccu-mcp") {
+              console.error("::error::unexpected Smithery listing: " + JSON.stringify(j.qualifiedName));
+              process.exit(1);
+            }
+            console.log("Smithery listing OK:", j.qualifiedName,
+              "| connection:", (j.connections || [])[0] && j.connections[0].type);
+          '
+
       - name: Summary
         if: always()
         env:
@@ -269,6 +322,7 @@ jobs:
               echo
               echo "- npm, with provenance: https://www.npmjs.com/package/ccu-mcp/v/${version}"
               echo "- MCP registry: https://registry.modelcontextprotocol.io/v0/servers?search=io.github.claymore666/ccu-mcp"
+              echo "- Smithery: https://smithery.ai/servers/christian-kamien/ccu-mcp"
             else
               echo "### Dry run for \`ccu-mcp@${version}\` — nothing uploaded"
             fi

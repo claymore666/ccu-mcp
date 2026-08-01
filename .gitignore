@@ -46,3 +46,6 @@ occu-issue-*.md
 findings/
 # libFuzzer default artifact location when -artifact_prefix is not passed
 crash-*
+
+# MCPB bundles built by scripts/build-mcpb.sh
+*.mcpb
