@@ -1,0 +1,52 @@
+# Per-directory coverage floors, in percent, enforced by
+# scripts/coverage-ratchet.mjs in the build-and-test job.
+#
+# Format:  <dir> <statements> <branches>
+#          !exempt <file>      — drop a file from its directory's aggregate
+#
+# vitest.config.ts already sets GLOBAL thresholds. These sit underneath them:
+# a global average hides local collapse, because a directory that loses 20
+# points is absorbed by the well-covered ones around it. Both layers stay
+# hermetic — coverage is a pure function of the commit under test.
+#
+# Rules:
+#   - Raise a floor in the same PR that earns the improvement. The ratchet
+#     prints "beats the floor" when a directory is a full point clear.
+#   - Never lower a floor without recording the reason here, in this file.
+#     Editing a number is easy on purpose; the record is the control, not
+#     friction. A lowered floor with no note is the thing review should catch.
+#   - A new directory with no entry FAILS. That is deliberate: a baseline-driven
+#     loop that only checks what it already knows about lets a whole untested
+#     subsystem in for free.
+#
+# `node scripts/coverage-ratchet.mjs coverage/coverage-summary.json --print-measured`
+# prints the current numbers in this format. It never writes this file.
+#
+# Seeding note (v1.9.0): floors are measured-truncated-to-one-decimal, with
+# RATCHET_EPSILON (0.5) as the only slack. Repeat local runs were verified
+# byte-identical, so the epsilon is headroom for Node-patch differences between
+# CI and a developer's machine, not run-to-run noise.
+#
+# CAUTION when re-measuring locally: with CCU_HOST set, the live-integration
+# suites run and every number comes out higher than CI will ever measure.
+# Floors seeded from such a run would fail in CI permanently. The ratchet
+# prints a warning when it sees CCU_HOST; seed and raise without it.
+
+# src/index.ts measures 0% as an artifact, not a gap: the e2e suites spawn it
+# as a subprocess and v8 coverage cannot attribute a child process back to the
+# parent's report. It is 197 statements, so leaving it in drags the src/ root
+# group from 93.7% down to 46.2% and the floor would have to be set so low it
+# would stop defending config.ts / logger.ts / server.ts / utils.ts entirely.
+# vitest.config.ts declines to set per-file thresholds for the same reason.
+!exempt src/index.ts
+
+src 93.7 91.6
+src/auth 96.8 94.0
+src/cache 99.2 97.7
+src/ccu 91.6 87.1
+src/health 100.0 100.0
+src/http 100.0 100.0
+src/middleware 99.2 92.2
+src/prompts 100.0 100.0
+src/resources 98.6 83.3
+src/tools 96.1 84.4

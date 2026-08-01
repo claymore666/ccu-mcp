@@ -76,6 +76,19 @@ jobs:
       - name: Test
         run: npm test -- --coverage
 
+      # Runs before the ratchet, not after: it proves the ratchet can still
+      # fail. A gate whose failure path has rotted reports the same green as a
+      # clean tree, and the coverage step above would be the only thing left
+      # actually enforcing anything.
+      - name: Coverage ratchet self-test
+        run: node scripts/test-coverage-ratchet.mjs
+
+      # Per-directory floors underneath vitest.config.ts's global thresholds:
+      # the global average absorbs a single directory falling apart. Hermetic —
+      # coverage is a function of this commit alone.
+      - name: Coverage ratchet
+        run: node scripts/coverage-ratchet.mjs coverage/coverage-summary.json .github/coverage-baseline.txt
+
   # Lints every workflow file, plus shellcheck over the `run:` blocks — and
   # those blocks are where the real bash in this repo lives (audit.yml's issue
   # sync, release-gate.yml's audit step).
