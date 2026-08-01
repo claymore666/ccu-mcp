@@ -54,7 +54,13 @@ export class Resolver {
     paramsetKey: string = "VALUES",
   ): string | undefined {
     const deviceAddress = address.includes(":") ? address.split(":")[0]! : address;
-    const channelIndex = address.includes(":") ? address.split(":")[1]! : "0";
+    // `|| "0"` matches how DeviceTypeCache derives the same index. Without it a
+    // trailing-colon address ("ABC123:") yielded an empty channel index, which
+    // matches no channel and silently degraded to an inferred type. Failing
+    // that way is safe — an unresolved type makes safeToRetry false in
+    // control.ts, so an ACTION trigger is still never auto-retried — but the
+    // two derivations should not disagree.
+    const channelIndex = (address.includes(":") ? address.split(":")[1] : "0") || "0";
     const deviceType = this.deviceTypeMap?.get(deviceAddress);
 
     if (!deviceType) return undefined;
@@ -62,10 +68,21 @@ export class Resolver {
     const cached = cache.get(deviceType);
     if (!cached) return undefined;
 
+    // hasOwn before indexing: channelIndex is caller-supplied, and a plain
+    // lookup walks the prototype chain — `channels["constructor"]` returns a
+    // truthy function that then fails the `.paramsets?.` access. Optional
+    // chaining contains that today, so this is closing the hole rather than
+    // fixing a live bug.
+    if (!Object.hasOwn(cached.channels, channelIndex)) return undefined;
     const channel = cached.channels[channelIndex];
     if (!channel) return undefined;
 
-    return channel.paramsets[paramsetKey]?.[valueKey]?.type;
+    // Same reasoning as the channel lookup: valueKey is a parameter name the
+    // caller chose, so index only own properties.
+    const paramset = channel.paramsets;
+    if (!Object.hasOwn(paramset, paramsetKey)) return undefined;
+    const params = paramset[paramsetKey]!;
+    return Object.hasOwn(params, valueKey) ? params[valueKey]?.type : undefined;
   }
 
   resolveType(

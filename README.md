@@ -2,6 +2,8 @@
 
 Talk to your HomeMatic smart home from Claude, Cursor, or any MCP client.
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13919/badge)](https://www.bestpractices.dev/projects/13919)
+
 <a href="https://glama.ai/mcp/servers/claymore666/ccu-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/claymore666/ccu-mcp/badge" alt="ccu-mcp MCP server" />
 </a>
@@ -406,6 +408,18 @@ Other device types should work too — the server queries the CCU for parameter 
 Release notes — including **behavior changes to check before upgrading**
 (stricter config validation, `/health` response shape, per-session write
 confirmation, retry semantics) — live in [CHANGELOG.md](CHANGELOG.md).
+
+## Getting help and contributing
+
+- **Something broken, or an idea for a feature?** Open an issue:
+  [github.com/claymore666/ccu-mcp/issues](https://github.com/claymore666/ccu-mcp/issues)
+- **Questions, setup help, general HomeMatic talk?** The
+  [HomeMatic forum](https://homematic-forum.de/) — the maintainer reads it as
+  `claymore666`.
+- **Found a security problem?** Please don't post it publicly. See
+  [SECURITY.md](SECURITY.md) for private reporting.
+- **Want to send a patch?** [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup,
+  the branch to target, and the test policy.
 
 ## Related projects
 

@@ -1,0 +1,214 @@
+name: Publish
+
+# Publishes ccu-mcp to npm via TRUSTED PUBLISHING (OIDC). There is no
+# NPM_TOKEN secret anywhere in this repository, and there must never be one:
+# the package is configured on npmjs.com with "Require two-factor
+# authentication and disallow tokens", so a token could not publish even if it
+# leaked. npm mints a short-lived credential from the OIDC claim GitHub issues
+# for this specific workflow file, in this repository, in this environment.
+#
+# THE FILENAME AND ENVIRONMENT NAME ARE PART OF THE CONTRACT. npmjs.com pins
+# the trusted publisher to `publish.yml` and the `release` environment; rename
+# either and the publish fails closed rather than falling back to a token.
+#
+# Provenance is generated automatically — no --provenance flag is needed when
+# publishing through a trusted publisher from a public repo.
+#
+# The human gate: the `release` environment requires review from claymore666
+# before the publish job starts. That is the deliberate replacement for the
+# YubiKey touch a local `npm publish` used to demand. Its deployment branch
+# policy allows only `v*` tags and `main`, so a run from `dev` or a feature
+# branch is refused by GitHub before any job starts.
+#
+# Local `npm publish` still works as a fallback — interactive publishing with
+# 2FA is unaffected by the token restriction. See docs/release-runbook.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — check packaging and workflow wiring, upload nothing (does NOT exercise OIDC)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Two runs publishing the same version would race; npm would reject the second
+# with 403 (versions are immutable), but a half-finished release is worse than
+# a queued one.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  # Everything that can fail WITHOUT a human present runs first, deliberately
+  # outside the `release` environment. Asking someone to approve a deployment
+  # and only then discovering the tests are red wastes the one thing the gate
+  # is spending: attention.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The tag is what humans read; package.json is what npm publishes. If
+      # they disagree, v1.9.1 ships the contents of 1.9.0 under the wrong name
+      # and npm versions are immutable — there is no taking it back.
+      - name: Tag and package version must agree
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          pkg="v$(node -p "require('./package.json').version")"
+          echo "tag=$TAG package.json=$pkg"
+          if [ "$TAG" != "$pkg" ]; then
+            echo "::error::Tag $TAG does not match package.json $pkg. Refusing to publish."
+            exit 1
+          fi
+
+      - name: Version sync check
+        run: npm run check:versions
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Test
+        run: npm test -- --coverage
+
+      # `files` ships dist/ only. Printing the tarball contents here means a
+      # packaging mistake is visible in the log BEFORE anyone approves.
+      - name: Show what would be published
+        run: npm pack --dry-run
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Requires review from claymore666 before this job starts, and npm matches
+    # this environment name against the OIDC claim.
+    environment: release
+    permissions:
+      contents: read
+      # Mints the OIDC token npm exchanges for a short-lived publish
+      # credential. Without it there is no trusted publishing at all.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # registry-url is required: it writes the .npmrc that points the CLI at
+      # the registry the OIDC credential is valid for.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      # Trusted publishing needs npm >= 11.5.1. Node 24 ships a new enough npm
+      # today, but assert it rather than discover the failure mid-release.
+      - name: Check npm supports trusted publishing
+        run: |
+          set -euo pipefail
+          have=$(npm --version)
+          echo "npm $have"
+          # String concatenation rather than template literals: shellcheck
+          # cannot tell a JS `${…}` inside a single-quoted heredoc from a shell
+          # expansion that will not expand, and flags SC2016.
+          node -e '
+            const have = process.argv[1], want = "11.5.1";
+            const cmp = (a, b) => a.split(".").map(Number)
+              .reduce((r, n, i) => r !== 0 ? r : n - Number(b.split(".")[i]), 0);
+            if (cmp(have, want) < 0) {
+              console.error("::error::npm " + have + " is older than " + want +
+                "; trusted publishing needs " + want + " or newer");
+              process.exit(1);
+            }
+          ' "$have"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # No --provenance flag and no NODE_AUTH_TOKEN: trusted publishing
+      # generates provenance on its own, and supplying a token here would
+      # defeat the point of having disallowed them.
+      - name: Publish to npm
+        id: publish
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run — validating the tarball and OIDC setup, uploading nothing."
+            npm publish --dry-run
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            npm publish
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A publish that silently lands without provenance would still look like
+      # success, and `signed_releases` would be a claim we could not back.
+      - name: Verify provenance landed
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          # The registry is read-your-writes for a fresh version, but give the
+          # CDN a moment before calling it a failure.
+          seen=0
+          for attempt in 1 2 3 4 5; do
+            if npm view "ccu-mcp@${version}" --json > view.json 2>/dev/null; then
+              seen=1
+              break
+            fi
+            echo "attempt ${attempt}: version not visible yet, waiting"
+            sleep 10
+          done
+          if [ "$seen" -ne 1 ]; then
+            echo "::error::ccu-mcp@${version} did not become visible on the registry; cannot confirm provenance."
+            exit 1
+          fi
+          node -e '
+            const v = require("./view.json");
+            if (!v.dist || !v.dist.attestations) {
+              console.error("::error::ccu-mcp@" + v.version + " published WITHOUT provenance attestations.");
+              process.exit(1);
+            }
+            console.log("provenance present:", JSON.stringify(v.dist.attestations));
+          '
+
+      - name: Summary
+        if: always()
+        env:
+          PUBLISHED: ${{ steps.publish.outputs.published }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          {
+            if [ "$PUBLISHED" = "true" ]; then
+              echo "### Published \`ccu-mcp@${version}\` with provenance"
+              echo
+              echo "https://www.npmjs.com/package/ccu-mcp/v/${version}"
+            else
+              echo "### Dry run for \`ccu-mcp@${version}\` — nothing uploaded"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

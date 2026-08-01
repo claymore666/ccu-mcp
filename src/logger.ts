@@ -9,12 +9,18 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 
 const REDACTED_KEYS = new Set(["password", "_session_id_", "MCP_AUTH_TOKEN"]);
 
+// Object.fromEntries, not `result[key] = …`: assignment routes a "__proto__"
+// key through Object.prototype's setter instead of creating an own property,
+// so that field silently vanished from the log line. Losing a field from the
+// diagnostic path is the opposite of what a logger is for. Redaction itself
+// was never affected — a secret-named key is still masked either way.
 function redact(obj: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(obj)) {
-    result[key] = REDACTED_KEYS.has(key) ? "[REDACTED]" : redactValue(value);
-  }
-  return result;
+  return Object.fromEntries(
+    Object.entries(obj).map(([key, value]) => [
+      key,
+      REDACTED_KEYS.has(key) ? "[REDACTED]" : redactValue(value),
+    ]),
+  );
 }
 
 // Recurse through both objects AND arrays so a secret-named key nested inside an
@@ -40,15 +46,16 @@ export class Logger {
   private log(level: LogLevel, msg: string, data?: Record<string, unknown>): void {
     if (LEVEL_PRIORITY[level] > this.level) return;
 
+    // Spread, not Object.assign: assign copies with [[Set]], which routes a
+    // "__proto__" key through the target's prototype setter and drops the
+    // field — the same trap redact() itself had. Object spread uses
+    // CreateDataProperty, so the key lands as an own property.
     const entry: Record<string, unknown> = {
       ts: new Date().toISOString(),
       level,
       msg,
+      ...(data ? redact(data) : {}),
     };
-
-    if (data) {
-      Object.assign(entry, redact(data));
-    }
 
     // Write to stderr so it doesn't interfere with stdio MCP transport on stdout
     process.stderr.write(JSON.stringify(entry) + "\n");

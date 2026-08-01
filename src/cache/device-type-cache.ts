@@ -50,22 +50,30 @@ function parseTclList(input: string): string[] {
   return items;
 }
 
+// Object.fromEntries, not `params[p.ID] = …`. p.ID is whatever the CCU named
+// the parameter, so it is network input: an ID of "__proto__" went through
+// Object.prototype's setter rather than becoming an own property and dropped
+// out of the cached schema entirely — and if it were the only parameter, the
+// `Object.keys(params).length > 0` guard below would then discard the whole
+// paramset. Real HomeMatic parameter names are uppercase identifiers, so this
+// is robustness rather than a live bug.
 function parseParamDescriptions(descArray: RawParamDesc[]): Record<string, CachedParamDescription> {
-  const params: Record<string, CachedParamDescription> = {};
-  for (const p of descArray) {
-    params[p.ID] = {
-      type: p.TYPE,
-      operations: parseInt(p.OPERATIONS, 10),
-      ...(p.MIN !== undefined && { min: Number(p.MIN) }),
-      ...(p.MAX !== undefined && { max: Number(p.MAX) }),
-      ...(p.DEFAULT !== undefined && { default: p.DEFAULT }),
-      ...(p.UNIT && { unit: p.UNIT }),
-      ...(p.VALUE_LIST && {
-        valueList: Array.isArray(p.VALUE_LIST) ? p.VALUE_LIST : parseTclList(p.VALUE_LIST),
-      }),
-    };
-  }
-  return params;
+  return Object.fromEntries(
+    descArray.map((p) => [
+      p.ID,
+      {
+        type: p.TYPE,
+        operations: parseInt(p.OPERATIONS, 10),
+        ...(p.MIN !== undefined && { min: Number(p.MIN) }),
+        ...(p.MAX !== undefined && { max: Number(p.MAX) }),
+        ...(p.DEFAULT !== undefined && { default: p.DEFAULT }),
+        ...(p.UNIT && { unit: p.UNIT }),
+        ...(p.VALUE_LIST && {
+          valueList: Array.isArray(p.VALUE_LIST) ? p.VALUE_LIST : parseTclList(p.VALUE_LIST),
+        }),
+      },
+    ]),
+  );
 }
 
 export class DeviceTypeCache {
@@ -272,7 +280,11 @@ export class DeviceTypeCache {
     session: SessionManager,
     rateLimiter: RateLimiter,
   ): Promise<CachedDeviceType["channels"]> {
-    const out: CachedDeviceType["channels"] = {};
+    // Accumulate in a Map, not a plain object. channelIndex comes from the
+    // CCU's channel address, so it is network input, and `out[channelIndex] =`
+    // would route a "__proto__" index through Object.prototype's setter and
+    // lose the channel. A Map has no such key.
+    const out = new Map<string, CachedDeviceType["channels"][string]>();
 
     for (const channelAddr of channels) {
       const channelIndex = channelAddr.split(":")[1] || "0";
@@ -299,10 +311,10 @@ export class DeviceTypeCache {
 
       // `type` carries the channel address for now; enriched if we ever add
       // real channel-type info.
-      out[channelIndex] = { type: channelAddr, paramsets };
+      out.set(channelIndex, { type: channelAddr, paramsets });
     }
 
-    return out;
+    return Object.fromEntries(out);
   }
 
   /**
