@@ -40,7 +40,10 @@
 # vitest.config.ts declines to set per-file thresholds for the same reason.
 !exempt src/index.ts
 
-src 93.7 91.6
+# src 93.7/91.6 -> 96.3/94.8 (fuzzing PR): RAISED, earned by
+# test/unit/utils-properties.test.ts. The property tests drove src/utils.ts
+# through paths the example-based suite never reached — measured 96.37/94.90.
+src 96.3 94.8
 src/auth 96.8 94.0
 src/cache 99.2 97.7
 src/ccu 91.6 87.1

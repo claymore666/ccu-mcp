@@ -71,7 +71,16 @@ export function extractBearerToken(authHeader: string): string {
  */
 export function normalizeClientIp(remoteAddress: string | undefined): string {
   if (!remoteAddress) return "unknown";
-  return remoteAddress.startsWith("::ffff:") ? remoteAddress.slice("::ffff:".length) : remoteAddress;
+  const ip = remoteAddress.startsWith("::ffff:")
+    ? remoteAddress.slice("::ffff:".length)
+    : remoteAddress;
+  // A bare "::ffff:" stripped to "" and returned an empty host, which defeats
+  // the whole point of the "unknown" fallback: an empty <HOST> field matches no
+  // fail2ban rule, and every such client collapses into one rate-limit bucket.
+  // Not reachable from the network — remoteAddress comes from the OS, which
+  // never reports a bare prefix — but the contract says this is total, so make
+  // it total. Found by the fuzzer (fuzz/corpus/bearer-token/mapped-ip-truncated).
+  return ip === "" ? "unknown" : ip;
 }
 
 /** Format a tool result as MCP text content. */
@@ -132,7 +141,18 @@ const DECIMAL_RE = /^-?(0|[1-9]\d*)(\.\d+)?$/;
 
 export function parseValue(val: unknown): unknown {
   if (val === null || val === undefined) return null;
-  const s = String(val);
+  // String() throws on an object with a non-callable toString and no usable
+  // valueOf (`{"toString": false}` — TypeError: Cannot convert object to
+  // primitive value). That is reachable: this parses JSON-RPC payloads coming
+  // off the network, and a malformed or hostile response would crash the tool
+  // call rather than degrade. Nothing convertible is lost — a value that has
+  // no primitive form is not a CCU scalar. Found by property testing.
+  let s: string;
+  try {
+    s = String(val);
+  } catch {
+    return null;
+  }
   if (s === "") return null;
   if (s === "true") return true;
   if (s === "false") return false;
@@ -159,9 +179,10 @@ export function parseValue(val: unknown): unknown {
  * Parse all values in a flat key-value object (e.g. paramset or datapoints).
  */
 export function parseValues(obj: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    result[k] = parseValue(v);
-  }
-  return result;
+  // Object.fromEntries, not `result[k] = …`. Assignment routes a "__proto__"
+  // key through Object.prototype's [[Set]] accessor instead of creating an own
+  // property, so a paramset containing one silently vanished from the output.
+  // fromEntries uses CreateDataProperty, which defines it as a normal key and
+  // leaves the result's own prototype intact. Found by property testing.
+  return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, parseValue(v)]));
 }

@@ -41,3 +41,8 @@ code-review-report.md
 
 # Drafts of upstream (OCCU/OpenCCU) issue reports — written here, filed there
 occu-issue-*.md
+
+# Fuzzing reproducers (promoted into fuzz/corpus/ when kept)
+findings/
+# libFuzzer default artifact location when -artifact_prefix is not passed
+crash-*
