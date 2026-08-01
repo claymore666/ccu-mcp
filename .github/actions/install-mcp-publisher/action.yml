@@ -1,0 +1,41 @@
+name: Install mcp-publisher
+description: >-
+  Download the pinned mcp-publisher binary and verify it against the checksum
+  published with that release.
+
+# Pinned, not `latest`. Every third-party action in this repo is pinned to a
+# commit SHA so a retargeted tag cannot inject code into CI; a `latest`
+# download URL is the same hazard wearing different clothes — the bytes can
+# change under a stable URL with no diff here. The checksum is the pin.
+#
+# Bumping: pick the new tag, take its line from
+# registry_<version>_checksums.txt in the release assets, and update both
+# inputs together.
+
+inputs:
+  version:
+    description: mcp-publisher release tag to install
+    required: false
+    default: "v1.8.0"
+  sha256:
+    description: Expected SHA-256 of mcp-publisher_linux_amd64.tar.gz
+    required: false
+    default: "1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf"
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify mcp-publisher
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        url="https://github.com/modelcontextprotocol/registry/releases/download/${VERSION}/mcp-publisher_linux_amd64.tar.gz"
+        curl -fsSL "$url" -o mcp-publisher.tar.gz
+        echo "${SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+        tar xzf mcp-publisher.tar.gz mcp-publisher
+        rm -f mcp-publisher.tar.gz
+        chmod +x mcp-publisher
+        ./mcp-publisher --version
