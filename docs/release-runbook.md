@@ -274,6 +274,35 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    **Nothing here needs `mcp-publisher login github` any more.** The
    interactive device-code flow is only for publishing by hand.
 
+   Finally the same job builds the MCPB bundle (`npm run build:mcpb`) and
+   publishes the Smithery listing. All three registries, one approval.
+
+   **Smithery is the one place a stored credential remains.** npm and the MCP
+   registry authenticate by OIDC; Smithery has no OIDC path, and its restricted
+   service tokens cap at a 24-hour TTL — too short to survive between releases.
+   So `SMITHERY_API_KEY` is stored as an **environment** secret on `release`,
+   not a repo secret: only a job naming that environment can read it, and
+   reaching that environment needs a human approval. Rotate it there
+   (Settings → Environments → release → Secrets), never as a repo secret.
+
+   Smithery runs last on purpose — a failure there cannot abort an npm or MCP
+   publish that has already succeeded. If it does fail, everything else is
+   already live and the fix is a local rerun:
+   ```sh
+   npm run build && npm run build:mcpb
+   SMITHERY_API_KEY=… npx @smithery/cli mcp publish ccu-mcp-X.Y.Z.mcpb -n christian-kamien/ccu-mcp
+   ```
+
+   The bundle manifest is **generated** by `scripts/build-mcpb.sh` from
+   `smithery/manifest.template.json`, with the version injected from
+   `package.json`. The template carries no version deliberately — a committed
+   one would be a fourth place the release version lives, and three already
+   need a sync script and a CI gate to stay honest.
+
+   The `description` shown on Smithery is **not** settable from the bundle;
+   it is a web-dashboard field. Re-publishing appears to blank it, so check
+   the listing after a release.
+
    **Rehearsing it, and the limit of a rehearsal.** `workflow_dispatch` on
    `publish.yml` defaults to `dry_run: true`. That checks the workflow wiring,
    the environment gate and the tarball contents, and uploads nothing.
