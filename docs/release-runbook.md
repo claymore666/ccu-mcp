@@ -104,11 +104,19 @@ The registry listing is published from `server.json` with the
 is authorized via GitHub login (OIDC) — the GitHub account must own the
 `claymore666` namespace.
 
-1. `mcp-publisher login github` (interactive; opens a device-code flow).
+**Releases need no login at all.** `publish.yml` runs
+`mcp-publisher login github-oidc`, which exchanges the workflow's OIDC token —
+the same one npm uses — for registry authorisation. Nothing to store, nothing
+to expire.
+
+Only publishing **by hand** needs the interactive flow:
+
+1. `mcp-publisher login github` (opens a device-code flow).
 2. Authorization persists locally; re-login only when the token expires.
 
 The `io.github.<user>/*` namespace maps to the GitHub user, so no DNS TXT
-record is needed (that path is only for custom-domain namespaces).
+record is needed (that path is only for custom-domain namespaces). It is also
+why OIDC works: the repository owner in the claim *is* the namespace owner.
 
 ### Pre-flight validation (do this every release, costs nothing)
 
@@ -247,14 +255,24 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    present, then **waits for your approval** on the `release` environment
    before publishing. Approve it in the run's UI.
 
-   The workflow refuses to publish when the tag and `package.json` disagree,
-   and fails the run if the uploaded version comes back without provenance
-   attestations. `prepublishOnly` re-runs `lint && test` on top of that.
+   That one approval covers **both** registries. After npm, the same job
+   authenticates to the MCP registry with the same OIDC token
+   (`mcp-publisher login github-oidc`) and publishes `server.json`. There is no
+   registry credential to store either: the registry authorises the
+   `io.github.claymore666/*` namespace from the repository owner in the claim.
 
-   Then the MCP registry, from the tagged `main` checkout:
-   ```sh
-   mcp-publisher publish             # reads server.json
-   ```
+   Deliberately one job and one approval, not two. A gate clicked twice per
+   release is a gate that stops being read.
+
+   The workflow refuses to publish when the tag and `package.json` disagree,
+   fails the run if the npm upload comes back without provenance attestations,
+   and fails if the MCP registry does not report the new version as
+   `isLatest`. `prepublishOnly` re-runs `lint && test` on top of all that.
+   `server.json` is validated in the `verify` job, before anyone is asked to
+   approve anything.
+
+   **Nothing here needs `mcp-publisher login github` any more.** The
+   interactive device-code flow is only for publishing by hand.
 
    **Rehearsing it, and the limit of a rehearsal.** `workflow_dispatch` on
    `publish.yml` defaults to `dry_run: true`. That checks the workflow wiring,

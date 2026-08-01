@@ -94,6 +94,15 @@ jobs:
       - name: Show what would be published
         run: npm pack --dry-run
 
+      - name: Install mcp-publisher
+        uses: ./.github/actions/install-mcp-publisher
+
+      # `validate` needs no authentication, so a malformed server.json fails
+      # here rather than after someone has approved the deployment and npm has
+      # already taken an immutable version.
+      - name: Validate server.json
+        run: ./mcp-publisher validate
+
   publish:
     needs: verify
     runs-on: ubuntu-latest
@@ -196,6 +205,57 @@ jobs:
             console.log("provenance present:", JSON.stringify(v.dist.attestations));
           '
 
+      # The MCP registry entry points consumers at the npm package, so npm must
+      # land first. Same job, not a second one, so the release costs ONE
+      # approval rather than two — a gate people click twice per release is a
+      # gate they stop reading.
+      - name: Install mcp-publisher
+        if: steps.publish.outputs.published == 'true'
+        uses: ./.github/actions/install-mcp-publisher
+
+      # Same OIDC token that authenticated npm. The registry authorises the
+      # `io.github.claymore666/*` namespace from the repository owner in the
+      # claim, so there is no registry credential to store either.
+      - name: Authenticate with the MCP registry
+        if: steps.publish.outputs.published == 'true'
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to the MCP registry
+        if: steps.publish.outputs.published == 'true'
+        run: ./mcp-publisher publish
+
+      # A publish that reports success but does not become isLatest leaves
+      # consumers resolving the previous version — the failure mode the release
+      # checklist's fourth target exists to catch.
+      - name: Verify the registry shows this version as latest
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          name=$(node -p "require('./server.json').name")
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=${name}" -o registry.json; then
+              if node -e '
+                const want = process.argv[1];
+                const j = require("./registry.json");
+                const hit = (j.servers || []).find((s) => {
+                  const v = s.version || (s.server && s.server.version);
+                  const meta = s._meta && s._meta["io.modelcontextprotocol.registry/official"];
+                  return v === want && meta && meta.isLatest;
+                });
+                process.exit(hit ? 0 : 1);
+              ' "$version"; then
+                echo "registry reports ${name}@${version} as isLatest"
+                exit 0
+              fi
+            fi
+            echo "attempt ${attempt}: not visible as latest yet, waiting"
+            sleep 15
+          done
+          echo "::error::${name}@${version} did not appear as isLatest on the MCP registry."
+          echo "::error::The registry read path is intermittently flaky — re-check by hand before assuming the publish failed."
+          exit 1
+
       - name: Summary
         if: always()
         env:
@@ -205,9 +265,10 @@ jobs:
           version=$(node -p "require('./package.json').version")
           {
             if [ "$PUBLISHED" = "true" ]; then
-              echo "### Published \`ccu-mcp@${version}\` with provenance"
+              echo "### Published \`ccu-mcp@${version}\`"
               echo
-              echo "https://www.npmjs.com/package/ccu-mcp/v/${version}"
+              echo "- npm, with provenance: https://www.npmjs.com/package/ccu-mcp/v/${version}"
+              echo "- MCP registry: https://registry.modelcontextprotocol.io/v0/servers?search=io.github.claymore666/ccu-mcp"
             else
               echo "### Dry run for \`ccu-mcp@${version}\` — nothing uploaded"
             fi
