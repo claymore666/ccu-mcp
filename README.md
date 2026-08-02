@@ -419,7 +419,21 @@ confirmation, retry semantics) — live in [CHANGELOG.md](CHANGELOG.md).
 - **Found a security problem?** Please don't post it publicly. See
   [SECURITY.md](SECURITY.md) for private reporting.
 - **Want to send a patch?** [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup,
-  the branch to target, and the test policy.
+  the branch to target, the coding standard, and the test policy.
+
+Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+### Project documentation
+
+| Document | What's in it |
+| --- | --- |
+| [ROADMAP.md](ROADMAP.md) | Where the project is going — and what it will deliberately never do |
+| [GOVERNANCE.md](GOVERNANCE.md) | Who decides what, and the known continuity gap |
+| [SECURITY.md](SECURITY.md) | Reporting, security requirements, threat model |
+| [docs/architecture.md](docs/architecture.md) | High-level design and request flow |
+| [docs/assurance-case.md](docs/assurance-case.md) | Why the security requirements hold, with evidence |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
 
 ## Related projects
 

@@ -63,7 +63,9 @@ jobs:
       - name: Version sync check
         run: npm run check:versions
 
-      - name: Type check
+      # oxlint (style/correctness) then tsc over src AND test. Hermetic: every
+      # rule and every opt-out is pinned in .oxlintrc.json, in the commit.
+      - name: Lint and type check
         run: npm run lint
 
       # No separate Build step: package.json's `pretest` already runs

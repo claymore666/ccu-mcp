@@ -12,10 +12,16 @@ describe("RateLimiter", () => {
   it("allows burst of requests up to max", async () => {
     limiter = new RateLimiter(5, 10);
 
-    // Should complete immediately — 5 tokens available
+    // 5 tokens available, so all 5 must be granted without waiting for a
+    // refill. Asserting on elapsed time is the point: without it this test
+    // passes even if the limiter blocks on every acquire, because a slow
+    // acquire still resolves eventually. Refill here is 10/s (100ms apart), so
+    // a single queued token would push this well past the bound.
+    const start = Date.now();
     for (let i = 0; i < 5; i++) {
       await limiter.acquire();
     }
+    expect(Date.now() - start).toBeLessThan(50);
   });
 
   it("queues requests when tokens exhausted", async () => {

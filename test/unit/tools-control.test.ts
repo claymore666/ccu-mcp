@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { inferType } from "../../src/tools/control.js";
 import { createTestServer, callTool, parseToolResult, cleanupDeps } from "./_helpers.js";
 
@@ -174,7 +174,7 @@ describe("set_system_variable handler", () => {
 
   // Last RPC is now the post-write verification, so assert on the setter call itself.
   const lastCallTo = (sessionCall: any, method: string) =>
-    sessionCall.mock.calls.filter((c: unknown[]) => c[0] === method).at(-1);
+    sessionCall.mock.calls.findLast((c: unknown[]) => c[0] === method);
 
   it("uses SysVar.setFloat for enum (LIST) variables and accepts a valid index", async () => {
     const sessionCall = vi.fn().mockImplementation(async (method: string) => {
