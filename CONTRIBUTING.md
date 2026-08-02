@@ -97,12 +97,68 @@ just records you as the author.
 
 ## Code style
 
-- TypeScript, `strict` mode. `npm run lint` must be clean — warnings are not
-  acceptable in merged code.
+The style guide for this project is the
+[Google TypeScript Style Guide](https://google.github.io/styleguide/tsguide.html),
+with two deliberate deviations:
+
+- **Line length 120**, not 80.
+- **Double quotes**, matching the existing tree.
+
+Enforcement is automatic. `npm run lint` runs **[oxlint](https://oxc.rs/docs/guide/usage/linter)**
+over `src`, `test`, `scripts` and `fuzz` before `tsc`, and CI runs the same
+command — so a rule violation fails the build, not review.
+
+```sh
+npm run lint          # oxlint + tsc over src AND test
+npx oxlint --fix src  # auto-fix what is safely fixable
+```
+
+The ruleset lives in [`.oxlintrc.json`](.oxlintrc.json): oxlint's
+`correctness`, `suspicious` and `perf` categories, all as errors. Every
+exception is listed in that file **with the reason it is off** — a rule
+silenced with no note is what review should catch. If a rule is wrong for a
+single line rather than for the project, disable it at that line with
+`// oxlint-disable-next-line <rule>` and a comment saying why.
+
+> Why oxlint and not typescript-eslint: this project builds with TypeScript 7,
+> and typescript-eslint's peer range is `>=4.8.4 <6.1.0`. No release of it
+> supports the compiler we ship on. oxlint parses TypeScript natively and is
+> MIT-licensed.
+
+Beyond the mechanical rules:
+
+- TypeScript, `strict` mode. Warnings are not acceptable in merged code.
 - Match the style of the file you're editing.
 - Comments should explain *why*, not restate *what*. The existing codebase
   leans on this heavily; a comment recording a decision or a trap is valuable,
   a comment narrating the next line is noise.
+
+## Certificate of origin (DCO)
+
+Contributions are accepted under the [Developer Certificate of Origin
+1.1](https://developercertificate.org/). It is a short statement that you wrote
+the patch, or otherwise have the right to submit it under the project's MIT
+licence — please read it once.
+
+Sign off each commit:
+
+```sh
+git commit -s -m "fix: ..."
+```
+
+That appends a line naming you:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+Use your real name and a working email address. Signing off is an assertion
+about *provenance*, not about code quality, and it is separate from the
+AI-attribution rule above: using an assistant to help write a patch is fine,
+and you still sign off, because you are the one submitting it.
+
+There is no CLA, and no copyright assignment. You keep the copyright in what
+you write.
 
 ## Adding or changing a tool
 

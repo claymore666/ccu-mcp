@@ -3,6 +3,45 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## Unreleased
+
+Project documentation and an automated style gate, from a sweep against the
+OpenSSF Best Practices **silver** criteria. No behaviour changes to any tool.
+
+### Added
+
+- **Automated lint gate.** `npm run lint` now runs [oxlint](https://oxc.rs)
+  over `src`, `test`, `scripts` and `fuzz` before `tsc`, with the ruleset and
+  every opt-out recorded in `.oxlintrc.json`. (oxlint rather than
+  typescript-eslint because the latter's peer range stops at TypeScript 6 and
+  this project builds on TypeScript 7.) The gate was mutation-tested before
+  landing.
+- **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1.
+- **`GOVERNANCE.md`** — decision model, roles, and an honest account of the
+  single-maintainer continuity gap.
+- **`ROADMAP.md`** — direction for the next year, and an explicit list of what
+  the project will not do.
+- **`docs/architecture.md`** — components, layers, and the path a tool call
+  takes.
+- **`docs/assurance-case.md`** — threat model, trust boundaries, secure design
+  principles, and the implementation weakness classes countered, each claim
+  pointing at the file or test that backs it.
+- **Security requirements** section in `SECURITY.md`, stating plainly what
+  users can and cannot expect — including that CCU TLS verification is **off by
+  default**.
+- **DCO** — contributions are now signed off (`git commit -s`) under Developer
+  Certificate of Origin 1.1. No CLA, no copyright assignment.
+- Named coding standard (Google TypeScript Style Guide, two documented
+  deviations) in `CONTRIBUTING.md`.
+
+### Fixed
+
+- Two unit tests asserted nothing at all. `RateLimiter` "allows burst up to max"
+  now bounds the elapsed time, and the `ResourcePoller` start/stop test now
+  asserts the pending-timer count — previously both passed even if the
+  behaviour under test was broken. Found by the new lint gate.
+- `readCaCert` now attaches the original error as `cause` when it rethrows.
+
 ## v1.9.1 — 2026-08-01
 
 A supply-chain and verification release. Nothing here changes what the tools do;

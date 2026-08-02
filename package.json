@@ -22,7 +22,7 @@
     "pretest": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "lint": "oxlint src test scripts fuzz && tsc --noEmit && tsc -p tsconfig.test.json",
     "check:versions": "node scripts/check-version-sync.mjs",
     "version": "node scripts/sync-server-version.mjs && git add server.json",
     "prepublishOnly": "npm run check:versions && npm run lint && npm test",
@@ -64,6 +64,7 @@
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.8",
     "fast-check": "^4.9.0",
+    "oxlint": "^1.76.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.8"
   }

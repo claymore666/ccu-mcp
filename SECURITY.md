@@ -44,6 +44,49 @@ branches — older versions exist as tags only.
 ccu-mcp requires Node.js >= 24, and inherits that runtime's own security
 support window.
 
+## Security requirements
+
+What you can and cannot expect from ccu-mcp. The reasoning and the evidence
+behind each of these is in [docs/assurance-case.md](docs/assurance-case.md).
+
+**You can expect that:**
+
+1. Credentials, bearer tokens and CCU session IDs are not written to logs, tool
+   output, error messages, or the on-disk cache in recoverable form. The
+   session cache is written `0600`.
+2. On the HTTP transport, every request is authenticated before it is routed.
+   Cross-origin browser access is denied unless you allowlist an origin, and
+   DNS-rebinding protection is always on.
+3. A CCU marked `READONLY` refuses every write, and one marked `PROTECTED`
+   refuses writes without `confirm: true` — with `run_script` and
+   `delete_system_variable` requiring it on every single call.
+4. Values from the CCU and arguments from the model cannot alter program
+   structure: HM Script is escaped, and caller-supplied keys cannot reach
+   `Object.prototype`.
+5. Configuration that gates safety fails closed. A malformed
+   `CCU_<PROFILE>_PROTECTED` is a startup error, never a silently unprotected
+   CCU.
+6. Releases are signed, published with build provenance, and reproducible from
+   the tagged source.
+
+**You cannot expect that:**
+
+1. **The CCU's TLS certificate is verified by default.** `CCU_TLS_VERIFY`
+   defaults to `false`, because nearly every CCU ships a self-signed
+   certificate. The connection is encrypted but not authenticated unless you
+   pin it with `CCU_TLS_FINGERPRINT` or supply `CCU_CA_CERT`. A warning is
+   logged at startup. **Pin the fingerprint.** Changing this default is on the
+   [roadmap](ROADMAP.md) for a major version.
+2. ccu-mcp adds any authorisation layer above the CCU's own. It acts as the
+   configured CCU user; anything that user may do, a client of this server may
+   do.
+3. The confirmation gate resists a *determined* operator or a model that has
+   been instructed to confirm. It is a guard against accident and confusion,
+   not an authorisation system.
+4. It is safe to expose on the public internet. It is designed for a trusted
+   LAN.
+5. It has had an external security review. It has not.
+
 ## Threat model
 
 ccu-mcp holds credentials for a CCU, and a CCU controls physical devices —
