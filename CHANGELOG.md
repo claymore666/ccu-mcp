@@ -3,11 +3,17 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
-## Unreleased
+## v1.10.0 — 2026-08-18
 
-A published container image, plus project documentation and an automated style
-gate from a sweep against the OpenSSF Best Practices **silver** criteria. No
-behaviour changes to any tool.
+Container images, and a release that publishes itself.
+`docker pull ghcr.io/claymore666/ccu-mcp` now works — for `linux/amd64` and
+`linux/arm64` — and a single approved GitHub Release publishes every target
+(npm, the MCP registry, Smithery, and the image) instead of four commands run
+by hand. The rest is project documentation and CI hardening from a sweep
+against the OpenSSF Best Practices **silver** criteria.
+
+**No behaviour changes to any tool.** The only change under `src/` is one error
+now carrying its `cause`, so upgrading is optional unless you want the image.
 
 ### Added
 
@@ -35,6 +41,16 @@ behaviour changes to any tool.
   than trusting that they did. A local `docker build` without them behaves as
   before.
 
+- **The MCP registry and Smithery publish from the release workflow** (#160,
+  #161), on the same OIDC identity and the same single approval as npm.
+  `mcp-publisher login github` — the interactive device-code flow — is no
+  longer part of a release; the registry authorises the
+  `io.github.claymore666/*` namespace from the repository in the OIDC claim, so
+  there is no credential to store. Smithery has no OIDC path, so its API key
+  remains as an *environment* secret on `release`, readable only by a job that
+  a human approved. Each publish is verified before the run goes green: npm
+  must report provenance attestations, the registry must report the new version
+  as `isLatest`, and the Smithery listing must answer.
 - **Automated lint gate.** `npm run lint` now runs [oxlint](https://oxc.rs)
   over `src`, `test`, `scripts` and `fuzz` before `tsc`, with the ruleset and
   every opt-out recorded in `.oxlintrc.json`. (oxlint rather than
@@ -86,6 +102,20 @@ behaviour changes to any tool.
   asserts the pending-timer count — previously both passed even if the
   behaviour under test was broken. Found by the new lint gate.
 - `readCaCert` now attaches the original error as `cause` when it rethrows.
+
+### Dependencies
+
+- Container base image moved from `node:24-alpine` to **`node:26-alpine`**
+  (#169). The published image therefore runs Node 26; `package.json` still
+  declares `engines: node >=24`, which is what applies when you run the server
+  from npm rather than from the image. The image was built, started and
+  health-checked on both architectures on the new base before this release.
+- `undici` 8.9.0 → 8.10.0, `ip-address` 10.2.0 → 10.4.0 and the transitive
+  advisories cleared with it (#163, #164, #166); dev-only bumps to `oxlint` and
+  `@types/node` (#165, #167, #170).
+- Dependabot now watches the Dockerfile's base image as well as npm and the
+  pinned GitHub Actions — a stale base is something this project ships now, not
+  something a user picks up on their next local build.
 
 ## v1.9.1 — 2026-08-01
 
