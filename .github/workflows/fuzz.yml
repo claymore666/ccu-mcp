@@ -17,12 +17,26 @@ name: Fuzz
 # workflow that mails a failure every time it finds something earns a filter
 # rule within a week, and then the mechanism is dead.
 #
-# Corpus: the committed seeds under fuzz/corpus/ only — nothing is persisted
-# between runs. That is a deliberate trade. These targets are small pure
-# functions, so the marginal value of a grown corpus is low, while a cache is
-# one more moving part that fails silently. The seeds carry the inputs that
-# matter: byte-level mutation will never invent the literal key "__proto__",
-# and without that seed the parse target reports green while testing nothing.
+# Corpus: the committed seeds under fuzz/corpus/, PLUS whatever previous runs
+# discovered, carried in an actions/cache entry (issue #155). The seeds are
+# still the load-bearing half — byte-level mutation will never invent the
+# literal key "__proto__", and without that seed the parse target reports green
+# while testing nothing — so scripts/fuzz.sh still treats a missing seed corpus
+# as a hard failure, cache or no cache.
+#
+# Two properties keep the cache from being the "moving part that fails
+# silently" this was originally rejected for:
+#
+#   - The cache is passed as a SEPARATE directory, listed FIRST, which is where
+#     libFuzzer writes new units. fuzz/corpus/ is never written to, so a bad
+#     cache cannot corrupt the reviewed seeds — worst case it is empty and the
+#     run degrades to exactly the old behaviour.
+#   - Every PASS line reports how many inputs were carried forward. A cache
+#     that silently stopped round-tripping shows up as that number sitting at
+#     zero run after run, in the step summary, instead of nowhere.
+#
+# Restoring is best-effort by design: `cache` is not `cache/restore` with a
+# fail-on-miss, because a cold cache must never turn a fuzzing night red.
 #
 # Scheduled workflows only run from the DEFAULT branch (`dev`), so this file
 # must be on `dev` to fire at all.
@@ -77,10 +91,35 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Keyed on the run id so it never hits, which is the point: the post-job
+      # save then always writes a fresh entry, and `restore-keys` pulls the most
+      # recent previous one in. A stable key would restore the same first-ever
+      # corpus forever and quietly stop accumulating — the exact silent failure
+      # this workflow's header warns about.
+      #
+      # Scoped to the default branch: scheduled runs are on `dev`, and GitHub
+      # gives every branch read access to the default branch's caches, so a
+      # dispatch from a work branch inherits the corpus without being able to
+      # poison it for `dev`.
+      #
+      # restore/save rather than the combined `cache` action so the save can be
+      # `if: always()`. The run that finds something is the run whose corpus is
+      # most worth keeping, and that is also the run most likely to end red.
+      - name: Restore the accumulated corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fuzz-corpus
+          key: fuzz-corpus-v1-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-v1-
+
       - name: Fuzz
         id: fuzz
         env:
           FUZZ_SECONDS: ${{ github.event.inputs.seconds || '300' }}
+          # Absolute: fuzz.sh resolves the seed corpus relative to its own
+          # location, and a relative value here would land somewhere else.
+          FUZZ_CORPUS_DIR: ${{ github.workspace }}/.fuzz-corpus
         run: |
           set -uo pipefail
 
@@ -106,6 +145,13 @@ jobs:
             grep -E "^(===|PASS|FOUND|FAIL)" fuzz.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the accumulated corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fuzz-corpus
+          key: fuzz-corpus-v1-${{ github.run_id }}
 
       # Reproducers are the whole point of a finding — without the input the
       # report is unactionable.

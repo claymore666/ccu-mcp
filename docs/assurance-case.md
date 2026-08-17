@@ -226,6 +226,8 @@ diverges from the code. Countermeasures:
   directory's tests cannot hide inside a healthy average.
 - Nightly fuzzing runs against a seeded corpus; the seeds are load-bearing, and
   the runner treats a missing corpus as a hard failure rather than a clean run.
+  Inputs discovered by a run accumulate in a cache alongside those seeds, never
+  inside them, so what each night starts from is still a reviewed set.
 
 Where the argument is weakest: it is written and reviewed by one person, and no
 external security review has been performed. Independent review is welcome —
