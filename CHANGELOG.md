@@ -64,6 +64,13 @@ behaviour changes to any tool.
   compounds instead of resetting every night. Every `PASS` line reports how many
   inputs were carried forward, which is what makes a cache that quietly stopped
   round-tripping visible instead of silent.
+- **CodeQL configuration moved into the repository** (#156). It ran as GitHub's
+  *default setup* — effective, but configured in repository settings, so a
+  file-based survey of the project found no scanner at all. It is now
+  `.github/workflows/codeql.yml`: SHA-pinned like every other action and bumped
+  by Dependabot, least-privilege permissions, an explicit timeout, and the
+  `security-extended` query suite instead of the default one. Default setup was
+  disabled in the same change — the two are mutually exclusive.
 
 ### Fixed
 
