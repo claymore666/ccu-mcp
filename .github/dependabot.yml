@@ -10,10 +10,21 @@ updates:
   # The Dockerfile's base image. Now that the image is published rather than
   # built by whoever clones the repo, a stale `node:24-alpine` is something we
   # ship to users rather than something they pick up on their next local build.
+  #
+  # Patches yes, MAJORS no. A Node major is not a dependency bump, it is a
+  # platform decision: it must move together with `engines`, `@types/node` and
+  # every workflow's `node-version` (scripts/check-node-version.mjs enforces
+  # that they agree). #169 auto-merged `node:24-alpine` -> `node:26-alpine`
+  # unattended, and nothing in `build-and-test` builds the Dockerfile, so the
+  # published image would have been the first thing to run that major. Moving
+  # to a new major is one deliberate PR that touches all four places at once.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
 
   # npm deps: security + version updates against the committed lockfile.
   - package-ecosystem: npm
@@ -21,3 +32,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Same reasoning as the base image, from the other side: `@types/node`'s
+      # major IS a Node major. Types from a newer major tell `tsc` that APIs
+      # exist which the Node this project supports does not have, and the type
+      # check is the only place that would notice. It moves with the platform
+      # decision, not on its own schedule.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]

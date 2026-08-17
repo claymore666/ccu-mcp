@@ -422,30 +422,16 @@ jobs:
 
       # Runs the image on its own architecture — the arm64 variant is exercised
       # on an arm64 runner, which is the whole reason for the matrix. The runner
-      # needs no toolchain of its own: node runs inside the image, grep does the
-      # asserting, so this works on any hosted image.
+      # needs no toolchain of its own: node runs inside the image.
+      #
+      # The assertions live in scripts/smoke-image.sh, shared with the
+      # post-publish check in the merge job below (and runnable by hand against
+      # a local `docker build`). Two copies of "is this image any good?" drift;
+      # one does not. It starts the server and waits for the image's own
+      # HEALTHCHECK, so a container that builds but cannot come up fails HERE,
+      # before the push, rather than on a user's first pull.
       - name: Smoke-test the image on its own architecture
-        run: |
-          set -euo pipefail
-          # `docker run <image> --help` does NOT reach the server: node:24-alpine
-          # ships an ENTRYPOINT that turns a leading `-` argument into a `node`
-          # flag, so that prints Node's help and exits 0 — a smoke test that
-          # passes without ever starting this program. Name the command.
-          docker run --rm ccu-mcp:smoke node dist/index.js --help > help.txt
-          grep -q "ccu-mcp" help.txt
-
-          info=$(docker run --rm --entrypoint node ccu-mcp:smoke \
-            -p 'JSON.stringify(require("/app/dist/build-info.json"))')
-          echo "build-info: $info"
-
-          # The failure this catches: a build-arg rename or a .dockerignore
-          # change silently returns the image to reporting nothing about itself,
-          # and nothing else in the release would notice.
-          want="${GITHUB_SHA:0:7}"
-          if ! printf '%s' "$info" | grep -q "\"commit\":\"${want}\""; then
-            echo "::error::Image build-info does not report commit ${want}; BUILD_COMMIT did not reach gen-build-info.mjs."
-            exit 1
-          fi
+        run: EXPECT_COMMIT="${GITHUB_SHA:0:7}" bash scripts/smoke-image.sh ccu-mcp:smoke
 
       # Pushed by digest, not by tag: two architectures pushing to the same tag
       # would race, and the loser's manifest would be the one users pull. The
@@ -593,9 +579,10 @@ jobs:
 
           # Pulls the tag as any user would; on this runner that resolves to the
           # amd64 manifest. The arm64 half was run on an arm64 runner before it
-          # was ever pushed.
-          docker run --rm "${IMAGE}:${version}" node dist/index.js --help > help.txt
-          grep -q "ccu-mcp" help.txt
+          # was ever pushed. Same script as the pre-push smoke test, so what is
+          # asserted about the published tag is what was asserted about the
+          # build — including that the server comes up and /health answers.
+          EXPECT_COMMIT="${GITHUB_SHA:0:7}" bash scripts/smoke-image.sh "${IMAGE}:${version}"
 
       # No `if: always()` here, unlike the npm summary above: this one has
       # nothing to report but success, and printing a `docker pull` line for a

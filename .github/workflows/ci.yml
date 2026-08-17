@@ -63,6 +63,12 @@ jobs:
       - name: Version sync check
         run: npm run check:versions
 
+      # One Node major across the Dockerfile, this file's node-version,
+      # `engines` and `@types/node`. Cheap, and it is the only thing that
+      # notices a base-image bump nothing else here builds.
+      - name: Node version check
+        run: npm run check:node
+
       # oxlint (style/correctness) then tsc over src AND test. Hermetic: every
       # rule and every opt-out is pinned in .oxlintrc.json, in the commit.
       - name: Lint and type check
