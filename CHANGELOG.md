@@ -58,6 +58,13 @@ behaviour changes to any tool.
   Certificate of Origin 1.1. No CLA, no copyright assignment.
 - Named coding standard (Google TypeScript Style Guide, two documented
   deviations) in `CONTRIBUTING.md`.
+- **CodeQL configuration moved into the repository** (#156). It ran as GitHub's
+  *default setup* — effective, but configured in repository settings, so a
+  file-based survey of the project found no scanner at all. It is now
+  `.github/workflows/codeql.yml`: SHA-pinned like every other action and bumped
+  by Dependabot, least-privilege permissions, an explicit timeout, and the
+  `security-extended` query suite instead of the default one. Default setup was
+  disabled in the same change — the two are mutually exclusive.
 
 ### Fixed
 

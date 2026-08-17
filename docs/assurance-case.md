@@ -226,6 +226,10 @@ diverges from the code. Countermeasures:
   directory's tests cannot hide inside a healthy average.
 - Nightly fuzzing runs against a seeded corpus; the seeds are load-bearing, and
   the runner treats a missing corpus as a hard failure rather than a clean run.
+- CodeQL analyses both the source and the workflows on every PR and weekly, with
+  its configuration in `.github/workflows/codeql.yml` rather than in repository
+  settings — so what is scanned, and with which query suite, is reviewable in a
+  diff instead of visible only to whoever holds admin.
 
 Where the argument is weakest: it is written and reviewed by one person, and no
 external security review has been performed. Independent review is welcome —

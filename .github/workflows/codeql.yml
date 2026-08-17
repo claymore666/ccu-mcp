@@ -1,0 +1,88 @@
+name: CodeQL
+
+# CodeQL ran as GitHub's DEFAULT SETUP until this file existed: configured in
+# repository settings, invisible to anyone reading the repository, and
+# unreviewable in a PR. It worked — it is what caught the js/polynomial-redos in
+# extractBearerToken — but a scanner whose configuration only one person can see
+# is a scanner nobody can check. A file-based survey of this repo missed it
+# entirely and briefly reported "no CodeQL" (issue #156).
+#
+# NON-HERMETIC, like audit.yml and fuzz.yml, and for the same reason: the query
+# packs are downloaded at run time and improve without a diff. A finding can
+# appear on an unchanged tree. Never make this a required status check — that is
+# what build-and-test is for.
+#
+# DEFAULT SETUP AND THIS FILE ARE MUTUALLY EXCLUSIVE. With default setup still
+# enabled the SARIF upload here is rejected outright, so it was disabled in
+# repository settings in the same change that added this file. Re-enabling it
+# would silently break this workflow; if this file is ever deleted, re-enable
+# default setup in Settings → Code security, or the repository ends up with no
+# scanning at all — which looks identical to a clean report.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Weekly, matching what default setup ran. Off the hour: GitHub's cron
+    # queue is heavily oversubscribed at :00. Scheduled workflows only run from
+    # the default branch (`dev`).
+    - cron: "23 4 * * 1"
+
+# Least privilege at the top; the analyze job adds only what it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Upload the SARIF results. This is the one privilege the job exists for.
+      security-events: write
+      # Read workflow run metadata — required by the CodeQL action itself.
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # javascript-typescript covers what default setup listed as three
+          # separate languages (javascript, typescript, javascript-typescript);
+          # they are the same extractor.
+          - language: javascript-typescript
+          # Analysing the workflows themselves is not decoration here: this
+          # repository's release path, publish credentials and gates all live in
+          # .github/workflows, and that is where an injection would matter most.
+          - language: actions
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: ${{ matrix.language }}
+          # No compiled languages here, so there is nothing to build: analysing
+          # the checkout directly is both correct and faster.
+          build-mode: none
+          # Default setup ran the `default` suite. `security-extended` adds the
+          # lower-precision security queries — more findings to triage, which is
+          # the trade being made deliberately: this is a network-facing server
+          # that parses whatever a CCU sends back, and the alerts land in a
+          # dashboard rather than turning branches red.
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: "/language:${{ matrix.language }}"
