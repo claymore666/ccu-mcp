@@ -1,4 +1,4 @@
-FROM node:24-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -17,7 +17,7 @@ ENV BUILD_COMMIT=${BUILD_COMMIT} \
     BUILD_TAG=${BUILD_TAG}
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:26-alpine
 # `image.source` is not decoration: GHCR links a package to a repository by this
 # label, and that link is what carries the README, the licence and the "published
 # by" provenance on the package page. Without it the image floats unattached.
