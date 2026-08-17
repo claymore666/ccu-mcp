@@ -1,4 +1,10 @@
-FROM node:26-alpine AS builder
+# Node 24, not the newest tag. This project runs ONE Node major everywhere —
+# `engines`, `@types/node`, every workflow's `node-version` and both stages
+# here — and 24 is the one under Active LTS support (26 becomes LTS in October
+# 2026). It is also the only major the test suite ever executes on, so a base
+# image ahead of it would ship users a configuration nothing here has run.
+# scripts/check-node-version.mjs fails the build if these four drift apart.
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -17,7 +23,7 @@ ENV BUILD_COMMIT=${BUILD_COMMIT} \
     BUILD_TAG=${BUILD_TAG}
 RUN npm run build
 
-FROM node:26-alpine
+FROM node:24-alpine
 # `image.source` is not decoration: GHCR links a package to a repository by this
 # label, and that link is what carries the README, the licence and the "published
 # by" provenance on the package page. Without it the image floats unattached.

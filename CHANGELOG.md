@@ -40,6 +40,23 @@ now carrying its `cause`, so upgrading is optional unless you want the image.
   now carry the commit and tag in, and the release asserts they arrived rather
   than trusting that they did. A local `docker build` without them behaves as
   before.
+- **A release starts the image and waits for it to report healthy** — on each
+  architecture before the push, and once more against the published tag
+  afterwards. The image's own `HEALTHCHECK` has to go green and `/health` has
+  to answer on the *published* port, which is the part an in-container probe
+  cannot vouch for. `scripts/smoke-image.sh` holds the assertions, so the
+  pre-push and post-publish checks cannot drift apart and you can run the same
+  ones against a local build:
+
+  ```sh
+  docker build -t ccu-mcp:local . && bash scripts/smoke-image.sh ccu-mcp:local
+  ```
+- **One Node major, enforced.** `npm run check:node` fails the build when the
+  Dockerfile, the workflows' `node-version`, `engines` and `@types/node` stop
+  naming the same major. The Node version lives in four files that no single
+  change touches and nothing in `build-and-test` builds the Dockerfile, so a
+  base-image bump could reach the published image having never run a test —
+  which is exactly what #169 did.
 
 - **The MCP registry and Smithery publish from the release workflow** (#160,
   #161), on the same OIDC identity and the same single approval as npm.
@@ -105,17 +122,19 @@ now carrying its `cause`, so upgrading is optional unless you want the image.
 
 ### Dependencies
 
-- Container base image moved from `node:24-alpine` to **`node:26-alpine`**
-  (#169). The published image therefore runs Node 26; `package.json` still
-  declares `engines: node >=24`, which is what applies when you run the server
-  from npm rather than from the image. The image was built, started and
-  health-checked on both architectures on the new base before this release.
+- **The container image runs Node 24**, the Active LTS line, matching
+  `engines: node >=24` and the version CI runs the tests on. A Dependabot PR
+  briefly moved the base to `node:26-alpine` (#169) and was reverted: 26 does
+  not reach LTS until October 2026, and nothing in this project had ever
+  executed a test on it. Moving Node majors is now one deliberate PR that
+  changes all four places together (see *Added*, above).
 - `undici` 8.9.0 → 8.10.0, `ip-address` 10.2.0 → 10.4.0 and the transitive
-  advisories cleared with it (#163, #164, #166); dev-only bumps to `oxlint` and
-  `@types/node` (#165, #167, #170).
+  advisories cleared with it (#163, #164, #166); dev-only bumps to `oxlint`
+  (#165, #170). `@types/node` stays on the 24 line for the reason above.
 - Dependabot now watches the Dockerfile's base image as well as npm and the
   pinned GitHub Actions — a stale base is something this project ships now, not
-  something a user picks up on their next local build.
+  something a user picks up on their next local build. It is configured **not**
+  to propose a `node` or `@types/node` major on its own.
 
 ## v1.9.1 — 2026-08-01
 

@@ -228,6 +228,16 @@ diverges from the code. Countermeasures:
   the runner treats a missing corpus as a hard failure rather than a clean run.
   Inputs discovered by a run accumulate in a cache alongside those seeds, never
   inside them, so what each night starts from is still a reviewed set.
+- The published container image is *run* before it is published, not merely
+  built: on each architecture the release starts it, waits for the image's own
+  `HEALTHCHECK` to report healthy and asks `/health` from outside the container
+  (`scripts/smoke-image.sh`), then repeats that against the published tag. A
+  build that succeeds and a server that comes up are different claims.
+- The platform the image runs on is pinned to the one the tests run on:
+  `scripts/check-node-version.mjs` fails the build if the Dockerfile,
+  `node-version`, `engines` and `@types/node` stop naming the same Node major,
+  and Dependabot is configured not to propose either major unattended. Without
+  it a base-image bump reaches users having executed no test at all.
 - CodeQL analyses both the source and the workflows on every PR and weekly, with
   its configuration in `.github/workflows/codeql.yml` rather than in repository
   settings — so what is scanned, and with which query suite, is reviewable in a

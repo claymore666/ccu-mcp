@@ -24,8 +24,9 @@
     "test:watch": "vitest",
     "lint": "oxlint src test scripts fuzz && tsc --noEmit && tsc -p tsconfig.test.json",
     "check:versions": "node scripts/check-version-sync.mjs",
+    "check:node": "node scripts/check-node-version.mjs",
     "version": "node scripts/sync-server-version.mjs && git add server.json",
-    "prepublishOnly": "npm run check:versions && npm run lint && npm test",
+    "prepublishOnly": "npm run check:versions && npm run check:node && npm run lint && npm test",
     "fuzz": "bash scripts/fuzz.sh",
     "build:mcpb": "bash scripts/build-mcpb.sh"
   },
@@ -61,7 +62,7 @@
   },
   "devDependencies": {
     "@jazzer.js/core": "^4.0.0",
-    "@types/node": "^26.1.0",
+    "@types/node": "^24.13.3",
     "@vitest/coverage-v8": "^4.1.8",
     "fast-check": "^4.9.0",
     "oxlint": "^1.76.0",

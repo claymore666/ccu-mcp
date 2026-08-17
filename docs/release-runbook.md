@@ -311,9 +311,14 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    - One job per architecture on a runner of that architecture (`ubuntu-latest`
      and `ubuntu-24.04-arm`). No QEMU — emulated builds are slow and can fail
      for reasons that have nothing to do with the code.
-   - Each architecture is **built, loaded and run** (`--help`, plus an assert
-     that `build-info.json` carries the release commit) *before* it is pushed.
-     A broken image never reaches the registry.
+   - Each architecture is **built, loaded and run** *before* it is pushed:
+     `scripts/smoke-image.sh` asserts `--help` reaches this program, that
+     `build-info.json` carries the release commit, that the image's own
+     `HEALTHCHECK` reports healthy, and that `/health` answers on the published
+     port. A broken image never reaches the registry. The same script runs
+     again against the published tag, so the pre-push and post-publish checks
+     cannot drift; run it yourself against a local `docker build` with
+     `bash scripts/smoke-image.sh <image>`.
    - Both are pushed **by digest**; `docker-manifest` then assembles them into
      the `X.Y.Z` and `latest` tags, refusing to tag at all if fewer than two
      digests arrived. `latest` is skipped for a GitHub pre-release.
@@ -410,6 +415,8 @@ After publishing:
 | GitHub Release exists but npm/registry don't | published the release before the `publish` commands | run `npm publish` + `mcp-publisher publish` from the tagged checkout |
 | `docker-manifest` fails with "Expected 2 per-architecture digests" | one matrix leg failed; `fail-fast: false` let the other finish | fix the failing architecture and re-run the job — no tag was written, so nothing is half-published |
 | Image smoke test fails on "does not report commit" | `BUILD_COMMIT` stopped reaching `gen-build-info.mjs` (build-arg renamed, `ARG` dropped from the builder stage) | reconcile `Dockerfile` and the `build-args:` block; the image would otherwise ship with null provenance |
+| Image smoke test fails on "never reported healthy" | the server inside the image does not come up — the container logs are printed right below the error | reproduce locally with `bash scripts/smoke-image.sh <image>`; nothing was pushed |
+| `build-and-test` fails on "Node version drift" | the Dockerfile, a workflow's `node-version`, `engines` or `@types/node` disagree on the Node major | move all four in one PR — Dependabot is configured not to propose either major alone |
 | GHCR package page has no README or licence | `org.opencontainers.image.source` label missing or not matching the repo URL | restore the label in the Dockerfile's final stage and re-run the release jobs |
 
 ## Backports between `dev` and `main`
