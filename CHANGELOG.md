@@ -58,9 +58,22 @@ behaviour changes to any tool.
   Certificate of Origin 1.1. No CLA, no copyright assignment.
 - Named coding standard (Google TypeScript Style Guide, two documented
   deviations) in `CONTRIBUTING.md`.
+- **Fuzzing corpus now accumulates between nightly runs** (#155), in an
+  `actions/cache` entry rather than in the repository. Each run starts from the
+  committed seeds *plus* everything previous runs discovered, so coverage
+  compounds instead of resetting every night. Every `PASS` line reports how many
+  inputs were carried forward, which is what makes a cache that quietly stopped
+  round-tripping visible instead of silent.
 
 ### Fixed
 
+- **`npm run fuzz` no longer writes into the committed seed corpus.** Given a
+  single corpus directory libFuzzer treats it as writable, so every local run
+  dropped unreviewed mutation output into `fuzz/corpus/` — inputs that then
+  looked like reviewed seeds in the next `git status`. New units now land in
+  `.fuzz-corpus/` (gitignored); promote one into `fuzz/corpus/` by hand when it
+  is worth keeping. The seeds remain load-bearing and a missing seed corpus is
+  still a hard failure, not a clean run.
 - Two unit tests asserted nothing at all. `RateLimiter` "allows burst up to max"
   now bounds the elapsed time, and the `ResourcePoller` start/stop test now
   asserts the pending-timer count — previously both passed even if the
