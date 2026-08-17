@@ -7,6 +7,14 @@ updates:
     schedule:
       interval: weekly
 
+  # The Dockerfile's base image. Now that the image is published rather than
+  # built by whoever clones the repo, a stale `node:24-alpine` is something we
+  # ship to users rather than something they pick up on their next local build.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
   # npm deps: security + version updates against the committed lockfile.
   - package-ecosystem: npm
     directory: /

@@ -5,13 +5,31 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scripts/ ./scripts/
-# Full build (tsc + build-info stamp). No .git in the build context ⇒ the git
-# fields are null, but dist/build-info.json exists with builtAt, so
-# get_system_info's `build` block works in the image instead of silently
-# reporting nothing. Pass real values by building from a git checkout in CI.
+# Full build (tsc + build-info stamp). `.dockerignore` excludes .git, so the
+# build has no repository to read: without these two the git fields are null and
+# only builtAt survives. The publish workflow passes them, so a released image
+# reports the commit and tag it was built from; a local `docker build` leaves
+# them empty and gets the old null behaviour, which is honest for a build whose
+# source nobody can pin down.
+ARG BUILD_COMMIT=""
+ARG BUILD_TAG=""
+ENV BUILD_COMMIT=${BUILD_COMMIT} \
+    BUILD_TAG=${BUILD_TAG}
 RUN npm run build
 
 FROM node:24-alpine
+# `image.source` is not decoration: GHCR links a package to a repository by this
+# label, and that link is what carries the README, the licence and the "published
+# by" provenance on the package page. Without it the image floats unattached.
+ARG BUILD_COMMIT=""
+ARG BUILD_TAG=""
+LABEL org.opencontainers.image.title="ccu-mcp" \
+      org.opencontainers.image.description="MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API" \
+      org.opencontainers.image.source="https://github.com/claymore666/ccu-mcp" \
+      org.opencontainers.image.documentation="https://github.com/claymore666/ccu-mcp#readme" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.revision="${BUILD_COMMIT}" \
+      org.opencontainers.image.version="${BUILD_TAG}"
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

@@ -107,6 +107,11 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # The container jobs below gate on this rather than re-deriving "was this a
+    # dry run?" from the event. One source of truth for whether anything was
+    # actually released.
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     # Requires review from claymore666 before this job starts, and npm matches
     # this environment name against the OIDC claim.
     environment: release
@@ -326,4 +331,287 @@ jobs:
             else
               echo "### Dry run for \`ccu-mcp@${version}\` — nothing uploaded"
             fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The container image, one job per architecture, each on a runner of that
+  # architecture. No QEMU: emulated arm64 turns a two-minute `npm ci` into
+  # something far worse and, as the arm64 work on docker-net-dhcp measured,
+  # emulation can fail in ways that have nothing to do with the code under
+  # test. GitHub hosts arm64 runners free for public repositories, so the
+  # honest option is also the cheap one.
+  #
+  # `needs: publish`, not `needs: verify`, for two reasons:
+  #   - Ordering. An image for a version npm rejected would be a release target
+  #     that exists nowhere else. Let npm decide first.
+  #   - Approvals. This job deliberately does NOT name the `release`
+  #     environment: it has no stored credential to protect (GHCR takes the
+  #     run's own GITHUB_TOKEN, minted per run and scoped by `permissions`
+  #     below), so a second gate would buy nothing and cost a second click.
+  #     A gate clicked twice per release is a gate that stops being read.
+  #     Waiting on `publish` still puts the human approval upstream of it.
+  #
+  # On a dry run the build and the smoke test still happen — only the push is
+  # skipped. That is the point: a Dockerfile that stopped building is worth
+  # discovering on a dispatch, not during a release.
+  docker:
+    needs: publish
+    strategy:
+      # One architecture failing should not hide the other's verdict.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # Push to GHCR. Note what is NOT here: no `contents: write`, for the same
+      # reason the npm job refuses it.
+      packages: write
+      # Both required by attest-build-provenance: the OIDC token it signs with,
+      # and the attestations API it writes to.
+      id-token: write
+      attestations: write
+    env:
+      # github.repository is already lowercase here; GHCR rejects uppercase in
+      # a repository name, so a fork with a capitalised owner would need `tr`.
+      IMAGE: ghcr.io/${{ github.repository }}
+      PUSH: ${{ needs.publish.outputs.published == 'true' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Built and tested BEFORE the push, so a broken image never reaches the
+      # registry — GHCR tags are mutable, but a bad `:latest` that someone
+      # pulled is not un-pulled by fixing it afterwards.
+      #
+      # `.dockerignore` excludes .git, so the build cannot read the repository:
+      # BUILD_COMMIT/BUILD_TAG are how the image learns what it was built from.
+      # Without them every published image reports null provenance from
+      # get_system_info. The smoke test below asserts they actually landed.
+      - name: Build this architecture and load it locally
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          # buildx's own provenance attestation would wrap a single-platform
+          # build in an index and break push-by-digest below. GitHub's
+          # attestation (further down) is the one this release actually makes.
+          provenance: false
+          load: true
+          tags: ccu-mcp:smoke
+
+      # Runs the image on its own architecture — the arm64 variant is exercised
+      # on an arm64 runner, which is the whole reason for the matrix. The runner
+      # needs no toolchain of its own: node runs inside the image, grep does the
+      # asserting, so this works on any hosted image.
+      - name: Smoke-test the image on its own architecture
+        run: |
+          set -euo pipefail
+          # `docker run <image> --help` does NOT reach the server: node:24-alpine
+          # ships an ENTRYPOINT that turns a leading `-` argument into a `node`
+          # flag, so that prints Node's help and exits 0 — a smoke test that
+          # passes without ever starting this program. Name the command.
+          docker run --rm ccu-mcp:smoke node dist/index.js --help > help.txt
+          grep -q "ccu-mcp" help.txt
+
+          info=$(docker run --rm --entrypoint node ccu-mcp:smoke \
+            -p 'JSON.stringify(require("/app/dist/build-info.json"))')
+          echo "build-info: $info"
+
+          # The failure this catches: a build-arg rename or a .dockerignore
+          # change silently returns the image to reporting nothing about itself,
+          # and nothing else in the release would notice.
+          want="${GITHUB_SHA:0:7}"
+          if ! printf '%s' "$info" | grep -q "\"commit\":\"${want}\""; then
+            echo "::error::Image build-info does not report commit ${want}; BUILD_COMMIT did not reach gen-build-info.mjs."
+            exit 1
+          fi
+
+      # Pushed by digest, not by tag: two architectures pushing to the same tag
+      # would race, and the loser's manifest would be the one users pull. The
+      # merge job below assembles both digests into one manifest list, which is
+      # what makes `docker pull` resolve per-architecture. A cache hit on the
+      # build above — the layers are already here.
+      - name: Push this architecture by digest
+        id: build
+        if: env.PUSH == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          provenance: false
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      # Attested per architecture, not once for the index: `docker pull`
+      # resolves a multi-arch tag down to the manifest for the puller's
+      # platform, so that digest is what `gh attestation verify` is handed. An
+      # index-only attestation verifies for nobody.
+      - name: Attest build provenance
+        if: env.PUSH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Export the digest for the merge job
+        if: env.PUSH == 'true'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/digests"
+          # The filename IS the payload — empty file, digest as its name.
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        if: env.PUSH == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Turns the two per-architecture digests into the manifest list users actually
+  # pull. Until this runs the digests are unreferenced by any tag — a failure
+  # here leaves the registry with no half-published tag, only garbage the
+  # registry collects.
+  docker-manifest:
+    needs: [publish, docker]
+    if: needs.publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+      # Empty on workflow_dispatch, "false" for a normal release.
+      PRERELEASE: ${{ github.event.release.prerelease }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the manifest list
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('${GITHUB_WORKSPACE}/package.json').version")
+
+          # nullglob so an empty directory yields no refs rather than the
+          # literal "*", which would reach `imagetools create` as a bogus tag.
+          shopt -s nullglob
+          refs=()
+          for digest in *; do
+            refs+=("${IMAGE}@sha256:${digest}")
+          done
+          # Two architectures in, two digests out. Fewer means a matrix leg
+          # failed and fail-fast: false let the rest of the run continue —
+          # publishing a single-architecture image under the release tag is
+          # exactly the silent degradation to refuse.
+          if [ "${#refs[@]}" -ne 2 ]; then
+            echo "::error::Expected 2 per-architecture digests, found ${#refs[@]}. Refusing to tag a partial image."
+            exit 1
+          fi
+
+          tags=(-t "${IMAGE}:${version}")
+          # `latest` must not move backwards onto a pre-release. There are none
+          # today; this costs one line and removes the trap.
+          if [ "${PRERELEASE}" != "true" ]; then
+            tags+=(-t "${IMAGE}:latest")
+          else
+            echo "Pre-release — tagging ${version} only, leaving :latest where it is."
+          fi
+
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+
+      # The tag existing is not the claim being made. The claim is that pulling
+      # it on either architecture gets a working server, so read the published
+      # index back and run what came out of it.
+      - name: Verify the published image
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+
+          docker buildx imagetools inspect "${IMAGE}:${version}" --raw > index.json
+          node -e '
+            const index = require("./index.json");
+            const have = (index.manifests || [])
+              .map((m) => m.platform)
+              .filter((p) => p && p.os === "linux" && p.architecture !== "unknown")
+              .map((p) => p.architecture)
+              .sort();
+            const want = ["amd64", "arm64"];
+            if (JSON.stringify(have) !== JSON.stringify(want)) {
+              console.error("::error::Published index covers " + JSON.stringify(have) +
+                ", expected " + JSON.stringify(want));
+              process.exit(1);
+            }
+            console.log("index covers:", have.join(", "));
+          '
+
+          # Pulls the tag as any user would; on this runner that resolves to the
+          # amd64 manifest. The arm64 half was run on an arm64 runner before it
+          # was ever pushed.
+          docker run --rm "${IMAGE}:${version}" node dist/index.js --help > help.txt
+          grep -q "ccu-mcp" help.txt
+
+      # No `if: always()` here, unlike the npm summary above: this one has
+      # nothing to report but success, and printing a `docker pull` line for a
+      # tag that failed to publish would be worse than printing nothing.
+      - name: Summary
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          {
+            echo "### Container image"
+            echo
+            echo '```sh'
+            echo "docker pull ${IMAGE}:${version}"
+            echo '```'
+            echo
+            echo "- Package: https://github.com/${GITHUB_REPOSITORY}/pkgs/container/$(basename "${GITHUB_REPOSITORY}")"
+            echo "- Platforms: linux/amd64, linux/arm64 — built natively, attested per architecture"
+            echo "- Verify: \`gh attestation verify oci://${IMAGE}:${version} --repo ${GITHUB_REPOSITORY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
