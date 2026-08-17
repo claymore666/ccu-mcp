@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { withRetry } from "../../src/middleware/retry.js";
 import { CcuError } from "../../src/middleware/error-mapper.js";
 import { Logger } from "../../src/logger.js";

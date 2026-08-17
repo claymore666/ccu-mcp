@@ -46,3 +46,10 @@ occu-issue-*.md
 findings/
 # libFuzzer default artifact location when -artifact_prefix is not passed
 crash-*
+# Corpus accumulated across runs (FUZZ_CORPUS_DIR). CI keeps this in an
+# actions/cache entry; anything worth keeping permanently gets promoted into
+# fuzz/corpus/ by hand, where it is reviewed like any other committed input.
+.fuzz-corpus/
+
+# MCPB bundles built by scripts/build-mcpb.sh
+*.mcpb

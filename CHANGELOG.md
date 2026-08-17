@@ -3,6 +3,120 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.10.0 — 2026-08-18
+
+Container images, and a release that publishes itself.
+`docker pull ghcr.io/claymore666/ccu-mcp` now works — for `linux/amd64` and
+`linux/arm64` — and a single approved GitHub Release publishes every target
+(npm, the MCP registry, Smithery, and the image) instead of four commands run
+by hand. The rest is project documentation and CI hardening from a sweep
+against the OpenSSF Best Practices **silver** criteria.
+
+**No behaviour changes to any tool.** The only change under `src/` is one error
+now carrying its `cause`, so upgrading is optional unless you want the image.
+
+### Added
+
+- **Container images on GHCR.** `docker pull ghcr.io/claymore666/ccu-mcp`
+  replaces cloning the repository to build one, for `linux/amd64` and
+  `linux/arm64` — so the image runs on a Raspberry Pi next to the CCU.
+  Published by the release workflow from the same GitHub Release and the same
+  single approval as npm, the MCP registry and Smithery.
+
+  Each architecture is built **natively** on a runner of that architecture (no
+  QEMU), started and exercised before anything is pushed, and carries a
+  [build provenance attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
+  verifiable with:
+
+  ```sh
+  gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:latest --repo claymore666/ccu-mcp
+  ```
+
+  `docker-compose.yml` now pulls the published image; swap in `build: .` to run
+  a checkout instead.
+- **Images know what they were built from.** `get_system_info`'s `build` block
+  reported nulls in any container, because `.dockerignore` excludes `.git` and
+  the build had no repository to read. `BUILD_COMMIT` / `BUILD_TAG` build args
+  now carry the commit and tag in, and the release asserts they arrived rather
+  than trusting that they did. A local `docker build` without them behaves as
+  before.
+
+- **The MCP registry and Smithery publish from the release workflow** (#160,
+  #161), on the same OIDC identity and the same single approval as npm.
+  `mcp-publisher login github` — the interactive device-code flow — is no
+  longer part of a release; the registry authorises the
+  `io.github.claymore666/*` namespace from the repository in the OIDC claim, so
+  there is no credential to store. Smithery has no OIDC path, so its API key
+  remains as an *environment* secret on `release`, readable only by a job that
+  a human approved. Each publish is verified before the run goes green: npm
+  must report provenance attestations, the registry must report the new version
+  as `isLatest`, and the Smithery listing must answer.
+- **Automated lint gate.** `npm run lint` now runs [oxlint](https://oxc.rs)
+  over `src`, `test`, `scripts` and `fuzz` before `tsc`, with the ruleset and
+  every opt-out recorded in `.oxlintrc.json`. (oxlint rather than
+  typescript-eslint because the latter's peer range stops at TypeScript 6 and
+  this project builds on TypeScript 7.) The gate was mutation-tested before
+  landing.
+- **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1.
+- **`GOVERNANCE.md`** — decision model, roles, and an honest account of the
+  single-maintainer continuity gap.
+- **`ROADMAP.md`** — direction for the next year, and an explicit list of what
+  the project will not do.
+- **`docs/architecture.md`** — components, layers, and the path a tool call
+  takes.
+- **`docs/assurance-case.md`** — threat model, trust boundaries, secure design
+  principles, and the implementation weakness classes countered, each claim
+  pointing at the file or test that backs it.
+- **Security requirements** section in `SECURITY.md`, stating plainly what
+  users can and cannot expect — including that CCU TLS verification is **off by
+  default**.
+- **DCO** — contributions are now signed off (`git commit -s`) under Developer
+  Certificate of Origin 1.1. No CLA, no copyright assignment.
+- Named coding standard (Google TypeScript Style Guide, two documented
+  deviations) in `CONTRIBUTING.md`.
+- **Fuzzing corpus now accumulates between nightly runs** (#155), in an
+  `actions/cache` entry rather than in the repository. Each run starts from the
+  committed seeds *plus* everything previous runs discovered, so coverage
+  compounds instead of resetting every night. Every `PASS` line reports how many
+  inputs were carried forward, which is what makes a cache that quietly stopped
+  round-tripping visible instead of silent.
+- **CodeQL configuration moved into the repository** (#156). It ran as GitHub's
+  *default setup* — effective, but configured in repository settings, so a
+  file-based survey of the project found no scanner at all. It is now
+  `.github/workflows/codeql.yml`: SHA-pinned like every other action and bumped
+  by Dependabot, least-privilege permissions, an explicit timeout, and the
+  `security-extended` query suite instead of the default one. Default setup was
+  disabled in the same change — the two are mutually exclusive.
+
+### Fixed
+
+- **`npm run fuzz` no longer writes into the committed seed corpus.** Given a
+  single corpus directory libFuzzer treats it as writable, so every local run
+  dropped unreviewed mutation output into `fuzz/corpus/` — inputs that then
+  looked like reviewed seeds in the next `git status`. New units now land in
+  `.fuzz-corpus/` (gitignored); promote one into `fuzz/corpus/` by hand when it
+  is worth keeping. The seeds remain load-bearing and a missing seed corpus is
+  still a hard failure, not a clean run.
+- Two unit tests asserted nothing at all. `RateLimiter` "allows burst up to max"
+  now bounds the elapsed time, and the `ResourcePoller` start/stop test now
+  asserts the pending-timer count — previously both passed even if the
+  behaviour under test was broken. Found by the new lint gate.
+- `readCaCert` now attaches the original error as `cause` when it rethrows.
+
+### Dependencies
+
+- Container base image moved from `node:24-alpine` to **`node:26-alpine`**
+  (#169). The published image therefore runs Node 26; `package.json` still
+  declares `engines: node >=24`, which is what applies when you run the server
+  from npm rather than from the image. The image was built, started and
+  health-checked on both architectures on the new base before this release.
+- `undici` 8.9.0 → 8.10.0, `ip-address` 10.2.0 → 10.4.0 and the transitive
+  advisories cleared with it (#163, #164, #166); dev-only bumps to `oxlint` and
+  `@types/node` (#165, #167, #170).
+- Dependabot now watches the Dockerfile's base image as well as npm and the
+  pinned GitHub Actions — a stale base is something this project ships now, not
+  something a user picks up on their next local build.
+
 ## v1.9.1 — 2026-08-01
 
 A supply-chain and verification release. Nothing here changes what the tools do;

@@ -20,8 +20,12 @@ describe("ResourcePoller", () => {
     const mocks = createMocks();
     const poller = new ResourcePoller(mocks.notify, () => mocks.session, mocks.rateLimiter, logger, 30);
     poller.start();
+    // Under fake timers the pending-timer count is observable, so assert it
+    // rather than trusting "it didn't throw" — a stop() that failed to clear
+    // the interval would leak a timer and this test would still have passed.
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
     poller.stop();
-    // No throw, timer cleaned up
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("does not emit event on first poll (no previous hash)", async () => {
@@ -73,9 +77,7 @@ describe("ResourcePoller", () => {
 
   it("failure in one resource does not stop polling others", async () => {
     const mocks = createMocks();
-    let callIdx = 0;
     mocks.session.call.mockImplementation(async (method: string) => {
-      callIdx++;
       if (method === "Device.listAllDetail") throw new Error("fail");
       return [];
     });

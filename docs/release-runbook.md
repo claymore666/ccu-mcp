@@ -2,10 +2,11 @@
 
 How to publish a `vX.Y.Z` of `ccu-mcp`. The release is **manual** —
 there is no release workflow (CI only builds and tests). The publish
-targets are **npm** (`npx ccu-mcp`, the primary install path) and the
-**official MCP registry** (`registry.modelcontextprotocol.io`). The Docker
-image is build-your-own (`docker-compose` builds from source); nothing is
-pushed to a container registry, so there is no image-publish step.
+targets are **npm** (`npx ccu-mcp`, the primary install path), the
+**official MCP registry** (`registry.modelcontextprotocol.io`), **Smithery**,
+and the **container image** on GHCR (`ghcr.io/claymore666/ccu-mcp`,
+`linux/amd64` + `linux/arm64`). All four are published by `publish.yml` from
+the one GitHub Release, behind one approval.
 
 The goal: a release is a tag plus two `publish` commands, with version
 numbers that agree everywhere before any of it happens.
@@ -104,11 +105,19 @@ The registry listing is published from `server.json` with the
 is authorized via GitHub login (OIDC) — the GitHub account must own the
 `claymore666` namespace.
 
-1. `mcp-publisher login github` (interactive; opens a device-code flow).
+**Releases need no login at all.** `publish.yml` runs
+`mcp-publisher login github-oidc`, which exchanges the workflow's OIDC token —
+the same one npm uses — for registry authorisation. Nothing to store, nothing
+to expire.
+
+Only publishing **by hand** needs the interactive flow:
+
+1. `mcp-publisher login github` (opens a device-code flow).
 2. Authorization persists locally; re-login only when the token expires.
 
 The `io.github.<user>/*` namespace maps to the GitHub user, so no DNS TXT
-record is needed (that path is only for custom-domain namespaces).
+record is needed (that path is only for custom-domain namespaces). It is also
+why OIDC works: the repository owner in the claim *is* the namespace owner.
 
 ### Pre-flight validation (do this every release, costs nothing)
 
@@ -247,14 +256,80 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    present, then **waits for your approval** on the `release` environment
    before publishing. Approve it in the run's UI.
 
-   The workflow refuses to publish when the tag and `package.json` disagree,
-   and fails the run if the uploaded version comes back without provenance
-   attestations. `prepublishOnly` re-runs `lint && test` on top of that.
+   That one approval covers **every** publish target. After npm, the same job
+   authenticates to the MCP registry with the same OIDC token
+   (`mcp-publisher login github-oidc`) and publishes `server.json`. There is no
+   registry credential to store either: the registry authorises the
+   `io.github.claymore666/*` namespace from the repository owner in the claim.
 
-   Then the MCP registry, from the tagged `main` checkout:
+   Deliberately one job and one approval, not two. A gate clicked twice per
+   release is a gate that stops being read.
+
+   The workflow refuses to publish when the tag and `package.json` disagree,
+   fails the run if the npm upload comes back without provenance attestations,
+   and fails if the MCP registry does not report the new version as
+   `isLatest`. `prepublishOnly` re-runs `lint && test` on top of all that.
+   `server.json` is validated in the `verify` job, before anyone is asked to
+   approve anything.
+
+   **Nothing here needs `mcp-publisher login github` any more.** The
+   interactive device-code flow is only for publishing by hand.
+
+   Finally the same job builds the MCPB bundle (`npm run build:mcpb`) and
+   publishes the Smithery listing. Then the container jobs run. Four targets,
+   one approval.
+
+   **Smithery is the one place a stored credential remains.** npm and the MCP
+   registry authenticate by OIDC; Smithery has no OIDC path, and its restricted
+   service tokens cap at a 24-hour TTL — too short to survive between releases.
+   So `SMITHERY_API_KEY` is stored as an **environment** secret on `release`,
+   not a repo secret: only a job naming that environment can read it, and
+   reaching that environment needs a human approval. Rotate it there
+   (Settings → Environments → release → Secrets), never as a repo secret.
+
+   Smithery runs last on purpose — a failure there cannot abort an npm or MCP
+   publish that has already succeeded. If it does fail, everything else is
+   already live and the fix is a local rerun:
    ```sh
-   mcp-publisher publish             # reads server.json
+   npm run build && npm run build:mcpb
+   SMITHERY_API_KEY=… npx @smithery/cli mcp publish ccu-mcp-X.Y.Z.mcpb -n christian-kamien/ccu-mcp
    ```
+
+   The bundle manifest is **generated** by `scripts/build-mcpb.sh` from
+   `smithery/manifest.template.json`, with the version injected from
+   `package.json`. The template carries no version deliberately — a committed
+   one would be a fourth place the release version lives, and three already
+   need a sync script and a CI gate to stay honest.
+
+   The `description` shown on Smithery is **not** settable from the bundle;
+   it is a web-dashboard field. Re-publishing appears to blank it, so check
+   the listing after a release.
+
+   **The container image** publishes from the same run, in the `docker` and
+   `docker-manifest` jobs, and needs nothing from you:
+
+   - One job per architecture on a runner of that architecture (`ubuntu-latest`
+     and `ubuntu-24.04-arm`). No QEMU — emulated builds are slow and can fail
+     for reasons that have nothing to do with the code.
+   - Each architecture is **built, loaded and run** (`--help`, plus an assert
+     that `build-info.json` carries the release commit) *before* it is pushed.
+     A broken image never reaches the registry.
+   - Both are pushed **by digest**; `docker-manifest` then assembles them into
+     the `X.Y.Z` and `latest` tags, refusing to tag at all if fewer than two
+     digests arrived. `latest` is skipped for a GitHub pre-release.
+   - Provenance is attested **per architecture** (`actions/attest-build-provenance`,
+     pushed to the registry as a referrer), because `docker pull` resolves a
+     tag to one platform's manifest and that is the digest a verifier sees.
+
+   These jobs deliberately do **not** name the `release` environment. There is
+   no stored credential to protect — GHCR takes the run's own `GITHUB_TOKEN`,
+   scoped by `permissions: packages: write` — and gating on `needs: publish`
+   already puts your approval upstream of the push. One approval per release.
+
+   No GHCR credential, prerequisite or setting exists to maintain. The package
+   links itself to this repository through the `org.opencontainers.image.source`
+   label in the Dockerfile; if that label is ever dropped, the package page
+   loses its README, licence and repository link.
 
    **Rehearsing it, and the limit of a rehearsal.** `workflow_dispatch` on
    `publish.yml` defaults to `dry_run: true`. That checks the workflow wiring,
@@ -308,6 +383,13 @@ After publishing:
   machine pulls and runs it.
 - The MCP registry shows the new version:
   `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=io.github.claymore666/ccu-mcp' | jq '.servers[].version'`.
+- The container image covers both architectures and verifies:
+  ```sh
+  docker buildx imagetools inspect ghcr.io/claymore666/ccu-mcp:X.Y.Z
+  gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:X.Y.Z --repo claymore666/ccu-mcp
+  ```
+  The workflow asserts both of these itself; run them by hand only when
+  something looks wrong.
 - `gh release view vX.Y.Z` shows the notes body.
 - The milestone is closed:
   `gh issue list --milestone vX.Y.Z --state open` — should be empty.
@@ -326,6 +408,9 @@ After publishing:
 | `mcp-publisher publish` rejects the version | `server.json` version ≠ npm package version, or `mcpName` missing in `package.json` | align all three version spots (step 2); ensure `package.json` `mcpName` matches `server.json` `name` |
 | `mcp-publisher` 401 / auth error | publisher login expired | `mcp-publisher login github` again |
 | GitHub Release exists but npm/registry don't | published the release before the `publish` commands | run `npm publish` + `mcp-publisher publish` from the tagged checkout |
+| `docker-manifest` fails with "Expected 2 per-architecture digests" | one matrix leg failed; `fail-fast: false` let the other finish | fix the failing architecture and re-run the job — no tag was written, so nothing is half-published |
+| Image smoke test fails on "does not report commit" | `BUILD_COMMIT` stopped reaching `gen-build-info.mjs` (build-arg renamed, `ARG` dropped from the builder stage) | reconcile `Dockerfile` and the `build-args:` block; the image would otherwise ship with null provenance |
+| GHCR package page has no README or licence | `org.opencontainers.image.source` label missing or not matching the repo URL | restore the label in the Dockerfile's final stage and re-run the release jobs |
 
 ## Backports between `dev` and `main`
 
@@ -342,10 +427,12 @@ When a release-blocking hotfix must land on `main` without going through
 These are in the docker-net-dhcp runbook but don't apply here, noted so their
 absence reads as a decision, not an oversight:
 
-- **Container registry publish (GHCR / Docker Hub), image signing (cosign),
-  SBOM, provenance** — no image is published; the Dockerfile is built locally
-  by `docker-compose`. If a published image is ever added, the GHCR-linking
-  and signing prerequisites from that runbook become relevant.
+- **Docker Hub** — the image publishes to GHCR only. A second registry is a
+  second place a tag can go stale, for an audience GHCR already reaches.
+- **cosign signing, SBOM** — GitHub's build provenance attestation covers what
+  cosign would here (who built it, from which workflow and commit, verifiable
+  with `gh attestation verify`) without a key to hold or rotate. An SBOM is
+  worth adding when something consumes it; nothing does yet.
 - **Versioned docs site (mkdocs / GitHub Pages)** — docs are the README plus
   this `docs/` folder; there's no published site to reconcile.
 - **rc dry-run via the release workflow / coverage ratchet** — there's no

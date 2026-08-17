@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { tryParseJson } from "../../src/tools/diagnostics.js";
 import { createTestServer, callTool, parseToolResult, cleanupDeps } from "./_helpers.js";
 

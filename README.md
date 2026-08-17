@@ -83,11 +83,26 @@ claude mcp add ccu-mcp -- npx ccu-mcp --stdio
 
 Use this if you want the server running independently — for example on a home server, accessible to multiple clients, or when your MCP client supports HTTP remotes.
 
-**1. Start the container:**
+**1. Start the container.** Images are published to GHCR for `linux/amd64` and
+`linux/arm64` (so a Raspberry Pi next to the CCU works), built natively on each
+architecture and attested — `gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:latest --repo claymore666/ccu-mcp`
+proves the image came from this repository's release workflow.
+
+```bash
+docker pull ghcr.io/claymore666/ccu-mcp:latest
+```
+
+Every release also publishes its own `X.Y.Z` tag — pin that instead of `latest`
+if you'd rather upgrade deliberately. To build from source instead:
 
 ```bash
 git clone https://github.com/claymore666/ccu-mcp.git && cd ccu-mcp
-docker build -t ccu-mcp .
+docker build -t ghcr.io/claymore666/ccu-mcp .
+```
+
+Then run it:
+
+```bash
 docker run -d \
   --name ccu-mcp \
   -e CCU_HOST=your-ccu-hostname-or-ip \
@@ -95,7 +110,7 @@ docker run -d \
   -e MCP_ALLOWED_HOSTS=your-server-ip:3000 \
   -v ccu-data:/data \
   -p 3000:3000 \
-  ccu-mcp
+  ghcr.io/claymore666/ccu-mcp:latest
 ```
 
 > **`MCP_ALLOWED_HOSTS` is required for remote clients.** The server's
@@ -419,7 +434,21 @@ confirmation, retry semantics) — live in [CHANGELOG.md](CHANGELOG.md).
 - **Found a security problem?** Please don't post it publicly. See
   [SECURITY.md](SECURITY.md) for private reporting.
 - **Want to send a patch?** [CONTRIBUTING.md](CONTRIBUTING.md) covers the setup,
-  the branch to target, and the test policy.
+  the branch to target, the coding standard, and the test policy.
+
+Everyone taking part is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+### Project documentation
+
+| Document | What's in it |
+| --- | --- |
+| [ROADMAP.md](ROADMAP.md) | Where the project is going — and what it will deliberately never do |
+| [GOVERNANCE.md](GOVERNANCE.md) | Who decides what, and the known continuity gap |
+| [SECURITY.md](SECURITY.md) | Reporting, security requirements, threat model |
+| [docs/architecture.md](docs/architecture.md) | High-level design and request flow |
+| [docs/assurance-case.md](docs/assurance-case.md) | Why the security requirements hold, with evidence |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
 
 ## Related projects
 

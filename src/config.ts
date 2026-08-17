@@ -200,7 +200,7 @@ export function loadConfig(): AppConfig {
     try {
       return readFileSync(path, "utf-8");
     } catch (err) {
-      throw new Error(`${envName} could not be read: ${(err as Error).message}`);
+      throw new Error(`${envName} could not be read: ${(err as Error).message}`, { cause: err });
     }
   };
 

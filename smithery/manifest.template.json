@@ -1,0 +1,106 @@
+{
+  "manifest_version": "0.2",
+  "name": "ccu-mcp",
+  "display_name": "HomeMatic CCU",
+  "description": "Talk to your HomeMatic smart home from any MCP client.",
+  "long_description": "Connects to a HomeMatic CCU's built-in JSON-RPC API and exposes devices, rooms, programs and system variables as MCP tools. No addons, no XML-API, no cloud — a direct connection to the CCU on your local network. Works with debmatic, a CCU3, or OpenCCU (formerly RaspberryMatic).",
+  "author": {
+    "name": "claymore666",
+    "url": "https://github.com/claymore666"
+  },
+  "homepage": "https://github.com/claymore666/ccu-mcp",
+  "documentation": "https://github.com/claymore666/ccu-mcp#readme",
+  "support": "https://github.com/claymore666/ccu-mcp/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/claymore666/ccu-mcp"
+  },
+  "license": "MIT",
+  "keywords": [
+    "homematic",
+    "homematic-ip",
+    "debmatic",
+    "openccu",
+    "raspberrymatic",
+    "smart-home",
+    "home-automation",
+    "ccu",
+    "iot"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server/dist/index.js",
+        "--stdio"
+      ],
+      "env": {
+        "CCU_HOST": "${user_config.ccu_host}",
+        "CCU_PORT": "${user_config.ccu_port}",
+        "CCU_HTTPS": "${user_config.ccu_https}",
+        "CCU_USER": "${user_config.ccu_user}",
+        "CCU_PASSWORD": "${user_config.ccu_password}",
+        "CCU_TLS_VERIFY": "${user_config.ccu_tls_verify}",
+        "CCU_TLS_FINGERPRINT": "${user_config.ccu_tls_fingerprint}"
+      }
+    }
+  },
+  "user_config": {
+    "ccu_host": {
+      "type": "string",
+      "title": "CCU hostname or IP",
+      "description": "Hostname or IP of the CCU on your local network, e.g. debmatic or 192.168.1.10",
+      "required": true,
+      "default": "homematic-ccu"
+    },
+    "ccu_port": {
+      "type": "string",
+      "title": "Port",
+      "description": "443 for HTTPS, 80 for plain HTTP",
+      "required": false,
+      "default": "443"
+    },
+    "ccu_https": {
+      "type": "string",
+      "title": "Use HTTPS",
+      "description": "true or false. Leave true unless the CCU only serves plain HTTP.",
+      "required": false,
+      "default": "true"
+    },
+    "ccu_user": {
+      "type": "string",
+      "title": "CCU username",
+      "description": "A CCU user. USER level is enough for reading; script tools need ADMIN.",
+      "required": true,
+      "default": "Admin"
+    },
+    "ccu_password": {
+      "type": "string",
+      "title": "CCU password",
+      "description": "Password for that CCU user. Stored by your MCP client, never sent anywhere but the CCU.",
+      "sensitive": true,
+      "required": true
+    },
+    "ccu_tls_verify": {
+      "type": "string",
+      "title": "Verify the CCU TLS certificate",
+      "description": "true or false. Most CCUs use a self-signed certificate, so this defaults to false; prefer pinning the fingerprint below instead of disabling verification.",
+      "required": false,
+      "default": "false"
+    },
+    "ccu_tls_fingerprint": {
+      "type": "string",
+      "title": "CCU certificate SHA-256 fingerprint (optional)",
+      "description": "Pin the CCU's certificate. The strongest protection available when the CCU is self-signed. Leave blank to skip pinning.",
+      "required": false,
+      "default": ""
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=24.0.0"
+    }
+  }
+}

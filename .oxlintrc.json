@@ -1,0 +1,79 @@
+{
+  // oxlint is the automated style/correctness gate for this repo (`npm run lint`).
+  //
+  // Why oxlint and not typescript-eslint: this project builds with TypeScript 7,
+  // and typescript-eslint's peer range is `>=4.8.4 <6.1.0`. There is no release
+  // that supports the compiler we ship on. oxlint parses TypeScript natively,
+  // has no TypeScript peer dependency, and is FLOSS (MIT).
+  //
+  // Every entry under "rules" is a deliberate opt-out with the reason recorded
+  // here. A rule silenced with no note is what review should catch — same
+  // discipline as .github/coverage-baseline.txt.
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    // The CCU serialises requests: a burst of parallel calls makes it drop
+    // sessions. Sequential await-in-loop is the deliberate access pattern, not
+    // an oversight. See src/ccu/session.ts and the rate limiter.
+    "no-await-in-loop": "off",
+
+    // CCU JSON-RPC and BidCos paramsets use leading-underscore field names
+    // verbatim. Renaming them would break the wire format.
+    "no-underscore-dangle": "off",
+
+    // Flags `import x from "y"; x.member` where the CJS/ESM interop is correct
+    // here. High false-positive rate against @modelcontextprotocol/sdk.
+    "import/no-named-as-default-member": "off",
+
+    // Purely stylistic: demands an explicit type parameter on every vi.fn().
+    // 118 hits across the suite, no defect-finding value.
+    "vitest/require-mock-type-parameters": "off",
+
+    // The CCU returns several response shapes for the same call, so tests
+    // legitimately branch before asserting. Rewriting them to satisfy the rule
+    // would make them less readable, not more correct.
+    "vitest/no-conditional-expect": "off",
+
+    // Vitest's expect() genuinely accepts a second message argument; this rule
+    // encodes Jest's signature and is a false positive here.
+    "vitest/valid-expect": "off",
+
+    // A bare toThrow() paired with a separate assertion on the error is an
+    // accepted pattern in this suite.
+    "vitest/require-to-throw-message": "off",
+
+    // The e2e suites assert the initialize handshake inside beforeAll, on
+    // purpose: a failed handshake must abort the suite rather than fail every
+    // test in it with the same downstream error.
+    "vitest/no-standalone-expect": "off",
+
+    // Wants .toSorted() over .sort(). The sorts here are on freshly-built local
+    // arrays where mutation is intended and allocation-free.
+    "unicorn/no-array-sort": "off",
+
+    // Stylistic: hoists nested helpers that deliberately close over test state.
+    "unicorn/consistent-function-scoping": "off",
+
+    // The arrays this fires on are process.argv slices and small fixed test
+    // fixtures. Building a Set to replace a linear scan of three elements costs
+    // more than it saves.
+    "unicorn/prefer-set-has": "off",
+
+    // Fires on `transport.onclose = ...`. The MCP SDK's transport is not an
+    // EventTarget — it exposes onclose as a plain callback property, and
+    // addEventListener does not exist on it. False positive.
+    "unicorn/prefer-add-event-listener": "off",
+
+    // Spreading in .map() is exactly how this codebase avoids the prototype-key
+    // defect class fixed in v1.9.1 — object spread uses CreateDataProperty,
+    // while the suggested Object.assign uses [[Set]] and routes __proto__
+    // through Object.prototype's setter. The "inefficient" pattern is the
+    // correct one here. See test/unit/prototype-key-handling.test.ts.
+    "oxc/no-map-spread": "off"
+  },
+  "ignorePatterns": ["dist", "coverage", "node_modules", ".claude", "fuzz/corpus"]
+}
