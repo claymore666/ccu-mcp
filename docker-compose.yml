@@ -1,6 +1,8 @@
 services:
   ccu-mcp:
-    build: .
+    # Published multi-arch (linux/amd64 + linux/arm64) by the release workflow.
+    # Swap for `build: .` to run this checkout instead of the released image.
+    image: ghcr.io/claymore666/ccu-mcp:latest
     restart: unless-stopped
     volumes:
       - ccu-data:/data

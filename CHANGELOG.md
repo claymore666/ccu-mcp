@@ -5,10 +5,35 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
-Project documentation and an automated style gate, from a sweep against the
-OpenSSF Best Practices **silver** criteria. No behaviour changes to any tool.
+A published container image, plus project documentation and an automated style
+gate from a sweep against the OpenSSF Best Practices **silver** criteria. No
+behaviour changes to any tool.
 
 ### Added
+
+- **Container images on GHCR.** `docker pull ghcr.io/claymore666/ccu-mcp`
+  replaces cloning the repository to build one, for `linux/amd64` and
+  `linux/arm64` — so the image runs on a Raspberry Pi next to the CCU.
+  Published by the release workflow from the same GitHub Release and the same
+  single approval as npm, the MCP registry and Smithery.
+
+  Each architecture is built **natively** on a runner of that architecture (no
+  QEMU), started and exercised before anything is pushed, and carries a
+  [build provenance attestation](https://docs.github.com/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
+  verifiable with:
+
+  ```sh
+  gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:latest --repo claymore666/ccu-mcp
+  ```
+
+  `docker-compose.yml` now pulls the published image; swap in `build: .` to run
+  a checkout instead.
+- **Images know what they were built from.** `get_system_info`'s `build` block
+  reported nulls in any container, because `.dockerignore` excludes `.git` and
+  the build had no repository to read. `BUILD_COMMIT` / `BUILD_TAG` build args
+  now carry the commit and tag in, and the release asserts they arrived rather
+  than trusting that they did. A local `docker build` without them behaves as
+  before.
 
 - **Automated lint gate.** `npm run lint` now runs [oxlint](https://oxc.rs)
   over `src`, `test`, `scripts` and `fuzz` before `tsc`, with the ruleset and
