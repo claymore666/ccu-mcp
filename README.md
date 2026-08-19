@@ -253,7 +253,7 @@ installed copy actually is, e.g. after updating:
 
 ```console
 $ npx ccu-mcp@latest --version
-1.8.1
+1.10.0
 ```
 
 Note that a bare `npx ccu-mcp` reuses the copy cached in `~/.npm/_npx` without
@@ -387,6 +387,21 @@ It also ships MCP **prompts** — ready-made workflows you can invoke from clien
 - `good-night` — prepare the house for night
 - `diagnostics` — check for device issues
 - `device-info` — detailed info about a device's capabilities and parameters
+
+The `room` and `device` arguments autocomplete: clients that support
+`completion/complete` offer the rooms and device names this CCU actually has,
+so there's no need to remember how a room was spelled in the WebUI.
+
+### MCP protocol revisions
+
+The server implements revision **`2025-11-25`** and negotiates down for older
+clients (`2025-06-18`, `2025-03-26`, `2024-11-05` are all accepted) — you do
+not need a particular client version. It advertises `tools`, `resources`
+(with `subscribe`), `prompts`, `completions` and `logging`.
+
+Revision `2026-07-28` — per-request protocol version, `server/discover` — is
+not implemented yet: the TypeScript SDK this server is built on does not
+support it at the time of writing, and this server follows the SDK.
 
 ## How it works
 

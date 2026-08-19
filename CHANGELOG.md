@@ -3,17 +3,21 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
-## v1.10.0 — 2026-08-18
+## v1.10.0 — 2026-08-19
 
-Container images, and a release that publishes itself.
+Container images, a release that publishes itself, and a pass over the MCP
+surface.
 `docker pull ghcr.io/claymore666/ccu-mcp` now works — for `linux/amd64` and
 `linux/arm64` — and a single approved GitHub Release publishes every target
 (npm, the MCP registry, Smithery, and the image) instead of four commands run
 by hand. The rest is project documentation and CI hardening from a sweep
 against the OpenSSF Best Practices **silver** criteria.
 
-**No behaviour changes to any tool.** The only change under `src/` is one error
-now carrying its `cause`, so upgrading is optional unless you want the image.
+**No behaviour changes to any tool** — every tool takes the same arguments and
+returns the same results. What changed around them is what a client sees on
+connect: the server now ships instructions, identifies itself with a display
+title, describes its resources in the listing, and can autocomplete prompt
+arguments from the live CCU.
 
 ### Added
 
@@ -74,6 +78,24 @@ now carrying its `cause`, so upgrading is optional unless you want the image.
   typescript-eslint because the latter's peer range stops at TypeScript 6 and
   this project builds on TypeScript 7.) The gate was mutation-tested before
   landing.
+- **Server instructions.** The `initialize` result now carries a short brief:
+  names resolve to addresses for you, reads are safe, writes reach real
+  hardware and a protected CCU needs `confirm: true`. It is the only guidance
+  that reaches the model without it choosing to call `help` first.
+- **Prompt arguments autocomplete** (`completions` capability). The `room`
+  arguments of `room-status` / `set-heating` and `device-info`'s `device` are
+  answered from the live CCU, so a client offers the rooms and devices this
+  installation actually has instead of asking the user to remember how one was
+  spelled in the WebUI. The lists are cached for 60 seconds — a burst of typing
+  is one CCU call, not one per keystroke — and any CCU failure yields no
+  suggestions rather than a failed completion.
+- **The server identifies itself.** `serverInfo` gained `title`
+  ("HomeMatic CCU"), `websiteUrl` and a `description` that mirrors
+  `server.json`, so the registry entry and the live handshake cannot say
+  different things. Prompts gained display titles, and resources now declare a
+  title and `application/json` on the *registration*, which is what puts them
+  in `resources/list` — a client can tell what it is about to fetch without
+  fetching it.
 - **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1.
 - **`GOVERNANCE.md`** — decision model, roles, and an honest account of the
   single-maintainer continuity gap.
@@ -119,6 +141,28 @@ now carrying its `cause`, so upgrading is optional unless you want the image.
   asserts the pending-timer count — previously both passed even if the
   behaviour under test was broken. Found by the new lint gate.
 - `readCaCert` now attaches the original error as `cause` when it rethrows.
+- **Two CodeQL findings closed at the source.** The `/health` branch ran its
+  own token verification *inside* a block guarded by the request path, so an
+  attacker-controlled value decided whether credentials were checked at all
+  (`js/user-controlled-bypass`). Verification now happens before path routing
+  and one verdict serves both the health endpoint and the auth gate —
+  behaviour unchanged, one `verify()` where there were two. The HTTPS e2e test
+  no longer reads its throwaway certificate back off disk to trust it
+  (`js/file-access-to-http`).
+- **`resources/subscribe` errors are no longer doubled.** An unknown URI came
+  back as `MCP error -32602: MCP error -32602: Unknown resource…`, because
+  `McpError` builds that prefix into its message and the client adds it again
+  on receipt.
+- **Documentation drift.** `docs/architecture.md` called the resource URIs
+  `ccu://…` (they are `homematic://…`); the README's `--version` example still
+  printed 1.8.1; `ROADMAP.md` listed the CodeQL and fuzzing-corpus work as
+  planned after it had shipped. The README now also states which MCP revisions
+  the server implements, and `SECURITY.md` records the static bearer token as
+  a considered deviation from the specification's OAuth flow rather than
+  leaving it unexplained.
+- **The MCPB bundle's smoke test pinned `2025-06-18`.** It passed only because
+  the server negotiates down, so it never exercised the revision actually
+  shipped; it now handshakes at `2025-11-25`.
 
 ### Dependencies
 

@@ -1,8 +1,25 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { completable } from "@modelcontextprotocol/sdk/server/completable.js";
+import type { ServerDeps } from "../server.js";
+import { CompletionSource } from "./completions.js";
 
-export function registerPrompts(server: McpServer): void {
-  server.registerPrompt("check-windows", { description: "Check all window/door sensors and report which are open" }, async () => ({
+/**
+ * Prompts carry a `title` as well as a `description`: the title is what a
+ * client puts in a slash-command menu, and "Room status" reads better there
+ * than the sentence explaining what it does.
+ *
+ * The `room` / `device` arguments are `completable()`, which is what makes the
+ * server advertise the `completions` capability at all — the SDK enables it the
+ * moment a prompt argument has a completer. Suggestions come from the live CCU
+ * (see completions.ts), so a client offers the rooms this installation actually
+ * has instead of asking the user to remember how a room was spelled.
+ */
+export function registerPrompts(server: McpServer, deps: ServerDeps): void {
+  const suggest = new CompletionSource(deps);
+  const roomArg = completable(z.string().describe("Room name"), (typed) => suggest.rooms(typed));
+
+  server.registerPrompt("check-windows", { title: "Check windows", description: "Check all window/door sensors and report which are open" }, async () => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       "Check all window and door sensors: call list_devices (no type filter — the type arg is EXACT-match), " +
       "keep the devices whose type contains 'SWDO' or 'SCI' (e.g. HmIP-SWDO-I), then read them with get_values. " +
@@ -11,8 +28,9 @@ export function registerPrompts(server: McpServer): void {
   }));
 
   server.registerPrompt("room-status", {
+    title: "Room status",
     description: "Show current status of all devices in a room",
-    argsSchema: { room: z.string().describe("Room name") },
+    argsSchema: { room: roomArg },
   }, async ({ room }) => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       `Show the current status of all devices in the room "${room}". ` +
@@ -22,9 +40,10 @@ export function registerPrompts(server: McpServer): void {
   }));
 
   server.registerPrompt("set-heating", {
+    title: "Set heating",
     description: "Set heating temperature in a room",
     argsSchema: {
-      room: z.string().describe("Room name"),
+      room: roomArg,
       temperature: z.string().describe("Target temperature in °C"),
     },
   }, async ({ room, temperature }) => ({
@@ -36,7 +55,7 @@ export function registerPrompts(server: McpServer): void {
     }}],
   }));
 
-  server.registerPrompt("good-night", { description: "Prepare the house for night" }, async () => ({
+  server.registerPrompt("good-night", { title: "Good night", description: "Prepare the house for night" }, async () => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       "Prepare the house for night:\n" +
       "1. Check all window/door sensors and report any that are open\n" +
@@ -46,7 +65,7 @@ export function registerPrompts(server: McpServer): void {
     }}],
   }));
 
-  server.registerPrompt("diagnostics", { description: "Check for device issues" }, async () => ({
+  server.registerPrompt("diagnostics", { title: "Diagnostics", description: "Check for device issues" }, async () => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       "Run a diagnostic check on the HomeMatic system:\n" +
       "1. Use get_service_messages to find active issues (low battery, unreachable devices)\n" +
@@ -59,8 +78,11 @@ export function registerPrompts(server: McpServer): void {
   }));
 
   server.registerPrompt("device-info", {
+    title: "Device info",
     description: "Show detailed info about a device",
-    argsSchema: { device: z.string().describe("Device name or address") },
+    argsSchema: {
+      device: completable(z.string().describe("Device name or address"), (typed) => suggest.devices(typed)),
+    },
   }, async ({ device }) => ({
     messages: [{ role: "user" as const, content: { type: "text" as const, text:
       `Show detailed information about the device "${device}". ` +

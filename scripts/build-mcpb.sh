@@ -72,7 +72,10 @@ npx -y "@anthropic-ai/mcpb@${MCPB_VERSION}" validate "$stage/manifest.json"
 # Smoke test the thing that will actually run. A bundle that packs cleanly but
 # cannot start is the failure a validated manifest does not catch.
 echo "Smoke test: MCP initialize handshake against the staged server"
-handshake='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"build-mcpb","version":"1"}}}'
+# The revision this server actually implements. Pinning an older one still
+# passes — the server negotiates down — which is exactly why it would not test
+# what we ship. Bump this with the SDK.
+handshake='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"build-mcpb","version":"1"}}}'
 reply="$(printf '%s\n' "$handshake" \
     | CCU_HOST=127.0.0.1 CCU_USER=smoke CCU_PASSWORD=smoke \
       timeout 30 node "$stage/server/dist/index.js" --stdio 2>/dev/null | head -1 || true)"

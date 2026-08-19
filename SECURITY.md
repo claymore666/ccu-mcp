@@ -85,7 +85,20 @@ behind each of these is in [docs/assurance-case.md](docs/assurance-case.md).
    not an authorisation system.
 4. It is safe to expose on the public internet. It is designed for a trusted
    LAN.
-5. It has had an external security review. It has not.
+5. **The HTTP transport speaks OAuth.** The MCP specification makes
+   authorization optional ("Implementations using an HTTP-based transport
+   **SHOULD** conform"), and describes an OAuth 2.1 flow with RFC 9728
+   protected-resource metadata and an authorization server. ccu-mcp
+   deliberately does not implement it: a LAN appliance bridging to one CCU
+   credential has no authorization server to point at, and one would add a
+   moving part without adding a decision — there is a single principal, and it
+   is the CCU user in the config. What it does implement is the token half —
+   `Authorization: Bearer` on every request, timing-safe comparison, rotation
+   with an overlap window, optional expiry, and an RFC 6750 `WWW-Authenticate`
+   challenge on 401. If you need per-user authorization in front of the
+   server, put a reverse proxy that does OAuth in front of it. This is a
+   considered deviation, not an oversight.
+6. It has had an external security review. It has not.
 
 ## Threat model
 
