@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, request, type Server, type IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AddressInfo } from "node:net";
@@ -631,14 +631,21 @@ describe.skipIf(distMissing || !HAVE_OPENSSL)("HTTPS transport e2e (native TLS, 
     // so a CN-only cert would fail verification against the loopback host.
     const certPath = join(cacheDir, "cert.pem");
     const keyPath = join(cacheDir, "key.pem");
+    // The certificate is captured from openssl's stdout (no `-out`) and written
+    // to disk from that same buffer, rather than being read back afterwards:
+    // the in-memory PEM is what the client trusts as its CA and what the server
+    // is handed, one source of truth instead of two. It also keeps CodeQL's
+    // js/file-access-to-http quiet — with no file read feeding the request, the
+    // "outbound request depends on file data" flow simply does not exist.
     const gen = spawnSync("openssl", [
       "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-      "-keyout", keyPath, "-out", certPath,
+      "-keyout", keyPath,
       "-days", "1", "-subj", "/CN=localhost",
       "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ], { stdio: "ignore" });
+    ], { stdio: ["ignore", "pipe", "ignore"] });
     if (gen.status !== 0) throw new Error("openssl failed to generate test cert");
-    caCert = readFileSync(certPath);
+    caCert = Buffer.from(gen.stdout);
+    writeFileSync(certPath, caCert);
 
     child = spawn("node", [DIST], {
       env: {
