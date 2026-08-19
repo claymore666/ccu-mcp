@@ -19,6 +19,22 @@ function createServerWithCcu() {
 }
 
 describe("resource registry", () => {
+  it("describes each resource in the listing, not only in its contents", () => {
+    // resources/list is what a client shows before it fetches anything, so the
+    // display title and the media type have to be on the REGISTRATION.
+    const { server, deps } = createServerWithCcu();
+    const registered = (server as any)._registeredResources as Record<string, { name: string; title?: string; metadata?: { mimeType?: string; title?: string } }>;
+    const entries = Object.entries(registered);
+    expect(entries.length).toBe(8);
+    for (const [uri, r] of entries) {
+      const title = r.title ?? r.metadata?.title;
+      const mimeType = r.metadata?.mimeType;
+      expect(title, `resource ${uri} has no title`).toBeTruthy();
+      expect(mimeType, `resource ${uri} declares no mimeType`).toBe("application/json");
+    }
+    cleanupDeps(deps);
+  });
+
   const DATA_RESOURCES = [
     ["homematic://devices", "Dev"],
     ["homematic://rooms", "Bad"],

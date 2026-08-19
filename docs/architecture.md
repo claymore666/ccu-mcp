@@ -58,10 +58,18 @@ endpoint, idle-session reaping, and signal/stdin-EOF shutdown.
 - **28 tools**, grouped by intent across `tools/discovery.ts` (find things),
   `read.ts` (read state), `control.ts` (change state), `diagnostics.ts`,
   `targets.ts` (multi-CCU) and `meta.ts` (the in-server `help`).
-- **Resources** — `ccu://…` URIs for the list endpoints, device types and
-  system info, with `resources/subscribe` support.
+- **Resources** — `homematic://…` URIs for the list endpoints, device types and
+  system info, with `resources/subscribe` support. Each registration carries a
+  display title and `application/json`, so `resources/list` describes them
+  without a read.
 - **Prompts** — a handful of canned workflows (`check-windows`, `room-status`,
-  `set-heating`, `good-night`, `diagnostics`, `device-info`).
+  `set-heating`, `good-night`, `diagnostics`, `device-info`). Their `room` and
+  `device` arguments are completable: `completion/complete` answers from the
+  live CCU (`src/prompts/completions.ts`, 60-second cache, empty list on any
+  failure), which is what turns the `completions` capability on.
+- **Instructions** — the `initialize` result carries a short brief (names
+  resolve, writes are gated). It is the only guidance that reaches the model
+  without it deciding to call `help`.
 
 Every tool input is a **zod** schema. That is the allowlist: shapes, enums and
 ranges are declared, and anything else is rejected before a handler runs.

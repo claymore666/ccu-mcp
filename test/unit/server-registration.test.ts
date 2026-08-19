@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createMcpServer } from "../../src/server.js";
 import { createMockDeps } from "./_helpers.js";
 
@@ -7,6 +9,43 @@ describe("MCP Server Registration", () => {
     const deps = createMockDeps();
     const server = createMcpServer(deps);
     expect(server).toBeDefined();
+    deps.rateLimiter.destroy();
+  });
+
+  it("announces an identity a client can display, not just a package name", () => {
+    const deps = createMockDeps();
+    const server = createMcpServer(deps);
+    const info = (server.server as any)._serverInfo as Record<string, unknown>;
+    expect(info.title).toBe("HomeMatic CCU");
+    expect(info.websiteUrl).toContain("github.com/claymore666/ccu-mcp");
+    // Mirrors server.json's description, so the registry entry and the live
+    // handshake cannot say different things about what this server is.
+    expect(info.description).toBe(
+      JSON.parse(readFileSync(join(__dirname, "../../server.json"), "utf-8")).description,
+    );
+    deps.rateLimiter.destroy();
+  });
+
+  it("ships instructions naming the write gate and how names resolve", () => {
+    // These reach the model without it choosing to call `help`, so the two
+    // facts that decide whether a first call succeeds have to be in here.
+    const deps = createMockDeps();
+    const server = createMcpServer(deps);
+    const instructions = (server.server as any)._instructions as string;
+    expect(instructions).toContain("confirm: true");
+    expect(instructions).toContain("run_script");
+    expect(instructions).toMatch(/name/i);
+    deps.rateLimiter.destroy();
+  });
+
+  it("advertises the completions capability, backed by completable prompt arguments", () => {
+    const deps = createMockDeps();
+    const server = createMcpServer(deps);
+    // The SDK turns this capability on by itself the moment a prompt argument
+    // is completable, so asserting it here is really asserting that the
+    // completers in prompts/registry.ts are still wired up.
+    const caps = (server.server as any)._capabilities as Record<string, unknown>;
+    expect(caps.completions).toBeDefined();
     deps.rateLimiter.destroy();
   });
 
