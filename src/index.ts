@@ -262,6 +262,18 @@ async function main(): Promise<void> {
           return;
         }
 
+        // Verify the bearer token BEFORE any path routing, so the request path
+        // — attacker-controlled — never decides whether credentials are checked
+        // at all; it only decides what an already-known-good/bad verdict means.
+        // (CodeQL js/user-controlled-bypass flagged the previous shape, where
+        // the /health branch ran its own verify() inside a path-guarded block.)
+        // Token parsing tolerates the case-insensitive scheme (RFC 7235);
+        // verify() is timing-safe across all currently-valid tokens (it hashes
+        // both sides and checks every entry without early return) and enforces
+        // expiry live (issue #52). One call now serves both consumers below.
+        const presented = extractBearerToken(req.headers.authorization ?? "");
+        const headerValid = authTokens.verify(presented);
+
         // Path routing: MCP is served on the root path only (README points
         // clients at the bare URL; "/mcp" accepted as a common convention).
         // Without this, the full protocol answered on ANY path, and a typo'd
@@ -270,19 +282,16 @@ async function main(): Promise<void> {
         const path = (req.url ?? "/").split("?")[0];
 
         // Health check endpoint (tolerate cache-busting query strings that
-        // uptime monitors append)
+        // uptime monitors append). Deliberately reachable without a token —
+        // uptime monitors need it — but a valid token unlocks the detailed
+        // body, which is why the verdict above is passed through rather than
+        // recomputed here.
         if (path === "/health" && req.method === "GET") {
-          const detailed = authTokens.verify(extractBearerToken(req.headers.authorization ?? ""));
-          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache }, detailed);
+          handleHealthRequest(req, res, { session: targets.default.session, deviceTypeCache: targets.default.deviceTypeCache }, headerValid);
           return;
         }
 
-        // Auth check for MCP endpoints. Token parsing tolerates the
-        // case-insensitive scheme (RFC 7235); verify() is timing-safe across all
-        // currently-valid tokens (it hashes both sides and checks every entry
-        // without early return) and enforces expiry live (issue #52).
-        const presented = extractBearerToken(req.headers.authorization ?? "");
-        const headerValid = authTokens.verify(presented);
+        // Auth gate for the MCP endpoints (health has already returned above).
         if (!headerValid) {
           // Structured, greppable failure line so an external tool (fail2ban et
           // al.) can ban brute-force sources at the firewall — the server
