@@ -51,6 +51,10 @@ describe("resources/subscribe handlers", () => {
       expect((err as McpError).code).toBe(ErrorCode.InvalidParams);
       // The error must name the valid URIs so the client can self-correct.
       expect((err as McpError).message).toContain(RESOURCE_URIS[0]);
+      // …and say it once: McpError builds its message as "MCP error <code>:
+      // <text>", which the client prefixes again on receipt, so a raw McpError
+      // message reaches the user doubled.
+      expect((err as McpError).message).not.toContain("MCP error");
     }
 
     expect(serverSubscriptions.get(server)?.size).toBe(0);

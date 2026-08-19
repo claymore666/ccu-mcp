@@ -48,13 +48,61 @@ export interface ServerDeps {
  */
 export const serverSubscriptions = new WeakMap<McpServer, Set<string>>();
 
+/**
+ * Sent to the client in the `initialize` result and, in most clients, put in
+ * front of the model before it calls anything. It is the one piece of guidance
+ * that arrives without the model choosing to ask for it — `help` only helps a
+ * client that decides to call it — so it carries the two things that change
+ * whether a first call succeeds: names are resolved for you, and writes to a
+ * protected CCU need `confirm: true`.
+ */
+const INSTRUCTIONS = `Controls a HomeMatic CCU (debmatic, CCU3 or OpenCCU) over its JSON-RPC API.
+
+Start with list_devices / list_rooms to discover what exists; addresses look like \
+"000EDBE9A1B4F4:1" (device:channel). Most tools accept a device or channel NAME as \
+well as an address and resolve it for you, so there is no need to look an address up \
+first unless the name is ambiguous.
+
+Reads (get_*, list_*) are always safe. Writes (set_*, put_paramset, execute_program, \
+create/delete system variable, assign/unassign channel, run_script) reach real \
+hardware — heating, locks, sockets. A CCU configured as protected refuses them unless \
+called with confirm: true, and run_script plus delete_system_variable require it on \
+every single call.
+
+Call help for the full tool list, the argument conventions and worked examples. With \
+several CCUs configured, list_ccu_targets shows them, get_connection_info reports the \
+active one, use_ccu switches it, and read tools take an optional target for a \
+single-call read elsewhere.`;
+
+/**
+ * `new McpError(code, msg)` builds its `message` as "MCP error <code>: <msg>",
+ * and that whole string is what goes on the wire — where the client prefixes it
+ * a second time, so the user reads
+ * "MCP error -32602: MCP error -32602: Unknown resource…". Reset `message` to
+ * the bare text after construction: `code` still travels in the JSON-RPC error
+ * object, so nothing is lost and the client renders one prefix.
+ */
+function invalidParams(message: string): McpError {
+  const err = new McpError(ErrorCode.InvalidParams, message);
+  err.message = message;
+  return err;
+}
+
 export function createMcpServer(deps: ServerDeps): McpServer {
   const server = new McpServer(
     {
       name: "ccu-mcp",
+      // title/description/websiteUrl are the human-facing half of
+      // `Implementation`: a client listing servers shows these rather than the
+      // package name. `description` mirrors server.json's, so the registry
+      // entry and the live handshake say the same thing.
+      title: "HomeMatic CCU",
+      description: "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
+      websiteUrl: "https://github.com/claymore666/ccu-mcp",
       version: VERSION,
     },
     {
+      instructions: INSTRUCTIONS,
       capabilities: {
         tools: {},
         // subscribe is backed by the handlers registered below; the poller
@@ -74,7 +122,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   registerMetaTools(server, deps);
   registerTargetTools(server, deps);
   registerResources(server, deps);
-  registerPrompts(server);
+  registerPrompts(server, deps);
 
   // resources/subscribe support: the SDK's McpServer registers no handler for
   // it, so back the advertised capability ourselves.
@@ -84,8 +132,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     // Reject unknown URIs: silently accepting a typo would leave the client
     // waiting forever for notifications that can never come.
     if (!RESOURCE_URIS.includes(req.params.uri)) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw invalidParams(
         `Unknown resource: ${req.params.uri}. Valid URIs: ${RESOURCE_URIS.join(", ")}`,
       );
     }

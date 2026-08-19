@@ -5,7 +5,7 @@ year. Plans are not promises: this is a spare-time project with one maintainer,
 and the point of writing it down is so you can judge whether it is heading
 somewhere useful to you — not to commit to dates.
 
-Last reviewed: 2026-08-02 (v1.9.1).
+Last reviewed: 2026-08-19 (v1.10.0).
 
 ## Direction
 
@@ -28,13 +28,15 @@ making it safer and more predictable rather than larger.
   documented gap, not a hidden one — see
   [docs/assurance-case.md](docs/assurance-case.md).
 - **OpenSSF Scorecard** in CI ([#153](https://github.com/claymore666/ccu-mcp/issues/153)).
-- **CodeQL advanced setup** so the query suite is pinned in the commit rather
-  than tracking GitHub's default ([#156](https://github.com/claymore666/ccu-mcp/issues/156)).
-- **Persist the fuzzing corpus between nightly runs**
-  ([#155](https://github.com/claymore666/ccu-mcp/issues/155)). The corpus is
-  load-bearing — an empty one found nothing in 60s where a seeded one found
-  planted defects in under 20 — so throwing it away each night wastes most of
-  the value of running the fuzzer at all.
+
+Delivered in v1.10.0, kept here because the reasoning is still the record:
+CodeQL moved off GitHub's default setup into a workflow file, so the query
+suite is pinned in the commit and reviewable in a PR
+([#156](https://github.com/claymore666/ccu-mcp/issues/156)); and the fuzzing
+corpus now carries between nightly runs
+([#155](https://github.com/claymore666/ccu-mcp/issues/155)) — an empty corpus
+found nothing in 60s where a seeded one found planted defects in under 20, so
+discarding it each night wasted most of the value of running the fuzzer.
 
 ### Project continuity
 
@@ -45,7 +47,10 @@ making it safer and more predictable rather than larger.
 
 ### Maintenance
 
-- Track the MCP specification and SDK as they move.
+- Track the MCP specification and SDK as they move. The server implements
+  revision `2025-11-25` (negotiating down to `2024-11-05`), which is what the
+  TypeScript SDK currently tops out at; revision `2026-07-28` — per-request
+  protocol version, `server/discover` — lands here when the SDK supports it.
 - Keep working against current debmatic / OpenCCU / CCU3 firmware.
 - Keep dependencies current and advisories clear.
 
