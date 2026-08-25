@@ -1,0 +1,72 @@
+name: Scorecard
+
+# OpenSSF Scorecard, scheduled. Non-hermetic by nature — the score moves with
+# upstream check definitions and with repo settings, neither of which is a
+# function of the commit under test. So it belongs here and not in
+# `build-and-test`, and it must never become a required check, for the same
+# reason `npm audit` was taken out of CI in v1.8.1: a verdict that changes with
+# no diff cannot gate a merge.
+#
+# Runs on the default branch (`dev`) — `publish_results` requires that, and it
+# is what makes the score public and feeds the badge.
+#
+# No `repo_token`: Scorecard runs on the workflow's own GITHUB_TOKEN, which is
+# upstream's recommended default. The one thing that costs us is
+# Branch-Protection fidelity. GITHUB_TOKEN cannot read *classic* branch
+# protection (that needs an admin token), and the non-admin fallback upstream
+# provides reads Repository *Rules*, which this repo does not use. So that
+# single check scores on thin evidence: it can see that `main` is protected,
+# not that six status checks are required. Closing that gap means either a
+# fine-grained PAT with `Administration: Read-only` as secret SCORECARD_TOKEN —
+# a long-lived credential that expires yearly — or moving `main` to rulesets.
+# Deliberately deferred; see ROADMAP.md.
+
+on:
+  schedule:
+    # Mondays, 04:31 UTC. Off the hour: scheduled runs cluster there and GitHub
+    # drops them under load.
+    - cron: '31 4 * * 1'
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Upload the SARIF to code scanning, alongside CodeQL's own results.
+      security-events: write
+      # OIDC token, which is how the published result is proven authentic.
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # Keep the raw SARIF for 5 days: code scanning shows the findings but not
+      # the per-check scores, and a scheduled job has no other artifact.
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4.37.8
+        with:
+          sarif_file: results.sarif
