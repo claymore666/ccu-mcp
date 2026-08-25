@@ -9,6 +9,29 @@ name: Dependabot auto-merge
 # the base-repo context so the token can enable auto-merge; we never check out
 # or execute the PR's code, so the untrusted-code risk of that trigger does not
 # apply here.
+#
+# Workflow-file bumps are the one case this cannot finish. GITHUB_TOKEN is a
+# GitHub App token, and an App may not create or update anything under
+# `.github/workflows/` — there is no `workflows:` key in the `permissions:`
+# block to grant, so no amount of configuration lifts it. GitHub then refuses
+# the arm with:
+#
+#   GraphQL: Pull request refusing to allow a GitHub App to create or update
+#   workflow `.github/workflows/<f>.yml` without `workflows` permission
+#   (enablePullRequestAutoMerge)
+#
+# It is not raised consistently: #185 and #186 both bumped codeql-action in the
+# same file, both were up to date with dev, and only #186 was refused. So the
+# job attempts the arm unconditionally and only degrades when GitHub actually
+# says no — skipping every workflow-touching PR up front would give up merges
+# that do succeed.
+#
+# Degrading means: comment on the PR, exit green. A maintainer merges it by
+# hand once checks pass. That is the right end state anyway — an action bump
+# rewrites a pinned SHA, which is exactly the change worth a human glance — and
+# it keeps the alternative (a long-lived PAT or App key with Workflows: write,
+# stored as a repo secret) out of a repo whose whole posture is "no credential
+# we don't need". Any other failure still fails the job.
 
 on:
   pull_request_target:
@@ -25,7 +48,44 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER: '<!-- ccu-mcp:auto-merge-workflow-scope -->'
+        run: |
+          # `set +e` around the arm: the step shell is `bash -e`, which would
+          # exit on the failure before the output could be inspected.
+          set +e
+          out=$(gh pr merge --auto --squash "$PR_URL" 2>&1)
+          status=$?
+          set -e
+          printf '%s\n' "$out"
+
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+
+          if ! printf '%s' "$out" | grep -qiE 'workflows.? permission'; then
+            exit "$status"
+          fi
+
+          echo "::notice::Auto-merge could not be armed: GITHUB_TOKEN may not update workflow files. Merge this PR by hand once its checks are green."
+
+          # One comment per PR, however often the job re-runs.
+          if gh pr view "$PR_URL" --json comments --jq '.comments[].body' \
+             | grep -qF "$MARKER"; then
+            echo "Already commented on this PR."
+            exit 0
+          fi
+
+          gh pr comment "$PR_URL" --body-file - <<EOF
+          $MARKER
+          Auto-merge could not be armed for this PR: it updates a file under
+          \`.github/workflows/\`, and GITHUB_TOKEN is an App token, which GitHub
+          forbids from creating or updating workflow files. There is no
+          \`permissions:\` key that grants this, so the job cannot do it itself.
+
+          **Merge this by hand once the checks are green.** Worth a look first:
+          an action bump rewrites a pinned SHA, so confirm the new one is the
+          tag it claims to be.
+          EOF
