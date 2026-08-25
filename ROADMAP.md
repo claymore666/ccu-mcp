@@ -47,6 +47,34 @@ corpus now carries between nightly runs
 found nothing in 60s where a seeded one found planted defects in under 20, so
 discarding it each night wasted most of the value of running the fuzzer.
 
+### Configuration experience
+
+- **Guided setup instead of hand-edited `.env`.** Configuring profiles today
+  means writing `CCU_PROD_TLS_FINGERPRINT`-style variables by hand and finding
+  out at runtime whether the credentials work or the user has enough
+  privileges. The plan, in order:
+  1. `ccu-mcp init` / `ccu-mcp doctor` — an interactive CLI wizard that probes
+     the host, pins the TLS fingerprint, tests the login, reports the detected
+     privilege level (USER vs ADMIN), writes a valid `.env`, and emits
+     ready-to-paste client config snippets. Works over SSH, adds no attack
+     surface.
+  2. **LLM-guided setup on the same core.** Register the server with an empty
+     config (it already starts without one) and let a `setup` tool walk the
+     conversation through the same probe/pin/validate steps. One deliberate
+     exception: the password never travels through the model or the chat
+     transcript — the setup tool hands off to `ccu-mcp secret <profile>`, a
+     one-line local prompt that writes just the secret. MCP elicitation could
+     replace the chat round-trips where clients support it, but the spec
+     forbids eliciting secrets, so the CLI hand-off stays either way.
+  3. Maybe later, `ccu-mcp config --ui` — a browser form bound to 127.0.0.1
+     with a one-time token, process exits when closed. Only if the above turns
+     out not to be enough.
+
+  Non-goal: a persistent web admin panel. A standing HTTP surface that holds
+  every CCU password is exactly what this project's security posture says not
+  to build. Also a non-goal: controlling devices from it — the CCU WebUI and
+  the MCP client already do that.
+
 ### Project continuity
 
 - **Reduce the bus factor from 1.** Either a second maintainer with publish
@@ -71,7 +99,9 @@ Saying no is most of what keeps this maintainable.
   JSON-RPC to a CCU on your network, nothing else.
 - **No addon or XML-API dependency.** The built-in `/api/homematic.cgi`
   endpoint is the only interface used, and that stays true.
-- **No web UI or dashboard.** The MCP client is the interface.
+- **No web UI or dashboard.** The MCP client is the interface. (The
+  run-and-exit localhost config form under Configuration experience is not
+  this: no standing server, no device control.)
 - **No multi-user model or per-user permissions.** The server holds one
   credential per configured CCU and acts as that user. Authorisation belongs to
   the CCU.
