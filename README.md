@@ -3,7 +3,16 @@
 Talk to your HomeMatic smart home from Claude, Cursor, or any MCP client.
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13919/badge)](https://www.bestpractices.dev/projects/13919)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/ccu-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/ccu-mcp)
+<!-- Scorecard's own badge endpoint redirects to shields' `ossf-scorecard`
+     route, which reads the LEGACY api.securityscorecards.dev — that host 404s
+     for this repo, so the badge renders "invalid repo path" (with HTTP 200, so
+     a status check does not catch it). The current api.scorecard.dev does
+     serve our result, hence the dynamic/json badge below. Switch back to
+     `https://api.scorecard.dev/projects/github.com/claymore666/ccu-mcp/badge`
+     once `curl -sS -o /dev/null -w '%{http_code}'
+     https://api.securityscorecards.dev/projects/github.com/claymore666/ccu-mcp`
+     returns 200. -->
+[![OpenSSF Scorecard](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.scorecard.dev%2Fprojects%2Fgithub.com%2Fclaymore666%2Fccu-mcp&query=%24.score&label=openssf%20scorecard&suffix=%20%2F%2010)](https://scorecard.dev/viewer/?uri=github.com/claymore666/ccu-mcp)
 
 <a href="https://glama.ai/mcp/servers/claymore666/ccu-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/claymore666/ccu-mcp/badge" alt="ccu-mcp MCP server" />
