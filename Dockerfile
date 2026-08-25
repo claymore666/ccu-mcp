@@ -4,7 +4,14 @@
 # 2026). It is also the only major the test suite ever executes on, so a base
 # image ahead of it would ship users a configuration nothing here has run.
 # scripts/check-node-version.mjs fails the build if these four drift apart.
-FROM node:24-alpine AS builder
+#
+# Pinned by digest as well as tag, the same contract the SHA-pinned actions get:
+# `node:24-alpine` is a moving target, so without this a rebuild of an old
+# commit is not the image that commit produced. The digest is the OCI *index*,
+# not a per-arch manifest, so the multi-arch build in publish.yml still resolves
+# linux/amd64 and linux/arm64 from it. Dependabot bumps digest and tag together
+# (majors are held back — see .github/dependabot.yml), so the pin will not rot.
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -23,7 +30,7 @@ ENV BUILD_COMMIT=${BUILD_COMMIT} \
     BUILD_TAG=${BUILD_TAG}
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
 # `image.source` is not decoration: GHCR links a package to a repository by this
 # label, and that link is what carries the README, the licence and the "published
 # by" provenance on the package page. Without it the image floats unattached.
