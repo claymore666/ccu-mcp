@@ -3,6 +3,7 @@
 Talk to your HomeMatic smart home from Claude, Cursor, or any MCP client.
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13919/badge)](https://www.bestpractices.dev/projects/13919)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/claymore666/ccu-mcp/badge)](https://scorecard.dev/viewer/?uri=github.com/claymore666/ccu-mcp)
 
 <a href="https://glama.ai/mcp/servers/claymore666/ccu-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/claymore666/ccu-mcp/badge" alt="ccu-mcp MCP server" />
