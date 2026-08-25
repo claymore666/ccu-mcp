@@ -29,6 +29,7 @@ Usage:
   ccu-mcp [--stdio | --http] [--env <path>]
   ccu-mcp init   [--env <path>]
   ccu-mcp doctor [--env <path>]
+  ccu-mcp secret [<profile>] [--env <path>]
   ccu-mcp --version
   ccu-mcp --help
 
@@ -37,9 +38,14 @@ Subcommands:
                    test the login, and write an env file (default: ./.env)
   doctor           Validate an existing env file end-to-end: reachability,
                    certificate pin, login, privilege level
+  secret           Store the CCU password into the env file via a local hidden
+                   prompt (used by the LLM-guided setup; also for rotation)
 
 Options:
-  --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT)
+  --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT).
+                   With --env and a missing/incomplete configuration the server
+                   starts in SETUP MODE, exposing only setup_* tools that let
+                   an LLM configure it conversationally
   --http           Serve MCP over HTTP (default)
   --env <path>     Load configuration from this dotenv file (already-set
                    environment variables win, like node's own --env-file)
@@ -96,8 +102,13 @@ async function main(): Promise<void> {
   // Subcommands run in the same no-environment-needed early path as the info
   // flags (issue #112): `ccu-mcp init` exists precisely because there is no
   // valid configuration yet. Dynamic import keeps server startup unaffected.
-  if (argv[0] === "init" || argv[0] === "doctor") {
-    const mod = argv[0] === "init" ? await import("./cli/init.js") : await import("./cli/doctor.js");
+  if (argv[0] === "init" || argv[0] === "doctor" || argv[0] === "secret") {
+    const mod =
+      argv[0] === "init"
+        ? await import("./cli/init.js")
+        : argv[0] === "doctor"
+          ? await import("./cli/doctor.js")
+          : await import("./cli/secret.js");
     process.exitCode = await mod.run(argv.slice(1));
     return;
   }
@@ -107,13 +118,50 @@ async function main(): Promise<void> {
   // `--env` for server mode: lets an MCP client entry reference the file
   // `ccu-mcp init` wrote instead of inlining credentials in its JSON config.
   // Same precedence as node's own flag: already-set environment wins.
+  let envPath: string | undefined;
   if (argv.includes("--env")) {
     const { envFileArg, loadEnvFile, applyEnvVars } = await import("./cli/common.js");
-    applyEnvVars(loadEnvFile(envFileArg(argv)));
+    envPath = envFileArg(argv); // throws on a missing value — always fatal
+    try {
+      applyEnvVars(loadEnvFile(envPath));
+    } catch (err) {
+      // A missing/unreadable env file is exactly the state the LLM-guided
+      // setup starts from (issue #196) — over stdio it leads into setup mode
+      // below. Everywhere else it stays fatal, as before.
+      if (!argv.includes("--stdio")) throw err;
+    }
   }
 
   const logger = createLogger();
-  const config = loadConfig();
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    // Setup mode (issue #196): started for stdio with an explicit --env file
+    // but no loadable configuration, serve only the setup_* tools so an LLM
+    // can walk the user through writing that file. Strictly stdio — an
+    // unconfigured, unauthenticated HTTP endpoint that writes config files is
+    // not an acceptable surface. A bare start still fails loudly.
+    if (envPath === undefined || !argv.includes("--stdio")) throw err;
+    const { resolve } = await import("node:path");
+    const { createSetupServer } = await import("./setup-server.js");
+    const setupServer = createSetupServer(resolve(envPath), (err as Error).message, logger);
+    await setupServer.connect(new StdioServerTransport());
+    logger.info("server_ready", { transport: "stdio", mode: "setup" });
+    let closing = false;
+    const closeSetup = (): void => {
+      if (closing) return;
+      closing = true;
+      void setupServer.close().finally(() => process.exit(0));
+    };
+    process.on("SIGTERM", closeSetup);
+    process.on("SIGINT", closeSetup);
+    // Same stdin-EOF hook as the configured stdio server below: the client
+    // terminates by closing the pipe, not by signaling.
+    process.stdin.on("end", closeSetup);
+    process.stdin.on("close", closeSetup);
+    return;
+  }
 
   logger.info("starting", {
     transport: config.mcp.transport,

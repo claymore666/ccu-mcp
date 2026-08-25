@@ -49,6 +49,23 @@ export interface ServerDeps {
 export const serverSubscriptions = new WeakMap<McpServer, Set<string>>();
 
 /**
+ * The server's `Implementation` identity, shared between the configured server
+ * and the setup-mode server (setup-server.ts) so a client listing either shows
+ * the same name/title. `description` mirrors server.json's, so the registry
+ * entry and the live handshake say the same thing.
+ */
+export const SERVER_IDENTITY = {
+  name: "ccu-mcp",
+  // title/description/websiteUrl are the human-facing half of
+  // `Implementation`: a client listing servers shows these rather than the
+  // package name.
+  title: "HomeMatic CCU",
+  description: "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
+  websiteUrl: "https://github.com/claymore666/ccu-mcp",
+  version: VERSION,
+};
+
+/**
  * Sent to the client in the `initialize` result and, in most clients, put in
  * front of the model before it calls anything. It is the one piece of guidance
  * that arrives without the model choosing to ask for it — `help` only helps a
@@ -90,17 +107,7 @@ function invalidParams(message: string): McpError {
 
 export function createMcpServer(deps: ServerDeps): McpServer {
   const server = new McpServer(
-    {
-      name: "ccu-mcp",
-      // title/description/websiteUrl are the human-facing half of
-      // `Implementation`: a client listing servers shows these rather than the
-      // package name. `description` mirrors server.json's, so the registry
-      // entry and the live handshake say the same thing.
-      title: "HomeMatic CCU",
-      description: "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
-      websiteUrl: "https://github.com/claymore666/ccu-mcp",
-      version: VERSION,
-    },
+    SERVER_IDENTITY,
     {
       instructions: INSTRUCTIONS,
       capabilities: {

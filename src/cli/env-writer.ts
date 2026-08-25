@@ -41,10 +41,19 @@ export function quoteEnvValue(value: string): string {
   );
 }
 
-/** Render the managed block: flat vars for one target, CCU_PROFILES for more. */
-export function buildEnvContent(profiles: WizardProfile[], defaultProfile: string): string {
+/**
+ * Render the managed block: flat vars for one target, CCU_PROFILES for more.
+ * `forceProfileForm` keeps the CCU_PROFILES form even for a single target —
+ * the setup tool needs it when the one profile has a real name (a flat write
+ * would silently drop the name the conversation established).
+ */
+export function buildEnvContent(
+  profiles: WizardProfile[],
+  defaultProfile: string,
+  forceProfileForm = false,
+): string {
   const lines: string[] = [
-    "# Written by `ccu-mcp init` — https://github.com/claymore666/ccu-mcp#configuration",
+    "# Written by ccu-mcp setup — https://github.com/claymore666/ccu-mcp#configuration",
   ];
   const emit = (prefix: string, p: WizardProfile): void => {
     lines.push(`CCU_${prefix}HOST=${quoteEnvValue(p.host)}`);
@@ -56,7 +65,7 @@ export function buildEnvContent(profiles: WizardProfile[], defaultProfile: strin
     if (p.protected) lines.push(`CCU_${prefix}PROTECTED=true`);
     if (p.readonly) lines.push(`CCU_${prefix}READONLY=true`);
   };
-  if (profiles.length === 1) {
+  if (profiles.length === 1 && !forceProfileForm) {
     emit("", profiles[0]);
   } else {
     lines.push(`CCU_PROFILES=${profiles.map((p) => p.name).join(",")}`);

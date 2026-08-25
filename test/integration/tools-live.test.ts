@@ -82,8 +82,11 @@ describeIf("MCP tools against live CCU", () => {
     }
   }, 60_000);
 
-  it("get_values by channel list returns exactly the requested channels", async () => {
+  it("get_values by channel list returns exactly the requested channels", async (ctx) => {
     const devices = parseToolResult(await callTool(server, "list_devices")) as Array<{ channels: Array<{ address: string }> }>;
+    // A device-less CCU (the OpenCCU dev VM has no RF hardware) has nothing to
+    // read — skip rather than fail on the environment.
+    if (devices.length === 0) ctx.skip();
     const channel = devices[0]!.channels[0]!.address;
 
     const result = parseToolResult(await callTool(server, "get_values", { channels: [channel] })) as any[];
@@ -255,7 +258,7 @@ describeIf("MCP tools against live CCU", () => {
 
   // Assign a channel to a room, verify via list_rooms, then revert — leaving the
   // CCU as found. Skips gracefully if the CCU has no rooms/channels to work with.
-  it("assign_channel → verify via list_rooms → unassign (live)", async () => {
+  it("assign_channel → verify via list_rooms → unassign (live)", async (ctx) => {
     const rooms = parseToolResult(await callTool(server, "list_rooms")) as Array<{ id: string; name: string; channelIds: string[] }>;
     expect(rooms.length).toBeGreaterThan(0);
     // Filtered list_devices returns FULL channel objects (with `id`); the
@@ -263,6 +266,9 @@ describeIf("MCP tools against live CCU", () => {
     const populated = rooms.find((r) => r.channelIds.length > 0) ?? rooms[0]!;
     const devices = parseToolResult(await callTool(server, "list_devices", { room: populated.name })) as Array<{ channels: Array<{ id: string; address: string }> }>;
     const channel = devices.flatMap((d) => d.channels).find((c) => c.id && c.address);
+    // A device-less CCU (the OpenCCU dev VM) has no channel to move — skip
+    // rather than fail on the environment.
+    if (!channel) ctx.skip();
     expect(channel).toBeDefined();
 
     // Pick a room the channel is NOT already in, so the revert is a true revert.
