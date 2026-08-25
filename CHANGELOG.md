@@ -3,6 +3,28 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## Unreleased
+
+- **`ccu-mcp init`** — interactive setup wizard (#195): probes the CCU
+  (auto-detecting HTTPS/port), shows the TLS certificate and pins its SHA-256
+  fingerprint on confirmation, tests the login, reports the detected privilege
+  level (USER-level accounts get a warning that script-based tools need
+  ADMIN), and writes a mode-0600 env file — flat vars for one target,
+  `CCU_PROFILES` for several. Ends with a ready-to-paste MCP client snippet.
+  Re-running preserves every non-CCU line of an existing file and asks before
+  replacing the CCU settings.
+- **`ccu-mcp doctor`** — validates an env file end-to-end without starting the
+  server: configuration errors, reachability, pinned-fingerprint match
+  (interactive runs are offered a refresh after a legitimate certificate
+  rotation), login, privilege level. Exits non-zero when a check fails.
+- **`--env <path>`** server flag — loads a dotenv file before configuration,
+  so an MCP client entry can reference the file `init` wrote instead of
+  inlining credentials (`npx ccu-mcp --stdio --env /path/to/.env`).
+  Already-set environment variables win, matching node's `--env-file`
+  precedence. (Named `--env` because node's own CLI intercepts an
+  `--env-file` argument even after the script path and refuses to start when
+  the file does not exist yet — exactly the state `init` begins in.)
+
 ## v1.10.0 — 2026-08-19
 
 Container images, a release that publishes itself, and a pass over the MCP
