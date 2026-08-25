@@ -27,7 +27,16 @@ making it safer and more predictable rather than larger.
   migration note, and a clear error that names the fix. Until then this is a
   documented gap, not a hidden one — see
   [docs/assurance-case.md](docs/assurance-case.md).
-- **OpenSSF Scorecard** in CI ([#153](https://github.com/claymore666/ccu-mcp/issues/153)).
+- **Give OpenSSF Scorecard a real Branch-Protection reading.** Scorecard now
+  runs weekly ([#153](https://github.com/claymore666/ccu-mcp/issues/153)) on
+  the workflow's own `GITHUB_TOKEN`, which cannot read classic branch
+  protection — so that one check scores on thin evidence while the rest of the
+  report is accurate. Two ways to close it: a fine-grained PAT with
+  `Administration: Read-only` as secret `SCORECARD_TOKEN`, which is a
+  long-lived credential plus a yearly rotation when it expires; or move
+  `main`'s protection to rulesets, which non-admin tokens can read and which
+  would need its six required checks and the deliberate `enforce_admins: false`
+  bypass rebuilt as bypass actors.
 
 Delivered in v1.10.0, kept here because the reasoning is still the record:
 CodeQL moved off GitHub's default setup into a workflow file, so the query
