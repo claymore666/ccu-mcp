@@ -267,6 +267,9 @@ ccu-mcp init           # interactive setup: probe the CCU, pin its TLS cert,
                        #   test the login, write an env file (default ./.env)
 ccu-mcp doctor         # validate an env file end-to-end: reachability,
                        #   certificate pin, login, privilege level
+ccu-mcp secret [prof]  # store the CCU password into an env file via a local
+                       #   hidden prompt (used by the LLM-guided setup below;
+                       #   also the password-rotation path)
 ccu-mcp --stdio        # serve over stdin/stdout (overrides MCP_TRANSPORT)
 ccu-mcp --http         # serve over HTTP (default)
 ccu-mcp --env <path>   # load configuration from a dotenv file (already-set
@@ -282,6 +285,38 @@ tools need ADMIN), and ends with a ready-to-paste MCP client snippet. It
 needs no pre-existing configuration. `ccu-mcp doctor` exits non-zero when any
 check fails, so it also works in scripts; run it interactively to be offered
 a pin refresh when the CCU's certificate legitimately rotated.
+
+### LLM-guided setup (setup mode)
+
+The wizard has a conversational twin: register the server in an MCP client
+**before** configuring it. Started with `--stdio --env <path>` and a missing or
+incomplete configuration, the server comes up in **setup mode** — a minimal MCP
+server exposing only four `setup_*` tools (`setup_status`, `setup_probe`,
+`setup_write_profile`, `setup_test`) plus instructions that let the LLM walk
+you through the same probe → pin → test-login → write flow in plain chat.
+
+```json
+{
+  "mcpServers": {
+    "ccu-mcp": {
+      "command": "npx",
+      "args": ["ccu-mcp", "--stdio", "--env", "/path/to/.env"]
+    }
+  }
+}
+```
+
+Then just ask: *"set up my CCU connection"*. One deliberate exception: **the
+password never travels through the model or the chat transcript**.
+`setup_write_profile` has no password parameter; instead the assistant hands
+you a one-liner to run in a terminal — `ccu-mcp secret <profile> --env
+/path/to/.env` — which prompts locally with echo off and writes only the
+password into the file (mode 0600). Once `setup_test` reports green, reconnect
+the MCP server and the identical client entry starts it fully configured.
+
+Setup mode is stdio-only (an unconfigured HTTP endpoint that writes config
+files would be an unacceptable surface), and a bare start without `--env`
+still fails loudly instead of silently serving setup tools.
 
 `--version` and `--help` need no configuration — use them to check what an
 installed copy actually is, e.g. after updating:
@@ -372,7 +407,10 @@ without switching.
 Some mistakes stop the server at startup instead of being ignored. Each of these
 would otherwise fail *silently* and much later, so the exit is deliberate.
 `ccu-mcp doctor` reports the same errors against an env file without starting
-the server, alongside its live checks (reachability, certificate pin, login):
+the server, alongside its live checks (reachability, certificate pin, login).
+One exception: started with `--stdio --env <path>`, a failing configuration
+enters [setup mode](#llm-guided-setup-setup-mode) (with the error in the
+server's instructions) instead of exiting, so it can be fixed conversationally:
 
 | Message | Cause and why it's fatal |
 |---|---|

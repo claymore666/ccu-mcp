@@ -24,6 +24,20 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
   precedence. (Named `--env` because node's own CLI intercepts an
   `--env-file` argument even after the script path and refuses to start when
   the file does not exist yet — exactly the state `init` begins in.)
+- **LLM-guided setup (setup mode)** (#196): started with `--stdio --env
+  <path>` and a missing/invalid configuration, the server no longer exits —
+  it comes up as a minimal MCP server exposing only `setup_status`,
+  `setup_probe`, `setup_write_profile` and `setup_test`, so it can be
+  registered in an MCP client *before* it is configured and the LLM walks the
+  user through the same probe → pin → test-login → write flow in chat. The
+  password never travels through the model or the transcript:
+  `setup_write_profile` has no password parameter and hands off to the new
+  **`ccu-mcp secret [profile]`** subcommand, a local hidden prompt that
+  writes only the password key into the env file (mode 0600; also the
+  password-rotation path). After `setup_test` passes, reconnecting the server
+  with the identical client entry starts it fully configured. Setup mode is
+  stdio-only; a bare start without `--env` still fails loudly, and the HTTP
+  transport never enters it.
 
 ## v1.10.0 — 2026-08-19
 

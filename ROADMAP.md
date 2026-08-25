@@ -58,14 +58,16 @@ discarding it each night wasted most of the value of running the fuzzer.
      privilege level (USER vs ADMIN), writes a valid `.env`, and emits
      ready-to-paste client config snippets. Works over SSH, adds no attack
      surface.
-  2. **LLM-guided setup on the same core.** Register the server with an empty
-     config (it already starts without one) and let a `setup` tool walk the
-     conversation through the same probe/pin/validate steps. One deliberate
-     exception: the password never travels through the model or the chat
-     transcript — the setup tool hands off to `ccu-mcp secret <profile>`, a
-     one-line local prompt that writes just the secret. MCP elicitation could
-     replace the chat round-trips where clients support it, but the spec
-     forbids eliciting secrets, so the CLI hand-off stays either way.
+  2. **LLM-guided setup on the same core.** Started with `--stdio --env
+     <path>` and a missing/invalid config, the server enters a stdio-only
+     *setup mode* exposing just `setup_*` tools, so it can be registered in an
+     MCP client before it is configured and the conversation walks through the
+     same probe/pin/validate steps. One deliberate exception: the password
+     never travels through the model or the chat transcript — the setup flow
+     hands off to `ccu-mcp secret <profile>`, a one-line local prompt that
+     writes just the secret. MCP elicitation could replace the chat
+     round-trips where clients support it, but the spec forbids eliciting
+     secrets, so the CLI hand-off stays either way.
   3. Maybe later, `ccu-mcp config --ui` — a browser form bound to 127.0.0.1
      with a one-time token, process exits when closed. Only if the above turns
      out not to be enough.
