@@ -47,6 +47,10 @@ src 96.3 94.8
 src/auth 96.8 94.0
 src/cache 99.2 97.7
 src/ccu 91.6 87.1
+# src/cli (init-wizard PR): seeded at measured (89.7/77.3). Interactive CLI
+# code; the uncovered remainder is TTY-only paths (raw-mode echo suppression,
+# SIGINT) that a piped test harness cannot reach.
+src/cli 89.7 77.3
 src/health 100.0 100.0
 src/http 100.0 100.0
 # src/middleware 99.2/92.2 -> 99.2/95.2 (prototype-key PR): branches RAISED,

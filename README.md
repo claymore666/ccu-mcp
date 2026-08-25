@@ -56,6 +56,10 @@ npx ccu-mcp --stdio
 
 If it prints `server_ready` to stderr, it's working. Press Ctrl+C to stop. Now set it up in your MCP client — see below.
 
+Prefer a guided setup? `npx ccu-mcp init` probes your CCU, pins its TLS
+certificate, tests the login, writes a ready-to-use `.env` file, and prints the
+matching MCP client config — see [Command-line flags](#command-line-flags).
+
 ## Installation
 
 There are two ways to run this: **stdio** (the server runs as a subprocess of your MCP client) or **HTTP** (the server runs standalone in Docker and clients connect over the network). Pick one.
@@ -213,6 +217,11 @@ The server accepts self-signed certificates automatically — certificate verifi
 
 `CCU_TLS_FINGERPRINT` takes precedence over `CCU_CA_CERT`, which takes precedence over `CCU_TLS_VERIFY`.
 
+`ccu-mcp init` does the pinning for you: it shows the certificate the CCU
+presents and writes the fingerprint into the env file on confirmation, and
+`ccu-mcp doctor` re-checks the pin later (offering a refresh after a
+legitimate certificate rotation).
+
 ## Configuration
 
 All configuration is via environment variables:
@@ -254,11 +263,25 @@ below.
 ### Command-line flags
 
 ```sh
+ccu-mcp init           # interactive setup: probe the CCU, pin its TLS cert,
+                       #   test the login, write an env file (default ./.env)
+ccu-mcp doctor         # validate an env file end-to-end: reachability,
+                       #   certificate pin, login, privilege level
 ccu-mcp --stdio        # serve over stdin/stdout (overrides MCP_TRANSPORT)
 ccu-mcp --http         # serve over HTTP (default)
+ccu-mcp --env <path>   # load configuration from a dotenv file (already-set
+                       #   environment variables win); also accepted by
+                       #   init/doctor to pick the file they write/check
 ccu-mcp --version      # print the installed version and exit
 ccu-mcp --help         # print usage and exit
 ```
+
+`ccu-mcp init` walks through one or more CCU targets ([profiles](#multiple-ccu-targets-profiles)),
+detects whether the configured user is ADMIN- or USER-level (script-based
+tools need ADMIN), and ends with a ready-to-paste MCP client snippet. It
+needs no pre-existing configuration. `ccu-mcp doctor` exits non-zero when any
+check fails, so it also works in scripts; run it interactively to be offered
+a pin refresh when the CCU's certificate legitimately rotated.
 
 `--version` and `--help` need no configuration — use them to check what an
 installed copy actually is, e.g. after updating:
@@ -280,19 +303,24 @@ variables**. Provide them in whichever of these you prefer — you need just one
 - **Inline in `.mcp.json`** — the `env` block shown in [Option A](#option-a-stdio-direct-simplest)
   above. Simplest; self-contained.
 - **Shell `export`** — as in [Quick start](#quick-start) above.
-- **A `.env` file** — keeps secrets out of `.mcp.json`. The server does not read
-  `.env` on its own, so load it with Node's built-in flag (Node ≥ 20.6):
+- **A `.env` file** — keeps secrets out of `.mcp.json`. Pass it with the
+  server's own `--env` flag (this is also what `ccu-mcp init` writes and the
+  snippet it prints):
 
   ```json
   {
     "mcpServers": {
       "ccu-mcp": {
-        "command": "node",
-        "args": ["--env-file=/path/to/.env", "/path/to/ccu-mcp/dist/index.js", "--stdio"]
+        "command": "npx",
+        "args": ["ccu-mcp", "--stdio", "--env", "/path/to/.env"]
       }
     }
   }
   ```
+
+  (Node's own `--env-file=` flag before the script path works too, but node
+  refuses to start when that file doesn't exist yet, and it needs the full
+  path to `dist/index.js`.)
 
   Copy [`.env.example`](.env.example) to `.env` and fill it in (it documents every
   variable). Docker users can pass the same file with `docker run --env-file .env`
@@ -342,7 +370,9 @@ without switching.
 ### Configuration errors
 
 Some mistakes stop the server at startup instead of being ignored. Each of these
-would otherwise fail *silently* and much later, so the exit is deliberate:
+would otherwise fail *silently* and much later, so the exit is deliberate.
+`ccu-mcp doctor` reports the same errors against an env file without starting
+the server, alongside its live checks (reachability, certificate pin, login):
 
 | Message | Cause and why it's fatal |
 |---|---|

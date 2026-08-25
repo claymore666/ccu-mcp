@@ -26,13 +26,23 @@ import { extractBearerToken, normalizeClientIp, VERSION, loadBuildInfo } from ".
 const USAGE = `ccu-mcp — MCP server for a HomeMatic CCU (debmatic, CCU3, OpenCCU/RaspberryMatic)
 
 Usage:
-  ccu-mcp [--stdio | --http]
+  ccu-mcp [--stdio | --http] [--env <path>]
+  ccu-mcp init   [--env <path>]
+  ccu-mcp doctor [--env <path>]
   ccu-mcp --version
   ccu-mcp --help
+
+Subcommands:
+  init             Interactive setup: probe the CCU, pin its TLS certificate,
+                   test the login, and write an env file (default: ./.env)
+  doctor           Validate an existing env file end-to-end: reachability,
+                   certificate pin, login, privilege level
 
 Options:
   --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT)
   --http           Serve MCP over HTTP (default)
+  --env <path>     Load configuration from this dotenv file (already-set
+                   environment variables win, like node's own --env-file)
   -v, --version    Print the version and exit
   -h, --help       Print this help and exit
 
@@ -81,7 +91,26 @@ function handleInfoFlags(argv: string[]): boolean {
 }
 
 async function main(): Promise<void> {
-  if (handleInfoFlags(process.argv.slice(2))) return;
+  const argv = process.argv.slice(2);
+
+  // Subcommands run in the same no-environment-needed early path as the info
+  // flags (issue #112): `ccu-mcp init` exists precisely because there is no
+  // valid configuration yet. Dynamic import keeps server startup unaffected.
+  if (argv[0] === "init" || argv[0] === "doctor") {
+    const mod = argv[0] === "init" ? await import("./cli/init.js") : await import("./cli/doctor.js");
+    process.exitCode = await mod.run(argv.slice(1));
+    return;
+  }
+
+  if (handleInfoFlags(argv)) return;
+
+  // `--env` for server mode: lets an MCP client entry reference the file
+  // `ccu-mcp init` wrote instead of inlining credentials in its JSON config.
+  // Same precedence as node's own flag: already-set environment wins.
+  if (argv.includes("--env")) {
+    const { envFileArg, loadEnvFile, applyEnvVars } = await import("./cli/common.js");
+    applyEnvVars(loadEnvFile(envFileArg(argv)));
+  }
 
   const logger = createLogger();
   const config = loadConfig();

@@ -5,7 +5,7 @@ import { CcuError, mapCcuError, mapNetworkError } from "../middleware/error-mapp
 import type { Logger } from "../logger.js";
 
 /** Normalize a SHA-256 fingerprint for comparison: drop colons, lowercase. */
-function normalizeFingerprint(fp: string): string {
+export function normalizeFingerprint(fp: string): string {
   return fp.replace(/:/g, "").toLowerCase();
 }
 

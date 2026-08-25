@@ -91,7 +91,7 @@ export interface AppConfig {
  * the actual prefix, once in the duplicate-detection loop, and once inside an
  * error message that had to agree with both (issue #124).
  */
-function envPrefix(name: string): string {
+export function envPrefix(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
