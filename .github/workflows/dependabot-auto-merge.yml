@@ -37,15 +37,24 @@ on:
   pull_request_target:
     branches: [dev]
 
+# Read-only at the top, writes granted to the one job that needs them. The
+# effective token is identical either way — but Scorecard's Token-Permissions
+# check scores `contents: write` at *top* level as 0 for the whole repo
+# (checks/evaluation/permissions.go applies its -10 `reduceBy` only to
+# top-level findings; a job-level write is logged and not deducted, as long as
+# the top level is declared and not itself write). This one line was the
+# repo's entire Token-Permissions score.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   auto-merge:
     if: ${{ github.actor == 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write        # merge the PR
+      pull-requests: write   # arm auto-merge, post the fallback comment
     steps:
       - name: Enable auto-merge
         env:
