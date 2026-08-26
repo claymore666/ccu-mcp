@@ -140,9 +140,10 @@ describe.skipIf(distMissing)("setup mode e2e (built server)", () => {
     expect(write.result?.structuredContent?.written).toBe(true);
     expect(write.result?.structuredContent?.nextStep).toContain("ccu-mcp secret dev");
     expect(statSync(envPath).mode & 0o777).toBe(0o600);
-    // The password is NOT in the file yet — and there is no way to put it
-    // there over MCP.
-    expect(readFileSync(envPath, "utf-8")).toContain('CCU_DEV_PASSWORD=""');
+    // The password is NOT in the file yet — the key is absent rather than
+    // empty, so it cannot be mistaken for a deliberately empty password — and
+    // there is no way to put it there over MCP.
+    expect(readFileSync(envPath, "utf-8")).not.toContain("CCU_DEV_PASSWORD");
 
     // 3. The password arrives out-of-band through the local CLI.
     const secret = spawn("node", [DIST, "secret", "dev", "--env", envPath], {

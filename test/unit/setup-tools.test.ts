@@ -163,7 +163,10 @@ describe("setup-mode server", () => {
       const content = readFileSync(envPath, "utf-8");
       expect(content).toContain("CCU_HOST=ccu.local");
       expect(content).not.toContain("CCU_PROFILES");
-      expect(content).toContain('CCU_PASSWORD=""');
+      // No placeholder: an absent key is what tells loadConfig the password has
+      // not been chosen yet, so the server stays in setup mode. `CCU_PASSWORD=""`
+      // would read as a deliberately empty one and start the server unconfigured.
+      expect(content).not.toContain("CCU_PASSWORD");
       expect(statSync(envPath).mode & 0o777).toBe(0o600);
     });
 
@@ -223,7 +226,20 @@ describe("setup-mode server", () => {
       });
       const content = readFileSync(envPath, "utf-8");
       expect(content).not.toContain("hunter2");
-      expect(content).toContain('CCU_PASSWORD=""');
+      expect(content).not.toContain("CCU_PASSWORD");
+    });
+
+    it("preserves a deliberately empty password across a rewrite of the same endpoint", async () => {
+      writeFileSync(envPath, 'CCU_HOST=ccu.local\nCCU_PORT=80\nCCU_PASSWORD=""\n');
+      const res = parseToolResult(
+        await callTool(server, "setup_write_profile", {
+          name: "default", host: "ccu.local", port: 80, https: false, user: "Admin",
+        }),
+      ) as any;
+      // An empty password the user chose is a decision, not a missing value:
+      // it survives the rewrite and must not send them back to `ccu-mcp secret`.
+      expect(readFileSync(envPath, "utf-8")).toContain('CCU_PASSWORD=""');
+      expect(res.nextStep).not.toContain("ccu-mcp secret");
     });
 
     it("honors makeDefault", async () => {

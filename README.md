@@ -229,7 +229,7 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CCU_HOST` | required | Hostname or IP of your CCU |
-| `CCU_PASSWORD` | required | CCU admin password |
+| `CCU_PASSWORD` | required | CCU admin password. Must be set, but may be empty for a box without one (a fresh OpenCCU) |
 | `CCU_USER` | `Admin` | CCU username |
 | `CCU_PORT` | `80` | API port (`443` when using HTTPS) |
 | `CCU_HTTPS` | `false` | Connect via HTTPS (self-signed certs supported) |
@@ -415,7 +415,7 @@ server's instructions) instead of exiting, so it can be fixed conversationally:
 | Message | Cause and why it's fatal |
 |---|---|
 | `CCU_HOST environment variable is required` | No CCU configured (and no `CCU_PROFILES`). |
-| `CCU_PASSWORD environment variable is required` | Unset **or empty**. Note the asymmetry: a *profile* password may be empty (`CCU_<NAME>_PASSWORD=`, e.g. an OpenCCU dev box), the flat one may not. |
+| `CCU_PASSWORD environment variable is required` | The variable is **absent**. An empty value is accepted — a fresh OpenCCU box has no Admin password — so this means "not set yet", which is also what keeps a setup-mode server in setup mode until `ccu-mcp secret` stores one. |
 | `CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not` | A leftover from a profile setup. Ignoring it would point writes at the flat `CCU_HOST` box while the env file suggests a named target. |
 | `CCU_PROFILES is set but lists no profile names` | Empty or comma-only value. |
 | `CCU_PROFILES lists "<name>" more than once` | Duplicate profile name. |
