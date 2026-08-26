@@ -138,7 +138,12 @@ describe.skipIf(distMissing)("setup mode e2e (built server)", () => {
       arguments: { name: "dev", host: "127.0.0.1", port: ccu.port, https: false },
     });
     expect(write.result?.structuredContent?.written).toBe(true);
-    expect(write.result?.structuredContent?.nextStep).toContain("ccu-mcp secret dev");
+    // The printed command must invoke THIS server's own entry point — the
+    // subprocess was spawned as `node DIST --stdio …`, so argv[1] is DIST.
+    // A bare `npx ccu-mcp` here reaches whichever install npx finds, which for
+    // an older global has no `secret` subcommand and fails with a misleading
+    // "CCU_HOST environment variable is required".
+    expect(write.result?.structuredContent?.nextStep).toContain(`node ${DIST} secret dev`);
     // Read before stat: the reverse order is a check-then-use pattern CodeQL
     // flags as a file-system race (js/file-system-race).
     const written = readFileSync(envPath, "utf-8");

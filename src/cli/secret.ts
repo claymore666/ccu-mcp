@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { Prompter, type PromptIo } from "./prompt.js";
-import { envFileArg, loadEnvFile } from "./common.js";
+import { envFileArg, loadEnvFile, selfCommand } from "./common.js";
 import { quoteEnvValue, readEnvFile, replaceEnvKey, writeEnvFile } from "./env-writer.js";
 import { envPrefix } from "../config.js";
 
@@ -20,7 +20,7 @@ export async function run(argv: string[], io?: PromptIo): Promise<number> {
     envPath = envFileArg(argv);
     content = readEnvFile(envPath);
     if (content === undefined) {
-      say(`ccu-mcp secret: ${resolve(envPath)} does not exist — run \`ccu-mcp init\` or the MCP setup flow first.`);
+      say(`ccu-mcp secret: ${resolve(envPath)} does not exist — run \`${selfCommand("init", "--env", envPath)}\` or the MCP setup flow first.`);
       return 1;
     }
     vars = loadEnvFile(envPath);
@@ -38,7 +38,7 @@ export async function run(argv: string[], io?: PromptIo): Promise<number> {
   if (names.length > 0) {
     if (!profileArg) {
       say(`This file configures named targets (${names.join(", ")}) — say which one:`);
-      say(`  ccu-mcp secret <profile> --env ${envPath}`);
+      say(`  ${selfCommand("secret", "<profile>", "--env", envPath)}`);
       return 1;
     }
     const match = names.find((n) => n.toLowerCase() === profileArg.toLowerCase());
@@ -51,7 +51,7 @@ export async function run(argv: string[], io?: PromptIo): Promise<number> {
   } else {
     if (profileArg) {
       say(`ccu-mcp secret: this file uses the single-CCU form — no profile name needed:`);
-      say(`  ccu-mcp secret --env ${envPath}`);
+      say(`  ${selfCommand("secret", "--env", envPath)}`);
       return 1;
     }
     key = "CCU_PASSWORD";
@@ -66,7 +66,7 @@ export async function run(argv: string[], io?: PromptIo): Promise<number> {
     }
     writeEnvFile(envPath, replaceEnvKey(content, key, quoteEnvValue(password)));
     ui.say(`Wrote ${key} to ${resolve(envPath)} (mode 0600).`);
-    ui.say(`Verify with: ccu-mcp doctor --env ${envPath}`);
+    ui.say(`Verify with: ${selfCommand("doctor", "--env", envPath)}`);
     return 0;
   } catch (err) {
     if ((err as Error).message === "input closed") {

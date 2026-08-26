@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { Prompter, type PromptIo } from "./prompt.js";
-import { envFileArg, displayFingerprint } from "./common.js";
+import { envFileArg, displayFingerprint, selfCommand } from "./common.js";
 import {
   buildEnvContent,
   mergeEnvContent,
@@ -239,9 +239,13 @@ async function runWizard(ui: Prompter, envPath: string): Promise<number> {
   );
   ui.say("");
   ui.say("Or via the Claude Code CLI:");
+  // Stays `npx ccu-mcp` on purpose, unlike the next-step hints below: this
+  // line goes into a DURABLE client config. argv[1] may point inside npx's
+  // cache (~/.npm/_npx/<hash>/…), which is garbage-collected — fine for a
+  // command to run now, wrong to bake into a permanent MCP server entry.
   ui.say(`  claude mcp add ccu-mcp -- npx ccu-mcp --stdio --env ${absPath}`);
   ui.say("");
-  ui.say(`Re-check this configuration anytime with: ccu-mcp doctor --env ${absPath}`);
+  ui.say(`Re-check this configuration anytime with: ${selfCommand("doctor", "--env", absPath)}`);
   return 0;
 }
 

@@ -113,6 +113,22 @@ async function main(): Promise<void> {
     return;
   }
 
+  // A bare first word is always a subcommand attempt — server mode is entered
+  // with flags (--stdio/--http/--env). Falling through to startup instead made
+  // an OLDER binary answer `ccu-mcp secret …` with "CCU_HOST environment
+  // variable is required": a complaint about configuration, for what is really
+  // "this build predates that command". Name the version, so the next person
+  // who runs a printed command against the wrong install can see which one it
+  // reached.
+  if (argv[0] !== undefined && !argv[0].startsWith("-")) {
+    process.stderr.write(
+      `ccu-mcp: unknown command "${argv[0]}" (ccu-mcp ${VERSION}).\n` +
+        `Known commands: init, doctor, secret. Run \`ccu-mcp --help\` for usage.\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+
   if (handleInfoFlags(argv)) return;
 
   // `--env` for server mode: lets an MCP client entry reference the file

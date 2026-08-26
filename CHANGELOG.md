@@ -5,6 +5,25 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
+- **Fixed: the guided setup printed commands for the wrong binary.**
+  `setup_write_profile` told the user to run `npx ccu-mcp secret …`, and
+  `secret`/`init` signed off with bare `ccu-mcp doctor …`. `npx` resolves to
+  whatever it finds in cwd or the global prefix, which for anyone with an
+  older global install is a *different* build than the one giving the advice
+  — and `secret`, `init` and `doctor` all postdate the latest published tag,
+  so that build had no such subcommand. Worse, it did not say so: an unknown
+  first argument fell through to normal server startup, and the flow died on
+  `CCU_HOST environment variable is required` — a complaint about a variable
+  the user had just configured correctly, from a file that binary never read.
+  Every printed command now invokes the running build (`process.argv[1]`),
+  falling back to a version-pinned `npx ccu-mcp@<version>`. The MCP client
+  snippet from `init` deliberately keeps plain `npx ccu-mcp`, since that entry
+  is durable and argv[1] may point into npx's collectable cache.
+- **An unknown subcommand now fails loudly** — `ccu-mcp frobnicate` exits 2
+  with `unknown command "frobnicate" (ccu-mcp X.Y.Z)` instead of starting a
+  server. The version is the point: it identifies which install a printed
+  command actually reached.
+
 - **Fixed: an empty `CCU_PASSWORD` is now accepted.** A fresh OpenCCU box has
   no Admin password, and `ccu-mcp secret` stores an empty one while telling the
   user that is normal — but the flat single-CCU loader then rejected it with
