@@ -5,6 +5,21 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
+- **Documented multi-target setup end to end.** The README claimed
+  `ccu-mcp init` walks "one or more" targets and left it there; it now shows a
+  worked two-CCU session — wizard transcript, the profile-form env file it
+  writes, one `ccu-mcp secret <name>` run per target, a `doctor` sweep over
+  both, and the single unchanged MCP client entry that serves them. Three
+  statements that did not match the code were corrected: `--env` is accepted by
+  `secret` too (not just `init`/`doctor`); the "absent password keeps the
+  server in setup mode" rule holds for the flat single-CCU form only, since an
+  absent `CCU_<NAME>_PASSWORD` reads as empty and starts the server; and the
+  quick start now mentions that `CACHE_DIR` defaults to the Docker path
+  `/data`, which is unwritable outside a container.
+- **`ccu-mcp secret` on a profile file lists one runnable line per target**
+  instead of a `secret '<profile>'` placeholder — the placeholder's angle
+  brackets were shell-quoted, and each target needs its own run anyway.
+
 - **Fixed: the guided setup printed commands for the wrong binary.**
   `setup_write_profile` told the user to run `npx ccu-mcp secret …`, and
   `secret`/`init` signed off with bare `ccu-mcp doctor …`. `npx` resolves to

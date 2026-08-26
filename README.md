@@ -56,6 +56,13 @@ npx ccu-mcp --stdio
 
 If it prints `server_ready` to stderr, it's working. Press Ctrl+C to stop. Now set it up in your MCP client — see below.
 
+A `cache_save_failed … mkdir '/data'` line alongside it is harmless here but
+worth fixing for real use: `CACHE_DIR` defaults to `/data` (the Docker layout),
+so outside a container the device-type cache and the CCU session are never
+persisted between runs. Point it somewhere writable:
+`export CACHE_DIR="$HOME/.cache/ccu-mcp"` (or the same key in your `.env` /
+`env` block).
+
 Prefer a guided setup? `npx ccu-mcp init` probes your CCU, pins its TLS
 certificate, tests the login, writes a ready-to-use `.env` file, and prints the
 matching MCP client config — see [Command-line flags](#command-line-flags).
@@ -267,24 +274,30 @@ ccu-mcp init           # interactive setup: probe the CCU, pin its TLS cert,
                        #   test the login, write an env file (default ./.env)
 ccu-mcp doctor         # validate an env file end-to-end: reachability,
                        #   certificate pin, login, privilege level
-ccu-mcp secret [prof]  # store the CCU password into an env file via a local
-                       #   hidden prompt (used by the LLM-guided setup below;
-                       #   also the password-rotation path)
+ccu-mcp secret [prof]  # store ONE CCU password into an env file via a local
+                       #   hidden prompt — name the target when the file
+                       #   defines profiles, omit it for a single CCU (used by
+                       #   the LLM-guided setup below; also the rotation path)
 ccu-mcp --stdio        # serve over stdin/stdout (overrides MCP_TRANSPORT)
 ccu-mcp --http         # serve over HTTP (default)
 ccu-mcp --env <path>   # load configuration from a dotenv file (already-set
                        #   environment variables win); also accepted by
-                       #   init/doctor to pick the file they write/check
+                       #   init/doctor/secret to pick the file they
+                       #   write/check/update (default ./.env)
 ccu-mcp --version      # print the installed version and exit
 ccu-mcp --help         # print usage and exit
 ```
 
-`ccu-mcp init` walks through one or more CCU targets ([profiles](#multiple-ccu-targets-profiles)),
-detects whether the configured user is ADMIN- or USER-level (script-based
-tools need ADMIN), and ends with a ready-to-paste MCP client snippet. It
-needs no pre-existing configuration. `ccu-mcp doctor` exits non-zero when any
-check fails, so it also works in scripts; run it interactively to be offered
-a pin refresh when the CCU's certificate legitimately rotated.
+`ccu-mcp init` walks through one or more CCU targets ([profiles](#multiple-ccu-targets-profiles)) —
+it asks up front whether you want several, then loops over name, endpoint,
+certificate pin, credentials and the two policy flags per target and asks
+which one starts active. It detects whether each configured user is ADMIN- or
+USER-level (script-based tools need ADMIN), and ends with a ready-to-paste MCP
+client snippet. It needs no pre-existing configuration. `ccu-mcp doctor` exits
+non-zero when any check fails, so it also works in scripts; run it
+interactively to be offered a pin refresh when the CCU's certificate
+legitimately rotated. Worked example:
+[Setting up several targets](#setting-up-several-targets).
 
 ### LLM-guided setup (setup mode)
 
@@ -316,6 +329,17 @@ Copy the command the tool prints rather than this one: it names the build that
 printed it, so it cannot land on an older install that lacks the subcommand.
 Once `setup_test` reports green, reconnect the MCP server and the identical
 client entry starts it fully configured.
+
+Several CCUs work here too — say so ("*I have a prod and a dev CCU*") and the
+assistant repeats probe → write → secret per target: `setup_write_profile`
+takes a `name` (plus `protected`, `readonly` and `makeDefault`) and upserts
+that one target, preserving the others and their already-stored passwords.
+Each target needs its own `ccu-mcp secret <name>` run. One caveat while the
+conversation is still in progress: as soon as a **named** target has a host,
+the configuration loads, so the next restart leaves setup mode even if no
+password has been stored yet (an absent `CCU_<NAME>_PASSWORD` reads as empty).
+Finish with `setup_test` — it reports the failing login — rather than
+reconnecting early.
 
 Setup mode is stdio-only (an unconfigured HTTP endpoint that writes config
 files would be an unacceptable surface), and a bare start without `--env`
@@ -388,8 +412,10 @@ CCU_DEV_PASSWORD=                  # may be empty (e.g. an OpenCCU dev box)
 
 Each profile takes the same settings as the flat vars, prefixed
 `CCU_<NAME>_` (name upper-cased, non-alphanumerics → `_`): `HOST` (required),
-`PASSWORD` (may be empty), `USER`, `PORT`, `HTTPS`, `TIMEOUT`, `SCRIPT_TIMEOUT`,
-`TLS_FINGERPRINT`, `CA_CERT`, `TLS_VERIFY` — plus two policy flags:
+`PASSWORD` (may be empty — and, unlike the flat `CCU_PASSWORD`, may also be
+left out entirely, which reads as empty), `USER`, `PORT`, `HTTPS`, `TIMEOUT`,
+`SCRIPT_TIMEOUT`, `TLS_FINGERPRINT`, `CA_CERT`, `TLS_VERIFY` — plus two policy
+flags:
 
 - `CCU_<NAME>_PROTECTED=true` — write tools refuse unless called with
   `confirm: true`, which unlocks writes to that target for the rest of the session.
@@ -405,6 +431,152 @@ profile (unchanged behavior). At runtime, `list_ccu_targets` shows the targets,
 tools also accept an optional `target` to read from another CCU for a single call
 without switching.
 
+#### Setting up several targets
+
+**With the wizard.** `ccu-mcp init` asks up front, then loops over name →
+endpoint → certificate pin → credentials → policy flags per target, and ends
+by asking which one starts active:
+
+```console
+$ npx ccu-mcp init --env ~/.config/ccu-mcp/.env
+ccu-mcp setup — probes your CCU, pins its TLS certificate, tests the
+login, and writes the result to /home/you/.config/ccu-mcp/.env.
+
+Set up multiple CCU targets (e.g. prod/dev)? [y/N]: y
+Profile name [prod]: prod
+CCU hostname or IP: ccu.example
+Probing ccu.example ...
+  Found the CCU API on port 443 (HTTPS).
+Use HTTPS? [Y/n]: y
+Port [443]: 443
+The CCU presents this TLS certificate:
+  Subject: ccu.example
+  Issuer:  ccu.example
+  Valid:   Jun 19 21:37:09 2026 GMT — Jun 16 21:37:09 2036 GMT
+  SHA-256: 90:0C:4C:F2:53:22:E7:78:...:40:ED:16:95:6E:BB:B1:53
+Pin this certificate's fingerprint (recommended)? [Y/n]: y
+CCU user [Admin]: ai
+CCU password (input hidden):
+Testing login ...
+  Login OK (CCU 3.87.6.20260614) — privilege level ADMIN: all tools available.
+Protect this target (write tools then require confirm:true)? [y/N]: y
+Make this target read-only (write tools refused entirely)? [y/N]: n
+Add another CCU target? [y/N]: y
+Profile name: dev
+CCU hostname or IP: 192.168.1.50
+Probing 192.168.1.50 ...
+  Found the CCU API on port 80 (HTTP).
+Use HTTPS? [Y/n]: n
+Port [80]: 80
+CCU user [Admin]: Admin
+CCU password (input hidden):
+Testing login ...
+  Login OK (CCU 3.87.6.20260614) — privilege level ADMIN: all tools available.
+Protect this target (write tools then require confirm:true)? [y/N]: n
+Make this target read-only (write tools refused entirely)? [y/N]: n
+Add another CCU target? [y/N]: n
+Default target (prod/dev) [prod]: prod
+
+Wrote /home/you/.config/ccu-mcp/.env (mode 0600).
+```
+
+The file it writes is the profile form, one commented block per target — and
+the wizard rewrites only these keys, so anything else in the file (`LOG_LEVEL`,
+`CACHE_DIR`, `MCP_*`) survives:
+
+```sh
+# Written by ccu-mcp setup — https://github.com/claymore666/ccu-mcp#configuration
+CCU_PROFILES=prod,dev
+CCU_DEFAULT_PROFILE=prod
+
+# --- target: prod ---
+CCU_PROD_HOST=ccu.example
+CCU_PROD_PORT=443
+CCU_PROD_HTTPS=true
+CCU_PROD_USER=ai
+CCU_PROD_PASSWORD="..."
+CCU_PROD_TLS_FINGERPRINT=90:0C:4C:F2:53:22:E7:78:...:40:ED:16:95:6E:BB:B1:53
+CCU_PROD_PROTECTED=true
+
+# --- target: dev ---
+CCU_DEV_HOST=192.168.1.50
+CCU_DEV_PORT=80
+CCU_DEV_HTTPS=false
+CCU_DEV_USER=Admin
+CCU_DEV_PASSWORD=""
+```
+
+Rerunning `init` on an existing file offers to replace those settings; adding a
+third target means walking the whole list again, so for a one-off addition edit
+the file (or use `setup_write_profile`, which upserts a single target) and then
+run `doctor`.
+
+**One password per target.** `ccu-mcp secret` writes exactly one key, so it
+takes the target name — `init` prompts for passwords inline, but the
+[LLM-guided flow](#llm-guided-setup-setup-mode) and every later rotation go
+through `secret`. Called without a name on a profile file it lists the runs you
+need:
+
+```console
+$ ccu-mcp secret --env ~/.config/ccu-mcp/.env
+This file configures named targets (prod, dev) — one password each:
+  node /home/you/.local/bin/ccu-mcp secret prod --env /home/you/.config/ccu-mcp/.env
+  node /home/you/.local/bin/ccu-mcp secret dev --env /home/you/.config/ccu-mcp/.env
+
+$ ccu-mcp secret prod --env ~/.config/ccu-mcp/.env
+CCU password for ai@ccu.example (input hidden):
+Wrote CCU_PROD_PASSWORD to /home/you/.config/ccu-mcp/.env (mode 0600).
+```
+
+Those hints come out as `node <path>` rather than `ccu-mcp` on purpose: the
+path is the build that printed them, so copying the line cannot land on some
+older copy that lacks the subcommand. `secret` refuses a name against a flat
+single-CCU file, and refuses an unknown one against a profile file, so it can
+never write the wrong key.
+
+**Verify everything at once.** `doctor` walks every target — configuration,
+reachability, pin, login and privilege level — and exits non-zero if any check
+fails:
+
+```console
+$ ccu-mcp doctor --env ~/.config/ccu-mcp/.env
+ccu-mcp doctor — checking /home/you/.config/ccu-mcp/.env
+  ✓ configuration loads: 2 target(s), default "prod"
+
+Target "prod" — ccu.example:443 (HTTPS)
+  ✓ CCU API reachable
+  ✓ pinned TLS fingerprint matches the presented certificate
+  ✓ login OK as "ai" (CCU 3.87.6.20260614) — privilege level ADMIN
+
+Target "dev" — 192.168.1.50:80 (HTTP)
+  ✓ CCU API reachable
+  ✓ login OK as "Admin" (CCU 3.87.6.20260614) — privilege level ADMIN
+
+All checks passed.
+```
+
+**In the client.** One MCP server entry serves all targets — the `--env` file
+carries the roster, so nothing about the client config changes when you add a
+CCU:
+
+```json
+{
+  "mcpServers": {
+    "ccu-mcp": {
+      "command": "npx",
+      "args": ["ccu-mcp", "--stdio", "--env", "/home/you/.config/ccu-mcp/.env"]
+    }
+  }
+}
+```
+
+Then, in chat: *"which CCUs are configured?"* (`list_ccu_targets`), *"read the
+living-room temperature on dev"* (a one-call `target: "dev"`), *"switch to
+dev"* (`use_ccu`). With `CCU_PROD_PROTECTED=true` as above, the first write
+against prod comes back asking for `confirm: true` and unlocks that target for
+the rest of the session — except `run_script` and `delete_system_variable`,
+which ask every time.
+
 ### Configuration errors
 
 Some mistakes stop the server at startup instead of being ignored. Each of these
@@ -418,7 +590,7 @@ server's instructions) instead of exiting, so it can be fixed conversationally:
 | Message | Cause and why it's fatal |
 |---|---|
 | `CCU_HOST environment variable is required` | No CCU configured (and no `CCU_PROFILES`). |
-| `CCU_PASSWORD environment variable is required` | The variable is **absent**. An empty value is accepted — a fresh OpenCCU box has no Admin password — so this means "not set yet", which is also what keeps a setup-mode server in setup mode until `ccu-mcp secret` stores one. |
+| `CCU_PASSWORD environment variable is required` | The variable is **absent**. An empty value is accepted — a fresh OpenCCU box has no Admin password — so this means "not set yet", which is what keeps a single-CCU setup-mode server in setup mode until `ccu-mcp secret` stores one. Named profiles are deliberately laxer: an absent `CCU_<NAME>_PASSWORD` reads as empty and the server starts, so on that path a missing password surfaces as a failed login (`setup_test` / `doctor` report it) rather than as this error. |
 | `CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not` | A leftover from a profile setup. Ignoring it would point writes at the flat `CCU_HOST` box while the env file suggests a named target. |
 | `CCU_PROFILES is set but lists no profile names` | Empty or comma-only value. |
 | `CCU_PROFILES lists "<name>" more than once` | Duplicate profile name. |

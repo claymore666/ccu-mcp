@@ -77,6 +77,10 @@ describe("ccu-mcp secret", () => {
     const { io, output } = makeIo([]);
     expect(await run(["--env", envPath], io)).toBe(1);
     expect(output()).toContain("prod, dev");
+    // A runnable line per target, not a shell-quoted `'<profile>'` placeholder.
+    expect(output()).toMatch(/secret prod --env/);
+    expect(output()).toMatch(/secret dev --env/);
+    expect(output()).not.toContain("<profile>");
   });
 
   it("rejects an unknown profile name", async () => {
