@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Logger } from "../logger.js";
 import { loadConfig, envPrefix, type AppConfig } from "../config.js";
-import { loadEnvFile, displayFingerprint } from "../cli/common.js";
+import { loadEnvFile, displayFingerprint, selfCommand } from "../cli/common.js";
 import {
   buildEnvContent,
   mergeEnvContent,
@@ -131,8 +131,8 @@ function certResult(cert: CertInfo): Record<string, unknown> {
 }
 
 function secretCommand(deps: SetupDeps, profileName: string): string {
-  const profileArg = profileName === "default" ? "" : ` ${profileName}`;
-  return `npx ccu-mcp secret${profileArg} --env ${deps.envPath}`;
+  const profileArg = profileName === "default" ? [] : [profileName];
+  return selfCommand("secret", ...profileArg, "--env", deps.envPath);
 }
 
 function registerStatus(server: McpServer, deps: SetupDeps): void {

@@ -158,8 +158,13 @@ describe("setup-mode server", () => {
         }),
       ) as any;
       expect(res.written).toBe(true);
-      expect(res.nextStep).toContain("ccu-mcp secret");
+      expect(res.nextStep).toContain("secret");
       expect(res.nextStep).toContain(envPath);
+      // Must name the build that is printing it, not whatever `npx` would
+      // resolve to — an older global install may not have `secret` at all,
+      // and then answers with an unrelated configuration error.
+      expect(res.nextStep).toContain(process.argv[1]);
+      expect(res.nextStep).not.toContain("npx ccu-mcp secret");
       const content = readFileSync(envPath, "utf-8");
       expect(content).toContain("CCU_HOST=ccu.local");
       expect(content).not.toContain("CCU_PROFILES");
