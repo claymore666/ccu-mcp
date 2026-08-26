@@ -309,10 +309,13 @@ you through the same probe → pin → test-login → write flow in plain chat.
 Then just ask: *"set up my CCU connection"*. One deliberate exception: **the
 password never travels through the model or the chat transcript**.
 `setup_write_profile` has no password parameter; instead the assistant hands
-you a one-liner to run in a terminal — `ccu-mcp secret <profile> --env
-/path/to/.env` — which prompts locally with echo off and writes only the
-password into the file (mode 0600). Once `setup_test` reports green, reconnect
-the MCP server and the identical client entry starts it fully configured.
+you a one-liner to run in a terminal — `npx ccu-mcp secret <profile> --env
+/path/to/.env`, or the equivalent for however you installed it — which prompts
+locally with echo off and writes only the password into the file (mode 0600).
+Copy the command the tool prints rather than this one: it names the build that
+printed it, so it cannot land on an older install that lacks the subcommand.
+Once `setup_test` reports green, reconnect the MCP server and the identical
+client entry starts it fully configured.
 
 Setup mode is stdio-only (an unconfigured HTTP endpoint that writes config
 files would be an unacceptable surface), and a bare start without `--env`
