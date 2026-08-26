@@ -9,7 +9,13 @@ export interface WizardProfile {
   https: boolean;
   tlsFingerprint?: string;
   user: string;
-  password: string;
+  /**
+   * Undefined means "no password decided yet" — the key is then left out of
+   * the file entirely, so loading fails and the server stays in setup mode
+   * until `ccu-mcp secret` writes one. An empty string is a real choice (a
+   * fresh OpenCCU box has no Admin password) and IS written.
+   */
+  password?: string;
   protected: boolean;
   readonly: boolean;
 }
@@ -60,7 +66,7 @@ export function buildEnvContent(
     lines.push(`CCU_${prefix}PORT=${p.port}`);
     lines.push(`CCU_${prefix}HTTPS=${p.https}`);
     lines.push(`CCU_${prefix}USER=${quoteEnvValue(p.user)}`);
-    lines.push(`CCU_${prefix}PASSWORD=${quoteEnvValue(p.password)}`);
+    if (p.password !== undefined) lines.push(`CCU_${prefix}PASSWORD=${quoteEnvValue(p.password)}`);
     if (p.tlsFingerprint) lines.push(`CCU_${prefix}TLS_FINGERPRINT=${p.tlsFingerprint}`);
     if (p.protected) lines.push(`CCU_${prefix}PROTECTED=true`);
     if (p.readonly) lines.push(`CCU_${prefix}READONLY=true`);

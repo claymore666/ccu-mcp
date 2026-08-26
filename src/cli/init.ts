@@ -39,7 +39,9 @@ function toCcuConfig(p: WizardProfile): CcuConfig {
     tlsVerify: false,
     tlsFingerprint: p.tlsFingerprint,
     user: p.user,
-    password: p.password,
+    // The file-level "not decided yet" distinction has no meaning on the wire:
+    // a login attempt sends an empty password either way.
+    password: p.password ?? "",
     timeout: 10_000,
     scriptTimeout: 30_000,
   };

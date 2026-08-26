@@ -410,6 +410,16 @@ describe("loadConfig", () => {
       expect(config.ccu.password).toBe("secret");
     });
 
+    it("accepts an empty flat CCU_PASSWORD, but not a missing one", () => {
+      process.env.CCU_HOST = "openccu";
+      // A fresh OpenCCU box has no Admin password; `ccu-mcp secret` stores "".
+      process.env.CCU_PASSWORD = "";
+      expect(loadConfig().ccu.password).toBe("");
+
+      delete process.env.CCU_PASSWORD;
+      expect(() => loadConfig()).toThrow(/CCU_PASSWORD environment variable is required/);
+    });
+
     it("builds one profile per CCU_PROFILES entry from CCU_<NAME>_* vars", () => {
       process.env.CCU_PROFILES = "prod,dev";
       process.env.CCU_DEFAULT_PROFILE = "prod";

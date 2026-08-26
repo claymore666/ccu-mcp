@@ -204,10 +204,24 @@ export function loadConfig(): AppConfig {
     }
   };
 
+  // The flat form's password must be PRESENT, but may be empty: a fresh OpenCCU
+  // box has no Admin password, and rejecting "" left it unconfigurable — the
+  // setup wizard's own `ccu-mcp secret` writes an empty value and says it is
+  // normal, then the server refused to start on it. Absence stays an error: it
+  // is what distinguishes "not entered yet" from "chosen to be empty", and so
+  // is what holds the server in setup mode until the secret has been stored.
+  const requirePasswordEnv = (envName: string): string => {
+    const value = process.env[envName];
+    if (value === undefined) {
+      throw new Error(`${envName} environment variable is required — run \`ccu-mcp secret\` to store one (an empty password is allowed)`);
+    }
+    return value;
+  };
+
   // Build one named profile from CCU_<PREFIX>_* env vars (issue #69). These are
   // read DYNAMICALLY (template-literal keys), so the env-example-sync test's
   // literal scan doesn't see them — intentional; they're documented as comments
-  // in .env.example. Password may be empty (OpenCCU dev boxes default to it).
+  // in .env.example.
   const buildProfile = (name: string): CcuProfile => {
     const p = envPrefix(name);
     const get = (suffix: string): string | undefined => process.env[`CCU_${p}_${suffix}`]?.trim() || undefined;
@@ -226,6 +240,9 @@ export function loadConfig(): AppConfig {
         tlsFingerprint: get("TLS_FINGERPRINT"),
         caCert: readCaCert(`CCU_${p}_CA_CERT`, get("CA_CERT")),
         user: get("USER") || "Admin",
+        // Absent means empty here, unlike the flat form below — a named
+        // profile has never required the key (issue #69) and OpenCCU dev
+        // targets are configured exactly that way.
         password: process.env[`CCU_${p}_PASSWORD`] ?? "",
         timeout: parseIntEnv(`CCU_${p}_TIMEOUT`, "10000"),
         scriptTimeout: parseIntEnv(`CCU_${p}_SCRIPT_TIMEOUT`, "30000"),
@@ -250,8 +267,7 @@ export function loadConfig(): AppConfig {
     }
     const host = process.env.CCU_HOST;
     if (!host) throw new Error("CCU_HOST environment variable is required");
-    const password = process.env.CCU_PASSWORD;
-    if (!password) throw new Error("CCU_PASSWORD environment variable is required");
+    const password = requirePasswordEnv("CCU_PASSWORD");
     const flatHttps = parseBoolEnv("CCU_HTTPS");
     profiles = [{
       name: "default",

@@ -5,6 +5,17 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
+- **Fixed: an empty `CCU_PASSWORD` is now accepted.** A fresh OpenCCU box has
+  no Admin password, and `ccu-mcp secret` stores an empty one while telling the
+  user that is normal — but the flat single-CCU loader then rejected it with
+  `CCU_PASSWORD environment variable is required` and the server would not
+  start. The rule is now presence, not non-emptiness: the variable must be
+  set, its value may be empty. An absent key is still an error, and is what
+  distinguishes "not entered yet" from "chosen to be empty". Named profiles
+  (`CCU_<NAME>_PASSWORD`) already allowed empty and are unchanged.
+  Correspondingly, `setup_write_profile` no longer writes a `PASSWORD=""`
+  placeholder for a new target — it leaves the key out, so a setup-mode server
+  stays in setup mode until `ccu-mcp secret` has run.
 - **`ccu-mcp init`** — interactive setup wizard (#195): probes the CCU
   (auto-detecting HTTPS/port), shows the TLS certificate and pins its SHA-256
   fingerprint on confirmation, tests the login, reports the detected privilege

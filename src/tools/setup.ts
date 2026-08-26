@@ -63,7 +63,9 @@ export function profilesFromVars(vars: Record<string, string>): {
       https,
       tlsFingerprint: g("TLS_FINGERPRINT")?.trim() || undefined,
       user: g("USER")?.trim() || "Admin",
-      password: g("PASSWORD") ?? "",
+      // Undefined (key absent) and "" (deliberately empty) must stay distinct
+      // here — a rewrite has to preserve which of the two the file recorded.
+      password: g("PASSWORD"),
       protected: boolVar(g("PROTECTED")),
       readonly: boolVar(g("READONLY")),
     };
@@ -313,11 +315,14 @@ function registerWriteProfile(server: McpServer, deps: SetupDeps): void {
           tlsFingerprint: args.tlsFingerprint,
           user,
           // Same endpoint: a stored password stays valid, keep it. New or
-          // moved target: never carry a secret over to a different box.
+          // moved target: never carry a secret over to a different box — and
+          // leave the key out rather than writing an empty placeholder, which
+          // would look like a deliberately empty password and let the server
+          // start before `ccu-mcp secret` has run.
           password:
             previous && previous.host === args.host && previous.port === args.port
               ? previous.password
-              : "",
+              : undefined,
           protected: args.protected ?? previous?.protected ?? false,
           readonly: args.readonly ?? previous?.readonly ?? false,
         };
@@ -335,7 +340,7 @@ function registerWriteProfile(server: McpServer, deps: SetupDeps): void {
         const content = existing === undefined ? managed : mergeEnvContent(existing, managed).content;
         writeEnvFile(deps.envPath, content);
 
-        const nextStep = updated.password === ""
+        const nextStep = updated.password === undefined
           ? `Ask the user to run this in a terminal (the password is typed there, hidden — never in this chat):\n  ${secretCommand(deps, updated.name)}\nThen call setup_test.`
           : "The stored password was kept. Call setup_test to verify the target.";
         return structuredResult({
