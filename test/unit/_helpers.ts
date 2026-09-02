@@ -15,14 +15,16 @@ interface TargetSpec {
   readonly?: boolean;
   password?: string;
   sessionCall?: SessionCall;
+  /** Session state reported by isLoggedIn() — false stands in for a login that never succeeded. */
+  loggedIn?: boolean;
 }
 
-function makeSession(sessionCall?: SessionCall) {
+function makeSession(sessionCall?: SessionCall, loggedIn = true) {
   return {
     call: sessionCall ?? vi.fn(async () => []),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
-    isLoggedIn: vi.fn(() => true),
+    isLoggedIn: vi.fn(() => loggedIn),
     getSessionId: vi.fn(() => "test-session"),
     callNoSession: vi.fn(async () => null),
     destroy: vi.fn(),
@@ -38,7 +40,7 @@ function makeTarget(spec: TargetSpec): Target {
       readonly: spec.readonly ?? false,
       ccu: { host: "test", port: 80, https: false, tlsVerify: false, user: "Admin", password: spec.password ?? "pw", timeout: 5000, scriptTimeout: 10000 },
     },
-    session: makeSession(spec.sessionCall),
+    session: makeSession(spec.sessionCall, spec.loggedIn ?? true),
     resolver: new Resolver(),
     deviceTypeCache: new DeviceTypeCache("/tmp/nonexistent-test", 86400, new Logger("error"), `device-type-cache.${name}.json`),
     sysVarTypeCache: { entry: null, gen: 0 },
@@ -73,6 +75,8 @@ export function createMockDeps(overrides?: {
   readonly?: boolean;
   /** Build a multi-target registry instead of the single default target. */
   targets?: TargetSpec[];
+  /** Session state of the single default target; false = login never succeeded. */
+  loggedIn?: boolean;
 }): ServerDeps {
   const rateLimiter = new RateLimiter(1000, 1000); // effectively unlimited for tests
   const specs: TargetSpec[] = overrides?.targets ?? [{
@@ -80,6 +84,7 @@ export function createMockDeps(overrides?: {
     protected: overrides?.protected,
     readonly: overrides?.readonly,
     sessionCall: overrides?.sessionCall,
+    loggedIn: overrides?.loggedIn,
   }];
   const registry = new FakeRegistry(specs.map(makeTarget));
   const selection = new TargetSelection(registry as unknown as TargetRegistry);
