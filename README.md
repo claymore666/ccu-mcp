@@ -334,12 +334,12 @@ Several CCUs work here too — say so ("*I have a prod and a dev CCU*") and the
 assistant repeats probe → write → secret per target: `setup_write_profile`
 takes a `name` (plus `protected`, `readonly` and `makeDefault`) and upserts
 that one target, preserving the others and their already-stored passwords.
-Each target needs its own `ccu-mcp secret <name>` run. One caveat while the
-conversation is still in progress: as soon as a **named** target has a host,
-the configuration loads, so the next restart leaves setup mode even if no
-password has been stored yet (an absent `CCU_<NAME>_PASSWORD` reads as empty).
-Finish with `setup_test` — it reports the failing login — rather than
-reconnecting early.
+Each target needs its own `ccu-mcp secret <name>` run, and the server stays in
+setup mode until every configured target has one: reconnecting halfway through
+lands you back in setup mode, naming the target still missing a password and
+the exact `secret` command that finishes it. A CCU that genuinely has no
+password is not a missing one — write the key with an empty value
+(`CCU_<NAME>_PASSWORD=`) to say so deliberately.
 
 Setup mode is stdio-only (an unconfigured HTTP endpoint that writes config
 files would be an unacceptable surface), and a bare start without `--env`
@@ -590,7 +590,8 @@ server's instructions) instead of exiting, so it can be fixed conversationally:
 | Message | Cause and why it's fatal |
 |---|---|
 | `CCU_HOST environment variable is required` | No CCU configured (and no `CCU_PROFILES`). |
-| `CCU_PASSWORD environment variable is required` | The variable is **absent**. An empty value is accepted — a fresh OpenCCU box has no Admin password — so this means "not set yet", which is what keeps a single-CCU setup-mode server in setup mode until `ccu-mcp secret` stores one. Named profiles are deliberately laxer: an absent `CCU_<NAME>_PASSWORD` reads as empty and the server starts, so on that path a missing password surfaces as a failed login (`setup_test` / `doctor` report it) rather than as this error. |
+| `CCU_PASSWORD environment variable is required` | The variable is **absent**. An empty value is accepted — a fresh OpenCCU box has no Admin password — so this means "not set yet", which is what keeps a single-CCU setup-mode server in setup mode until `ccu-mcp secret` stores one. |
+| `no password stored yet for target <name>` | The profile-form equivalent, and setup-mode only: `CCU_<NAME>_PASSWORD` is absent. A *loaded* configuration still reads an absent key as empty (unchanged, so an OpenCCU dev target keeps working) — but for deciding whether setup is finished, absent means "not entered yet", so the server stays in setup mode and prints the `ccu-mcp secret <name>` run that completes it. Write `CCU_<NAME>_PASSWORD=` to declare an empty password deliberate. |
 | `CCU_DEFAULT_PROFILE is set but CCU_PROFILES is not` | A leftover from a profile setup. Ignoring it would point writes at the flat `CCU_HOST` box while the env file suggests a named target. |
 | `CCU_PROFILES is set but lists no profile names` | Empty or comma-only value. |
 | `CCU_PROFILES lists "<name>" more than once` | Duplicate profile name. |

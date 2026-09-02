@@ -95,6 +95,30 @@ export function envPrefix(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
 }
 
+/**
+ * Named targets that have no `CCU_<NAME>_PASSWORD` key at all — "not entered
+ * yet", as opposed to `CCU_<NAME>_PASSWORD=` which says "deliberately empty".
+ *
+ * Deliberately NOT enforced in `loadConfig`: a named profile has never
+ * required the key (issue #69), and an OpenCCU dev box configured that way
+ * must keep working. It is enforced only where the distinction decides
+ * something — the setup-mode gate in index.ts (issue #196, QA F-008). Without
+ * it, `setup_write_profile` writing a named target's host was enough for the
+ * next start to load "successfully" with an empty password, dropping the
+ * setup_* tools the flow still needs and failing every real call with
+ * AUTH 501. The flat form self-corrects because loadConfig requires
+ * CCU_PASSWORD to be present (issue #209); this gives the profile form the
+ * same behavior without changing what a configuration means.
+ */
+export function targetsAwaitingPassword(config: AppConfig): string[] {
+  // Flat form only ever has the one implicit target, and loadConfig already
+  // rejects a missing CCU_PASSWORD there.
+  if (!process.env.CCU_PROFILES?.trim()) return [];
+  return config.profiles
+    .filter((p) => process.env[`CCU_${envPrefix(p.name)}_PASSWORD`] === undefined)
+    .map((p) => p.name);
+}
+
 export function loadConfig(): AppConfig {
   // CLI flags override env vars for transport. Validate the env value: a typo
   // ("STDIO", "Stdio") must fail loudly, not silently select HTTP and leave a
