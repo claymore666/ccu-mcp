@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { loadConfig } from "../../src/config.js";
+import { loadConfig, targetsAwaitingPassword } from "../../src/config.js";
 
 describe("loadConfig", () => {
   const originalEnv = { ...process.env };
@@ -410,6 +410,16 @@ describe("loadConfig", () => {
       expect(config.ccu.password).toBe("secret");
     });
 
+    it("accepts an empty flat CCU_PASSWORD, but not a missing one", () => {
+      process.env.CCU_HOST = "openccu";
+      // A fresh OpenCCU box has no Admin password; `ccu-mcp secret` stores "".
+      process.env.CCU_PASSWORD = "";
+      expect(loadConfig().ccu.password).toBe("");
+
+      delete process.env.CCU_PASSWORD;
+      expect(() => loadConfig()).toThrow(/CCU_PASSWORD environment variable is required/);
+    });
+
     it("builds one profile per CCU_PROFILES entry from CCU_<NAME>_* vars", () => {
       process.env.CCU_PROFILES = "prod,dev";
       process.env.CCU_DEFAULT_PROFILE = "prod";
@@ -474,5 +484,47 @@ describe("loadConfig", () => {
       process.env.CCU_PROD_READONLY = "true";
       expect(loadConfig().profiles[0]!.readonly).toBe(true);
     });
+  });
+});
+
+describe("targetsAwaitingPassword", () => {
+  // The setup gate's rule (QA F-008). Deliberately separate from loadConfig,
+  // which still accepts an absent named-profile password as empty (issue #69).
+  const originalEnv = { ...process.env };
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("CCU_")) delete process.env[key];
+    }
+  });
+  afterEach(() => { process.env = { ...originalEnv }; });
+
+  it("names targets whose password key is absent", () => {
+    process.env.CCU_PROFILES = "prod,dev";
+    process.env.CCU_PROD_HOST = "debmatic";
+    process.env.CCU_PROD_PASSWORD = "pw";
+    process.env.CCU_DEV_HOST = "127.0.0.1";
+    expect(targetsAwaitingPassword(loadConfig())).toEqual(["dev"]);
+  });
+
+  it("treats a present-but-empty key as deliberately empty", () => {
+    process.env.CCU_PROFILES = "dev";
+    process.env.CCU_DEV_HOST = "127.0.0.1";
+    process.env.CCU_DEV_PASSWORD = "";
+    expect(targetsAwaitingPassword(loadConfig())).toEqual([]);
+  });
+
+  it("never reports anything for the flat form, where loadConfig already requires the key", () => {
+    process.env.CCU_HOST = "debmatic";
+    process.env.CCU_PASSWORD = "";
+    expect(targetsAwaitingPassword(loadConfig())).toEqual([]);
+  });
+
+  it("does not change what loadConfig accepts — an absent key still loads as empty", () => {
+    process.env.CCU_PROFILES = "dev";
+    process.env.CCU_DEV_HOST = "127.0.0.1";
+    const config = loadConfig();
+    expect(config.profiles[0]!.ccu.password).toBe("");
+    expect(targetsAwaitingPassword(config)).toEqual(["dev"]);
   });
 });

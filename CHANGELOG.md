@@ -3,6 +3,164 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.0 — 2026-09-02
+
+Setting the thing up.
+Until now, configuring ccu-mcp meant hand-writing an env file —
+`CCU_PROD_TLS_FINGERPRINT`-style variables included — and finding out at
+runtime whether the host was right, whether the certificate was the one you
+meant to trust, whether the credentials worked, and whether the user had enough
+privileges for the tools you wanted. This release adds two ways to do it
+instead: a CLI wizard (`ccu-mcp init` / `ccu-mcp doctor`) for anyone at a shell
+or over SSH, and a conversational flow (setup mode and the `setup_*` tools) for
+clients where an LLM can drive it. Both run the same probe → pin → test-login →
+write core, and neither ever puts the CCU password through the model: that step
+is always the local `ccu-mcp secret` prompt, with echo off.
+
+**Nothing existing needs to change.** No new required environment variables, no
+changed tool arguments, and a server started the way you start it today behaves
+the way it does today. One tool result did change shape in a failure case, and
+it is the first entry under Behavior changes below.
+
+### Added
+
+- **`ccu-mcp init` — an interactive setup wizard.** It probes the CCU, detecting
+  the port and whether HTTPS is in use; shows the certificate the box actually
+  presents and pins its SHA-256 fingerprint on confirmation; tests the login;
+  reports whether the configured user is ADMIN- or USER-level (script-based
+  tools need ADMIN, and being told that at setup time beats discovering it from
+  a failing tool call); and writes a mode-0600 env file — flat variables for a
+  single CCU, `CCU_PROFILES` for several. It ends with a ready-to-paste MCP
+  client snippet and needs no pre-existing configuration.
+
+  Re-running it on an existing file preserves every line it does not manage
+  (`LOG_LEVEL`, `CACHE_DIR`, `MCP_*`) and asks before replacing the CCU
+  settings.
+- **`ccu-mcp doctor` — validation without starting the server.** Configuration
+  errors, reachability, pinned-fingerprint match, login, privilege level, per
+  target. It exits non-zero when a check fails, so it also works in scripts;
+  run interactively, it offers to refresh the pin after a certificate rotation
+  you recognise, which is the one case where "the fingerprint changed" is not
+  an incident.
+- **`ccu-mcp secret [profile]` — the password path.** A local hidden prompt that
+  writes exactly one password key into an env file (mode 0600). It is how the
+  guided flow gets a secret without the secret passing through a conversation,
+  and it is the rotation path afterwards. It refuses a profile name against a
+  flat single-CCU file, and an unknown name against a profile file, so it
+  cannot write the wrong key.
+- **`--env <path>` for the server.** Loads a dotenv file before configuration,
+  so an MCP client entry can point at the file `init` wrote instead of inlining
+  credentials in client JSON:
+
+  ```sh
+  npx ccu-mcp --stdio --env /path/to/.env
+  ```
+
+  Already-set environment variables win, matching node's `--env-file`
+  precedence. It is deliberately not called `--env-file`: node's own CLI
+  intercepts that flag even after the script path and refuses to start when the
+  file does not exist — which is exactly the state a guided setup begins in.
+- **Setup mode — the server comes up unconfigured instead of exiting.** Started
+  with `--stdio --env <path>` and a missing or invalid configuration, it now
+  serves a minimal MCP server exposing only `setup_status`, `setup_probe`,
+  `setup_write_profile` and `setup_test`, plus instructions that carry the whole
+  flow. The point is that the client entry never changes: register the server
+  before it is configured, let the conversation walk through probing the CCU,
+  pinning the certificate and writing the file, and reconnect — the identical
+  entry then starts it fully configured.
+
+  `setup_write_profile` has no password parameter, by construction. It prints
+  the `ccu-mcp secret` command for the user to run in a terminal, and the
+  instructions tell the model to refuse the password if it is offered anyway.
+  Several CCUs work the same way: the tool takes a `name` and upserts one
+  target, preserving the others and their stored passwords.
+
+  Setup mode is stdio-only — an unconfigured, unauthenticated HTTP endpoint
+  that writes configuration files is not an acceptable surface — and a start
+  without `--env` still fails loudly rather than silently serving setup tools.
+
+### Behavior changes (read before upgrading)
+
+- **`get_system_info` now reports a failed connection as an error.** Its four
+  ADMIN-only probes treated every failure as "logged in, not permitted", so
+  wrong credentials came back as `version`/`serial`/`address` of `"N/A"`,
+  `role: "UNKNOWN"` and no error at all — while the very next read failed with
+  `AUTH 501`. This is the tool an agent reaches for to answer "did my setup
+  work?", and it answered yes. A probe that fails while the session is valid is
+  still a privilege denial and still degrades to `"N/A"` with the USER-level
+  note; a probe that fails with no session now fails the call with the real
+  error (`AUTH`, `UNREACHABLE`, `TLS_ERROR`). `"N/A"` now means one thing:
+  connected, not permitted.
+- **An empty `CCU_PASSWORD` is accepted.** A fresh OpenCCU box has no Admin
+  password, and `ccu-mcp secret` will store an empty one while saying that is
+  normal — but the flat loader then rejected it and the server would not start.
+  The rule is presence, not non-emptiness: the variable must be set, its value
+  may be empty. An absent variable is still an error, and that is what
+  distinguishes "not entered yet" from "chosen to be empty". Named profiles
+  already allowed empty and are unchanged.
+- **An unknown subcommand exits 2** with `unknown command "frobnicate"
+  (ccu-mcp X.Y.Z)` instead of falling through to a normal server start. The
+  version in the message is the point: it identifies which install a printed
+  command actually reached.
+
+### Fixed
+
+- **Printed commands now invoke the build that printed them.** The guided setup
+  told users to run `npx ccu-mcp secret …`, and `secret`/`init` signed off with
+  a bare `ccu-mcp doctor …`. `npx` resolves to whatever it finds in the working
+  directory or the global prefix — for anyone with an older global install, a
+  *different* build, and one with no such subcommand. It did not say so either:
+  an unknown first argument fell through to server startup and the flow died on
+  `CCU_HOST environment variable is required`, complaining about a variable the
+  user had just configured correctly, from a file that binary never read. Every
+  printed command now uses `process.argv[1]`, falling back to a version-pinned
+  `npx ccu-mcp@<version>`. The client snippet from `init` deliberately keeps
+  plain `npx ccu-mcp`, since that entry is durable and argv[1] may point into
+  npx's collectable cache.
+- **Setup mode no longer ends before every target has a password.** A named
+  profile reads an absent `CCU_<NAME>_PASSWORD` as empty, so writing a target's
+  host was enough for the next start to load "successfully": the `setup_*` tools
+  disappeared mid-flow and every real call failed with `AUTH 501`, with nothing
+  left in the conversation to explain it. The gate now asks whether the
+  configuration is *finished*, not merely loadable, and names the target plus
+  the exact `ccu-mcp secret` run that finishes it. What a loaded configuration
+  means is unchanged — an absent key still reads as empty, so a passwordless
+  dev target keeps working; write `CCU_<NAME>_PASSWORD=` to declare an empty
+  password deliberate.
+- **`ccu-mcp secret` on a profile file lists one runnable line per target**
+  instead of a `secret '<profile>'` placeholder — the angle brackets were
+  shell-quoted, and each target needs its own run anyway.
+- **Documentation that did not match the code.** `--env` was described as
+  accepted by `init`/`doctor`; `secret` takes it too. The error table said an
+  absent password is what keeps a setup-mode server in setup mode, which held
+  for the flat form only. The quick start omitted that `CACHE_DIR` defaults to
+  the Docker path `/data`, so an npx user gets `cache_save_failed: EACCES` and
+  never persists the device-type cache or the session. The profiles section now
+  also carries a worked two-CCU session: wizard transcript, the file it writes,
+  one `secret` run per target, a `doctor` sweep over both, and the single client
+  entry that serves them.
+
+### Dependencies
+
+- **Six advisories cleared in transitive dependencies** of
+  `@modelcontextprotocol/sdk`, which is already at its latest release — so the
+  fix is a lockfile re-resolve inside the parents' existing ranges.
+  `fast-uri` 3.1.5 → 3.1.7 closes four high advisories (host confusion via
+  percent-encoded scheme normalization and via skipped IDN canonicalization;
+  SSRF via malformed IPv6 normalization and via repeated hostname
+  percent-decoding); `qs` 6.15.2 → 6.16.0 closes two moderate ones (array-limit
+  bypass via bracket-key comma parsing, and denial of service via an
+  attacker-controlled `isBuffer`).
+- `zod` 4.4.3 → 4.5.1, plus development and CI action bumps.
+
+### Internal
+
+- **OpenSSF Scorecard runs on a schedule** and reports into code scanning.
+- The Docker base image is pinned **by digest as well as tag**, so a rebuild
+  cannot silently pick up a different base.
+- Dependabot auto-merge degrades gracefully when GitHub refuses a workflow-file
+  bump, instead of failing the run.
+
 ## v1.10.0 — 2026-08-19
 
 Container images, a release that publishes itself, and a pass over the MCP

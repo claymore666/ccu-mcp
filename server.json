@@ -6,12 +6,12 @@
     "url": "https://github.com/claymore666/ccu-mcp",
     "source": "github"
   },
-  "version": "1.10.0",
+  "version": "1.11.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "ccu-mcp",
-      "version": "1.10.0",
+      "version": "1.11.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -31,7 +31,7 @@
         },
         {
           "name": "CCU_PASSWORD",
-          "description": "CCU admin password (same as the WebUI login)",
+          "description": "CCU admin password (same as the WebUI login). Must be set; the value may be empty for a CCU with no password",
           "isRequired": true,
           "isSecret": true,
           "format": "string"

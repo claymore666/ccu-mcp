@@ -290,8 +290,10 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       description:
         "Get CCU system information: firmware version, serial number, addresses. Reports the active " +
         "login user and inferred role (ADMIN/USER) — note that version/serial/address are ADMIN-only " +
-        "on the CCU, so they show \"N/A\" for a non-admin (USER) login. Also reports the running " +
-        "server's build identification (git branch/commit/tag and build time) under `build`.",
+        "on the CCU, so they show \"N/A\" for a non-admin (USER) login. A CCU that cannot be reached " +
+        "or logged into fails with that error instead — \"N/A\" always means \"connected, not permitted\". " +
+        "Also reports the running server's build identification (git branch/commit/tag and build time) " +
+        "under `build`.",
       inputSchema: {
         target: targetField,
       },
@@ -300,7 +302,7 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
         target: z.string().optional().describe("Active CCU target name"),
         user: z.string().optional().describe("Configured login user for the active target"),
         role: z.enum(["ADMIN", "USER", "UNKNOWN"]).optional()
-          .describe("Access role inferred from which CCU methods answer: ADMIN if admin-only calls succeed, USER if logged in without admin rights, UNKNOWN if not connected"),
+          .describe("Access role inferred from which CCU methods answer: ADMIN if admin-only calls succeed, USER if logged in without admin rights. A CCU that cannot be reached or logged into raises that error instead of reporting a role"),
         version: z.unknown().optional().describe("Firmware version, or \"N/A\" if unavailable (ADMIN-only)"),
         serial: z.unknown().optional().describe("Serial number, or \"N/A\" if unavailable (ADMIN-only)"),
         address: z.unknown().optional().describe("BidCos address, or \"N/A\" if unavailable (ADMIN-only)"),
@@ -340,6 +342,14 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
       ];
 
       let anyAdminOk = false;
+      // A failure while the session is still valid is a privilege denial (the
+      // USER case this tool exists to degrade for). A failure with NO session
+      // is something else entirely — wrong credentials, an unreachable CCU, a
+      // pin mismatch — and reporting that as N/A + role UNKNOWN told the
+      // caller "connected, probably USER-level" when nothing had connected at
+      // all. Keep the first such error and fail with it: this is the tool
+      // people reach for to answer "did my setup work?".
+      let noSessionErr: unknown = null;
       for (const { key, method } of calls) {
         try {
           await rateLimiter.acquire();
@@ -350,13 +360,17 @@ function registerGetSystemInfo(server: McpServer, deps: ServerDeps): void {
           } else {
             results[key] = "N/A"; // empty/no value rather than null
           }
-        } catch {
+        } catch (err) {
           results[key] = "N/A"; // permission denied or call failed
+          if (noSessionErr === null && !session.isLoggedIn()) noSessionErr = err;
         }
       }
+      if (noSessionErr !== null) throw noSessionErr;
 
       // Infer role: admin-only calls answered => ADMIN; otherwise logged in but
-      // without those rights => USER; not logged in / unreachable => UNKNOWN.
+      // without those rights => USER. UNKNOWN remains for the case no call
+      // threw yet none answered — a connection failure now throws above rather
+      // than arriving here dressed as a role.
       const loggedIn = active.session.isLoggedIn();
       results.role = anyAdminOk ? "ADMIN" : (loggedIn ? "USER" : "UNKNOWN");
       if (!anyAdminOk && loggedIn) {

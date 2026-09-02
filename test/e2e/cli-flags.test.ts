@@ -78,4 +78,25 @@ describe.skipIf(distMissing)("CLI info flags (no environment)", () => {
     expect(res.status).not.toBe(0);
     expect(res.stderr).toContain("CCU_HOST");
   });
+
+  it("rejects an unknown subcommand by name and version, without starting a server", () => {
+    // A build that predates a subcommand used to fall through to server
+    // startup and answer `ccu-mcp secret …` with "CCU_HOST environment
+    // variable is required" — a configuration complaint for what is really a
+    // wrong/old binary. The version in the message is the point: it tells you
+    // which install a printed command actually reached.
+    const res = runBare("frobnicate");
+    expect(res.status).not.toBe(0);
+    expect(res.stderr).toContain('unknown command "frobnicate"');
+    expect(res.stderr).toContain(PKG_VERSION.version);
+    expect(res.stderr).not.toContain("environment variable is required");
+  });
+
+  it("still treats the real subcommands as subcommands", () => {
+    // The guard keys off "does not start with -", so a typo'd flag must not be
+    // swallowed as a command, and a real command must still reach its handler.
+    const res = runBare("doctor", "--env", "/nonexistent/ccu.env");
+    expect(res.stderr).not.toContain("unknown command");
+    expect(`${res.stdout}${res.stderr}`).toContain("doctor");
+  });
 });

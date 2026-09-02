@@ -183,7 +183,9 @@ NOT_FOUND if no active message matches; the warning reappears if its condition p
 Args: target? (CCU target name)
 Returns: {serverVersion, target, user, role (ADMIN|USER|UNKNOWN), version, serial, address, hmipAddress,
   accessNote? (present when ADMIN-only fields are unavailable), cacheTypes, cacheWarming, build {branch, commit, tag, describe, dirty, builtAt}}
-version/serial/address/hmipAddress are ADMIN-only on the CCU and show "N/A" for a USER-level login.`,
+version/serial/address/hmipAddress are ADMIN-only on the CCU and show "N/A" for a USER-level login.
+"N/A" therefore means "connected, not permitted": a CCU that cannot be reached or logged into fails with
+that error (AUTH/UNREACHABLE/TLS_ERROR) instead, so this tool is a safe "did my setup work?" check.`,
 
   get_rssi: `Radio link quality (RSSI, dBm) per device, plus BidCos interface health.
 Args: name? (substring filter on device name/address), target? (CCU target name)

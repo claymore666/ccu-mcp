@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { tryParseJson } from "../../src/tools/diagnostics.js";
 import { createTestServer, callTool, parseToolResult, cleanupDeps } from "./_helpers.js";
+import { CcuError } from "../../src/middleware/error-mapper.js";
 
 describe("tryParseJson", () => {
   it("parses valid JSON", () => {
@@ -271,6 +272,65 @@ describe("get_system_info handler", () => {
     cleanupDeps(deps);
   });
 
+  // F-005: a failed login used to come back as all-N/A + role UNKNOWN and no
+  // error — "did my setup work?" answered with a plausible yes.
+  it("fails with the login error instead of N/A when there is no session", async () => {
+    const { server, deps } = createTestServer({
+      loggedIn: false,
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({
+        error: "AUTH",
+        code: 501,
+        message: "invalid credentials",
+        hint: "Verify CCU_USER/CCU_PASSWORD.",
+      })),
+    });
+
+    const result: any = await callTool(server, "get_system_info");
+    expect(result.isError).toBe(true);
+    const err = JSON.parse(result.content[0].text);
+    expect(err.error).toBe("AUTH");
+    expect(err.code).toBe(501);
+    expect(result.content[0].text).not.toContain("N/A");
+    cleanupDeps(deps);
+  });
+
+  it("propagates an unreachable CCU rather than reporting a role", async () => {
+    const { server, deps } = createTestServer({
+      loggedIn: false,
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({
+        error: "UNREACHABLE",
+        code: 0,
+        message: "Cannot connect to CCU: fetch failed",
+        hint: "Check that the CCU is running.",
+      })),
+    });
+
+    const result: any = await callTool(server, "get_system_info");
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe("UNREACHABLE");
+    cleanupDeps(deps);
+  });
+
+  // The other side of the rule: a valid session that is merely denied the
+  // ADMIN-only calls must still degrade to N/A, not fail.
+  it("still degrades to N/A when the session is valid but the call is denied", async () => {
+    const { server, deps } = createTestServer({
+      loggedIn: true,
+      sessionCall: vi.fn().mockRejectedValue(new CcuError({
+        error: "AUTH",
+        code: 400,
+        message: "Access denied for CCU.getVersion: the CCU user lacks the required privilege level",
+        hint: "Use an ADMIN account.",
+      })),
+    });
+
+    const result = parseToolResult(await callTool(server, "get_system_info")) as any;
+    expect(result.role).toBe("USER");
+    expect(result.version).toBe("N/A");
+    expect(result.accessNote).toMatch(/ADMIN-only/);
+    cleanupDeps(deps);
+  });
+
   it("reports USER role with N/A fields and an accessNote when admin-only calls are denied", async () => {
     const { server, deps } = createTestServer({
       // Every ADMIN-gated CCU.* call is denied — mimics a non-admin login.
@@ -304,7 +364,6 @@ describe("error and edge paths (coverage round)", () => {
   });
 
   it("get_service_messages maps CcuError to a structured tool error", async () => {
-    const { CcuError } = await import("../../src/middleware/error-mapper.js");
     const { server, deps } = createTestServer({
       sessionCall: vi.fn().mockRejectedValue(new CcuError({ error: "CCU_ERROR", code: 501, message: "rega busy", hint: "" })),
     });

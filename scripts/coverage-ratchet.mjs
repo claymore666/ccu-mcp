@@ -229,10 +229,10 @@ for (const [dir, want] of [...floors].sort()) {
   }
 }
 
-if (process.env.CCU_HOST) {
+if (process.env.CCU_HOST || process.env.CCU_DEV_HOST) {
   console.log(
-    "\nNOTE: CCU_HOST is set, so the live-integration suites ran and these " +
-      "numbers are HIGHER than CI will measure. Do not raise floors from this run.",
+    "\nNOTE: CCU_HOST/CCU_DEV_HOST is set, so live-integration suites ran and " +
+      "these numbers are HIGHER than CI will measure. Do not raise floors from this run.",
   );
 }
 

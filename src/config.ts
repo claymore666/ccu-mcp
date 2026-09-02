@@ -91,8 +91,32 @@ export interface AppConfig {
  * the actual prefix, once in the duplicate-detection loop, and once inside an
  * error message that had to agree with both (issue #124).
  */
-function envPrefix(name: string): string {
+export function envPrefix(name: string): string {
   return name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+}
+
+/**
+ * Named targets that have no `CCU_<NAME>_PASSWORD` key at all — "not entered
+ * yet", as opposed to `CCU_<NAME>_PASSWORD=` which says "deliberately empty".
+ *
+ * Deliberately NOT enforced in `loadConfig`: a named profile has never
+ * required the key (issue #69), and an OpenCCU dev box configured that way
+ * must keep working. It is enforced only where the distinction decides
+ * something — the setup-mode gate in index.ts (issue #196, QA F-008). Without
+ * it, `setup_write_profile` writing a named target's host was enough for the
+ * next start to load "successfully" with an empty password, dropping the
+ * setup_* tools the flow still needs and failing every real call with
+ * AUTH 501. The flat form self-corrects because loadConfig requires
+ * CCU_PASSWORD to be present (issue #209); this gives the profile form the
+ * same behavior without changing what a configuration means.
+ */
+export function targetsAwaitingPassword(config: AppConfig): string[] {
+  // Flat form only ever has the one implicit target, and loadConfig already
+  // rejects a missing CCU_PASSWORD there.
+  if (!process.env.CCU_PROFILES?.trim()) return [];
+  return config.profiles
+    .filter((p) => process.env[`CCU_${envPrefix(p.name)}_PASSWORD`] === undefined)
+    .map((p) => p.name);
 }
 
 export function loadConfig(): AppConfig {
@@ -204,10 +228,24 @@ export function loadConfig(): AppConfig {
     }
   };
 
+  // The flat form's password must be PRESENT, but may be empty: a fresh OpenCCU
+  // box has no Admin password, and rejecting "" left it unconfigurable — the
+  // setup wizard's own `ccu-mcp secret` writes an empty value and says it is
+  // normal, then the server refused to start on it. Absence stays an error: it
+  // is what distinguishes "not entered yet" from "chosen to be empty", and so
+  // is what holds the server in setup mode until the secret has been stored.
+  const requirePasswordEnv = (envName: string): string => {
+    const value = process.env[envName];
+    if (value === undefined) {
+      throw new Error(`${envName} environment variable is required — run \`ccu-mcp secret\` to store one (an empty password is allowed)`);
+    }
+    return value;
+  };
+
   // Build one named profile from CCU_<PREFIX>_* env vars (issue #69). These are
   // read DYNAMICALLY (template-literal keys), so the env-example-sync test's
   // literal scan doesn't see them — intentional; they're documented as comments
-  // in .env.example. Password may be empty (OpenCCU dev boxes default to it).
+  // in .env.example.
   const buildProfile = (name: string): CcuProfile => {
     const p = envPrefix(name);
     const get = (suffix: string): string | undefined => process.env[`CCU_${p}_${suffix}`]?.trim() || undefined;
@@ -226,6 +264,9 @@ export function loadConfig(): AppConfig {
         tlsFingerprint: get("TLS_FINGERPRINT"),
         caCert: readCaCert(`CCU_${p}_CA_CERT`, get("CA_CERT")),
         user: get("USER") || "Admin",
+        // Absent means empty here, unlike the flat form below — a named
+        // profile has never required the key (issue #69) and OpenCCU dev
+        // targets are configured exactly that way.
         password: process.env[`CCU_${p}_PASSWORD`] ?? "",
         timeout: parseIntEnv(`CCU_${p}_TIMEOUT`, "10000"),
         scriptTimeout: parseIntEnv(`CCU_${p}_SCRIPT_TIMEOUT`, "30000"),
@@ -250,8 +291,7 @@ export function loadConfig(): AppConfig {
     }
     const host = process.env.CCU_HOST;
     if (!host) throw new Error("CCU_HOST environment variable is required");
-    const password = process.env.CCU_PASSWORD;
-    if (!password) throw new Error("CCU_PASSWORD environment variable is required");
+    const password = requirePasswordEnv("CCU_PASSWORD");
     const flatHttps = parseBoolEnv("CCU_HTTPS");
     profiles = [{
       name: "default",

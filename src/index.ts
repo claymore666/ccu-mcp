@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, targetsAwaitingPassword, envPrefix } from "./config.js";
 import { createLogger } from "./logger.js";
 import { RateLimiter } from "./middleware/rate-limiter.js";
 import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
@@ -26,13 +26,29 @@ import { extractBearerToken, normalizeClientIp, VERSION, loadBuildInfo } from ".
 const USAGE = `ccu-mcp — MCP server for a HomeMatic CCU (debmatic, CCU3, OpenCCU/RaspberryMatic)
 
 Usage:
-  ccu-mcp [--stdio | --http]
+  ccu-mcp [--stdio | --http] [--env <path>]
+  ccu-mcp init   [--env <path>]
+  ccu-mcp doctor [--env <path>]
+  ccu-mcp secret [<profile>] [--env <path>]
   ccu-mcp --version
   ccu-mcp --help
 
+Subcommands:
+  init             Interactive setup: probe the CCU, pin its TLS certificate,
+                   test the login, and write an env file (default: ./.env)
+  doctor           Validate an existing env file end-to-end: reachability,
+                   certificate pin, login, privilege level
+  secret           Store the CCU password into the env file via a local hidden
+                   prompt (used by the LLM-guided setup; also for rotation)
+
 Options:
-  --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT)
+  --stdio          Serve MCP over stdin/stdout (overrides MCP_TRANSPORT).
+                   With --env and a missing/incomplete configuration the server
+                   starts in SETUP MODE, exposing only setup_* tools that let
+                   an LLM configure it conversationally
   --http           Serve MCP over HTTP (default)
+  --env <path>     Load configuration from this dotenv file (already-set
+                   environment variables win, like node's own --env-file)
   -v, --version    Print the version and exit
   -h, --help       Print this help and exit
 
@@ -81,10 +97,110 @@ function handleInfoFlags(argv: string[]): boolean {
 }
 
 async function main(): Promise<void> {
-  if (handleInfoFlags(process.argv.slice(2))) return;
+  const argv = process.argv.slice(2);
+
+  // Subcommands run in the same no-environment-needed early path as the info
+  // flags (issue #112): `ccu-mcp init` exists precisely because there is no
+  // valid configuration yet. Dynamic import keeps server startup unaffected.
+  if (argv[0] === "init" || argv[0] === "doctor" || argv[0] === "secret") {
+    const mod =
+      argv[0] === "init"
+        ? await import("./cli/init.js")
+        : argv[0] === "doctor"
+          ? await import("./cli/doctor.js")
+          : await import("./cli/secret.js");
+    process.exitCode = await mod.run(argv.slice(1));
+    return;
+  }
+
+  // A bare first word is always a subcommand attempt — server mode is entered
+  // with flags (--stdio/--http/--env). Falling through to startup instead made
+  // an OLDER binary answer `ccu-mcp secret …` with "CCU_HOST environment
+  // variable is required": a complaint about configuration, for what is really
+  // "this build predates that command". Name the version, so the next person
+  // who runs a printed command against the wrong install can see which one it
+  // reached.
+  if (argv[0] !== undefined && !argv[0].startsWith("-")) {
+    process.stderr.write(
+      `ccu-mcp: unknown command "${argv[0]}" (ccu-mcp ${VERSION}).\n` +
+        `Known commands: init, doctor, secret. Run \`ccu-mcp --help\` for usage.\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  if (handleInfoFlags(argv)) return;
+
+  // `--env` for server mode: lets an MCP client entry reference the file
+  // `ccu-mcp init` wrote instead of inlining credentials in its JSON config.
+  // Same precedence as node's own flag: already-set environment wins.
+  let envPath: string | undefined;
+  if (argv.includes("--env")) {
+    const { envFileArg, loadEnvFile, applyEnvVars } = await import("./cli/common.js");
+    envPath = envFileArg(argv); // throws on a missing value — always fatal
+    try {
+      applyEnvVars(loadEnvFile(envPath));
+    } catch (err) {
+      // A missing/unreadable env file is exactly the state the LLM-guided
+      // setup starts from (issue #196) — over stdio it leads into setup mode
+      // below. Everywhere else it stays fatal, as before.
+      if (!argv.includes("--stdio")) throw err;
+    }
+  }
 
   const logger = createLogger();
-  const config = loadConfig();
+  // Setup mode is only reachable from a stdio start that named an env file;
+  // computing it here keeps the extra completeness check below from turning a
+  // tolerated configuration into a fatal error on any other start path.
+  const setupEligible = envPath !== undefined && argv.includes("--stdio");
+  let config: ReturnType<typeof loadConfig>;
+  try {
+    config = loadConfig();
+    // A loadable configuration is not necessarily a finished one. A named
+    // target whose password key was never written (QA F-008) loads with an
+    // empty password, so the server would leave setup mode mid-flow and then
+    // fail every call with AUTH 501 — with the setup_* tools gone, the model
+    // has no way to finish or explain it. Treat it as not-yet-configured, and
+    // say exactly which command completes it.
+    if (setupEligible) {
+      const pending = targetsAwaitingPassword(config);
+      if (pending.length > 0) {
+        const { selfCommand } = await import("./cli/common.js");
+        const runs = pending.map((n) => selfCommand("secret", n, "--env", envPath!)).join("  |  ");
+        throw new Error(
+          `no password stored yet for target${pending.length > 1 ? "s" : ""} ` +
+          `${pending.join(", ")} — run: ${runs}  ` +
+          `(a CCU that genuinely has no password needs the key present but empty: ` +
+          `CCU_${envPrefix(pending[0]!)}_PASSWORD=)`,
+        );
+      }
+    }
+  } catch (err) {
+    // Setup mode (issue #196): started for stdio with an explicit --env file
+    // but no loadable configuration, serve only the setup_* tools so an LLM
+    // can walk the user through writing that file. Strictly stdio — an
+    // unconfigured, unauthenticated HTTP endpoint that writes config files is
+    // not an acceptable surface. A bare start still fails loudly.
+    if (envPath === undefined || !argv.includes("--stdio")) throw err;
+    const { resolve } = await import("node:path");
+    const { createSetupServer } = await import("./setup-server.js");
+    const setupServer = createSetupServer(resolve(envPath), (err as Error).message, logger);
+    await setupServer.connect(new StdioServerTransport());
+    logger.info("server_ready", { transport: "stdio", mode: "setup" });
+    let closing = false;
+    const closeSetup = (): void => {
+      if (closing) return;
+      closing = true;
+      void setupServer.close().finally(() => process.exit(0));
+    };
+    process.on("SIGTERM", closeSetup);
+    process.on("SIGINT", closeSetup);
+    // Same stdin-EOF hook as the configured stdio server below: the client
+    // terminates by closing the pipe, not by signaling.
+    process.stdin.on("end", closeSetup);
+    process.stdin.on("close", closeSetup);
+    return;
+  }
 
   logger.info("starting", {
     transport: config.mcp.transport,

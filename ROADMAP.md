@@ -27,7 +27,16 @@ making it safer and more predictable rather than larger.
   migration note, and a clear error that names the fix. Until then this is a
   documented gap, not a hidden one — see
   [docs/assurance-case.md](docs/assurance-case.md).
-- **OpenSSF Scorecard** in CI ([#153](https://github.com/claymore666/ccu-mcp/issues/153)).
+- **Give OpenSSF Scorecard a real Branch-Protection reading.** Scorecard now
+  runs weekly ([#153](https://github.com/claymore666/ccu-mcp/issues/153)) on
+  the workflow's own `GITHUB_TOKEN`, which cannot read classic branch
+  protection — so that one check scores on thin evidence while the rest of the
+  report is accurate. Two ways to close it: a fine-grained PAT with
+  `Administration: Read-only` as secret `SCORECARD_TOKEN`, which is a
+  long-lived credential plus a yearly rotation when it expires; or move
+  `main`'s protection to rulesets, which non-admin tokens can read and which
+  would need its six required checks and the deliberate `enforce_admins: false`
+  bypass rebuilt as bypass actors.
 
 Delivered in v1.10.0, kept here because the reasoning is still the record:
 CodeQL moved off GitHub's default setup into a workflow file, so the query
@@ -37,6 +46,36 @@ corpus now carries between nightly runs
 ([#155](https://github.com/claymore666/ccu-mcp/issues/155)) — an empty corpus
 found nothing in 60s where a seeded one found planted defects in under 20, so
 discarding it each night wasted most of the value of running the fuzzer.
+
+### Configuration experience
+
+- **Guided setup instead of hand-edited `.env`.** Configuring profiles today
+  means writing `CCU_PROD_TLS_FINGERPRINT`-style variables by hand and finding
+  out at runtime whether the credentials work or the user has enough
+  privileges. The plan, in order:
+  1. `ccu-mcp init` / `ccu-mcp doctor` — an interactive CLI wizard that probes
+     the host, pins the TLS fingerprint, tests the login, reports the detected
+     privilege level (USER vs ADMIN), writes a valid `.env`, and emits
+     ready-to-paste client config snippets. Works over SSH, adds no attack
+     surface.
+  2. **LLM-guided setup on the same core.** Started with `--stdio --env
+     <path>` and a missing/invalid config, the server enters a stdio-only
+     *setup mode* exposing just `setup_*` tools, so it can be registered in an
+     MCP client before it is configured and the conversation walks through the
+     same probe/pin/validate steps. One deliberate exception: the password
+     never travels through the model or the chat transcript — the setup flow
+     hands off to `ccu-mcp secret <profile>`, a one-line local prompt that
+     writes just the secret. MCP elicitation could replace the chat
+     round-trips where clients support it, but the spec forbids eliciting
+     secrets, so the CLI hand-off stays either way.
+  3. Maybe later, `ccu-mcp config --ui` — a browser form bound to 127.0.0.1
+     with a one-time token, process exits when closed. Only if the above turns
+     out not to be enough.
+
+  Non-goal: a persistent web admin panel. A standing HTTP surface that holds
+  every CCU password is exactly what this project's security posture says not
+  to build. Also a non-goal: controlling devices from it — the CCU WebUI and
+  the MCP client already do that.
 
 ### Project continuity
 
@@ -62,7 +101,9 @@ Saying no is most of what keeps this maintainable.
   JSON-RPC to a CCU on your network, nothing else.
 - **No addon or XML-API dependency.** The built-in `/api/homematic.cgi`
   endpoint is the only interface used, and that stays true.
-- **No web UI or dashboard.** The MCP client is the interface.
+- **No web UI or dashboard.** The MCP client is the interface. (The
+  run-and-exit localhost config form under Configuration experience is not
+  this: no standing server, no device control.)
 - **No multi-user model or per-user permissions.** The server holds one
   credential per configured CCU and acts as that user. Authorisation belongs to
   the CCU.
