@@ -5,6 +5,17 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
+- **Fixed: `get_system_info` reported a failed login as a working connection.**
+  Its four ADMIN-only probes (`CCU.getVersion` and friends) treated *every*
+  failure as "not permitted", so wrong credentials or an unreachable CCU came
+  back as `version/serial/address: "N/A"`, `role: "UNKNOWN"` and **no error** —
+  while the very next read failed with `AUTH 501`. That is the tool an agent
+  reaches for to answer "did my setup work?", and it answered yes. A probe that
+  fails while the session is still valid is still a privilege denial and still
+  degrades to `"N/A"` with the USER-level note; a probe that fails with no
+  session now fails the call with the real error (`AUTH`, `UNREACHABLE`,
+  `TLS_ERROR`). `"N/A"` now means exactly one thing: connected, not permitted.
+
 - **Documented multi-target setup end to end.** The README claimed
   `ccu-mcp init` walks "one or more" targets and left it there; it now shows a
   worked two-CCU session — wizard transcript, the profile-form env file it
