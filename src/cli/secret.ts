@@ -37,8 +37,12 @@ export async function run(argv: string[], io?: PromptIo): Promise<number> {
   let target: string;
   if (names.length > 0) {
     if (!profileArg) {
-      say(`This file configures named targets (${names.join(", ")}) — say which one:`);
-      say(`  ${selfCommand("secret", "<profile>", "--env", envPath)}`);
+      // One ready-to-run line per target rather than a `<profile>` placeholder:
+      // selfCommand shell-quotes anything with metacharacters, so the
+      // placeholder came out as `secret '<profile>'` — and each target needs
+      // its own invocation anyway, which the list makes obvious.
+      say(`This file configures named targets (${names.join(", ")}) — one password each:`);
+      for (const n of names) say(`  ${selfCommand("secret", n, "--env", envPath)}`);
       return 1;
     }
     const match = names.find((n) => n.toLowerCase() === profileArg.toLowerCase());
