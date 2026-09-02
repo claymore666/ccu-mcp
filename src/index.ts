@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, targetsAwaitingPassword, envPrefix } from "./config.js";
 import { createLogger } from "./logger.js";
 import { RateLimiter } from "./middleware/rate-limiter.js";
 import { TargetRegistry, TargetSelection } from "./ccu/target-registry.js";
@@ -149,9 +149,32 @@ async function main(): Promise<void> {
   }
 
   const logger = createLogger();
+  // Setup mode is only reachable from a stdio start that named an env file;
+  // computing it here keeps the extra completeness check below from turning a
+  // tolerated configuration into a fatal error on any other start path.
+  const setupEligible = envPath !== undefined && argv.includes("--stdio");
   let config: ReturnType<typeof loadConfig>;
   try {
     config = loadConfig();
+    // A loadable configuration is not necessarily a finished one. A named
+    // target whose password key was never written (QA F-008) loads with an
+    // empty password, so the server would leave setup mode mid-flow and then
+    // fail every call with AUTH 501 — with the setup_* tools gone, the model
+    // has no way to finish or explain it. Treat it as not-yet-configured, and
+    // say exactly which command completes it.
+    if (setupEligible) {
+      const pending = targetsAwaitingPassword(config);
+      if (pending.length > 0) {
+        const { selfCommand } = await import("./cli/common.js");
+        const runs = pending.map((n) => selfCommand("secret", n, "--env", envPath!)).join("  |  ");
+        throw new Error(
+          `no password stored yet for target${pending.length > 1 ? "s" : ""} ` +
+          `${pending.join(", ")} — run: ${runs}  ` +
+          `(a CCU that genuinely has no password needs the key present but empty: ` +
+          `CCU_${envPrefix(pending[0]!)}_PASSWORD=)`,
+        );
+      }
+    }
   } catch (err) {
     // Setup mode (issue #196): started for stdio with an explicit --env file
     // but no loadable configuration, serve only the setup_* tools so an LLM

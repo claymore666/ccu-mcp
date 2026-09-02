@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DIST, distMissing } from "./_dist.js";
@@ -181,6 +181,44 @@ describe.skipIf(distMissing)("setup mode e2e (built server)", () => {
     expect(await endChild(child)).toBe(0);
     child = undefined;
   }, 90_000);
+
+  // QA F-008: a named target loads with an empty password when its key was
+  // never written (the #69 contract), so writing just the host used to be
+  // enough to leave setup mode — full tool set, every call AUTH 501, and no
+  // setup_* tools left to explain it or finish the job.
+  it("stays in setup mode when a named target has no password key yet", async () => {
+    const pendingEnv = join(dir, "pending.env");
+    writeFileSync(pendingEnv, `CCU_PROFILES=prod\nCCU_PROD_HOST=127.0.0.1\nCCU_PROD_PORT=${ccu.port}\n`);
+
+    const s = spawnServer(pendingEnv);
+    child = s.child;
+    const init = await initialize(s.client);
+    expect(init.result?.instructions).toContain("setup mode");
+    // The message must name the target and the exact command that finishes it.
+    expect(init.result?.instructions).toContain("no password stored yet for target prod");
+    expect(init.result?.instructions).toContain("secret prod");
+    const tools = await s.client.request("tools/list");
+    const names = (tools.result?.tools ?? []).map((t: { name: string }) => t.name).sort();
+    expect(names).toEqual(["setup_probe", "setup_status", "setup_test", "setup_write_profile"]);
+    expect(await endChild(child)).toBe(0);
+    child = undefined;
+  }, 60_000);
+
+  // The other half of the rule: an empty password the user MEANT (key present,
+  // no value) is a finished configuration — the #69 OpenCCU dev-box case.
+  it("starts configured when the password key is present but empty", async () => {
+    const emptyPwEnv = join(dir, "emptypw.env");
+    writeFileSync(emptyPwEnv, `CCU_PROFILES=prod\nCCU_PROD_HOST=127.0.0.1\nCCU_PROD_PORT=${ccu.port}\nCCU_PROD_PASSWORD=\n`);
+
+    const s = spawnServer(emptyPwEnv);
+    child = s.child;
+    const init = await initialize(s.client);
+    expect(init.result?.instructions ?? "").not.toContain("setup mode");
+    const tools = await s.client.request("tools/list");
+    expect((tools.result?.tools ?? []).length).toBeGreaterThan(20);
+    expect(await endChild(child)).toBe(0);
+    child = undefined;
+  }, 60_000);
 
   it("never enters setup mode without --stdio: HTTP with a broken config still dies", () => {
     const res = spawnSync("node", [DIST, "--http", "--env", join(dir, "does-not-exist.env")], {

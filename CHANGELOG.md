@@ -5,6 +5,22 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## Unreleased
 
+- **Fixed: the guided setup could leave setup mode before a password existed.**
+  A named target reads an absent `CCU_<NAME>_PASSWORD` as empty (the #69
+  contract), so `setup_write_profile` writing a host was enough for the next
+  start to load "successfully": the setup_* tools disappeared mid-flow and
+  every real call failed with `AUTH 501`, with nothing left in the
+  conversation to explain it. The setup-mode gate now asks whether the
+  configuration is *finished*, not merely loadable — a named target with no
+  password key at all keeps the server in setup mode, and the instructions
+  name the target plus the exact `ccu-mcp secret <name>` run that completes
+  it. What a configuration *means* is unchanged: `loadConfig` still reads an
+  absent key as empty, so an OpenCCU dev target configured that way keeps
+  working, and the check applies only where setup mode is reachable at all
+  (`--stdio --env`). To declare an empty password deliberate, write the key
+  with no value (`CCU_<NAME>_PASSWORD=`) — the same distinction the flat form
+  has drawn since the previous entry.
+
 - **Fixed: `get_system_info` reported a failed login as a working connection.**
   Its four ADMIN-only probes (`CCU.getVersion` and friends) treated *every*
   failure as "not permitted", so wrong credentials or an unreachable CCU came
