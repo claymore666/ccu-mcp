@@ -32,6 +32,17 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # @vitest/coverage-v8 peer-depends on the EXACT vitest version, so the
+      # pair proposed as two PRs can never go green separately: whichever
+      # lands first leaves the versions mismatched and the coverage ratchet in
+      # `build-and-test` without a working provider. #225 and #227 (both to
+      # 5.0.0) sat open for exactly that reason and had to be landed together
+      # by hand. One PR moves them as the unit they already are.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
     ignore:
       # Same reasoning as the base image, from the other side: `@types/node`'s
       # major IS a Node major. Types from a newer major tell `tsc` that APIs
