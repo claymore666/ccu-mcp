@@ -3,6 +3,29 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.1 — 2026-09-08
+
+Dependency maintenance only. **No code changes** — every tool, flag and
+configuration variable behaves exactly as in v1.11.0, and the published npm
+tarball is identical, since `files` ships `dist/` and nothing under it moved.
+What does change is the **container image**, which is built from the committed
+lockfile and therefore picks up the newer production dependencies below.
+
+### Dependencies
+
+- `undici` 8.10.0 → 8.10.2 and `zod` 4.5.1 → 4.5.4 (both production, both
+  patch releases). npm consumers already resolved these from the unchanged
+  ranges in `package.json`; the image now does too.
+- `oxlint` 1.80.0 → 1.81.0, and **`vitest` + `@vitest/coverage-v8` 4.1.11 →
+  5.0.0**, moved together. The coverage provider peer-depends on the exact
+  vitest version, so Dependabot's two separate proposals could not pass CI
+  individually — whichever landed first left the pair mismatched and the
+  coverage ratchet without a working provider. `vitest.config.ts` and the tests
+  needed no changes, and the per-directory coverage floors were verified
+  unchanged across the provider major before the floors were trusted again.
+  `.github/dependabot.yml` now groups `vitest` and `@vitest/*` so the next bump
+  arrives as one pull request.
+
 ## v1.11.0 — 2026-09-02
 
 Setting the thing up.
