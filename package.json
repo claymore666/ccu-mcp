@@ -63,10 +63,10 @@
   "devDependencies": {
     "@jazzer.js/core": "^4.0.0",
     "@types/node": "^24.13.3",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^5.0.0",
     "fast-check": "^4.9.0",
     "oxlint": "^1.76.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.8"
+    "vitest": "^5.0.0"
   }
 }
