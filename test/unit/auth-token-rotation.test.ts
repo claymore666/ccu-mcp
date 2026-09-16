@@ -46,7 +46,9 @@ describe("startAutoRotation", () => {
   afterEach(async () => {
     stop?.();
     stop = undefined;
-    await rm(dir, { recursive: true, force: true });
+    // A tick already past stop() may still be mid-write; rm() retries on
+    // ENOTEMPTY instead of failing the test in teardown.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
     vi.restoreAllMocks();
   });
 
@@ -167,16 +169,31 @@ describe("startAutoRotation", () => {
   });
 
   it("survives a failing tick and keeps the timer alive", async () => {
-    const opts = { dataDir: dir, ttlMs: 50, graceMs: HOUR };
+    // Long TTL on purpose: nothing here may hinge on a token expiring. What
+    // matters is that a tick which throws is caught and logged, and that the
+    // interval keeps firing afterwards instead of dying with the rejection.
+    const opts = { dataDir: dir, ttlMs: HOUR, graceMs: HOUR };
     const tokens = await resolveAuthTokens(opts, logger);
-    const before = await fileToken(dir);
+    const startup = await fileToken(dir);
+    expect(startup).toBeDefined();
 
-    const failing = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const errors = vi.spyOn(logger, "error").mockImplementation(() => {});
+    // Every tick ends in replaceWith(); make the first one blow up.
+    const replaceWith = vi.spyOn(tokens, "replaceWith").mockImplementationOnce(() => {
+      throw new Error("tick exploded");
+    });
     stop = startAutoRotation(tokens, opts, logger, 20);
-    await waitFor(async () => (await fileToken(dir)) !== before);
 
-    // Rotation kept working; nothing escaped as an unhandled rejection.
-    expect(tokens.liveCount()).toBeGreaterThanOrEqual(1);
-    failing.mockRestore();
+    await waitFor(() => errors.mock.calls.some((c) => c[0] === "auth_token_rotation_failed"));
+    const failed = errors.mock.calls.find((c) => c[0] === "auth_token_rotation_failed");
+    expect(failed?.[1]).toEqual({ error: "tick exploded" });
+
+    // Timer alive: later ticks run and complete normally after the failure.
+    const callsAtFailure = replaceWith.mock.calls.length;
+    await waitFor(() => replaceWith.mock.calls.length >= callsAtFailure + 2);
+    expect(errors.mock.calls.filter((c) => c[0] === "auth_token_rotation_failed")).toHaveLength(1);
+    // The failing tick changed nothing: the startup token is still the live one.
+    expect(tokens.verify(startup!)).toBe(true);
+    expect(await fileToken(dir)).toBe(startup);
   });
 });
