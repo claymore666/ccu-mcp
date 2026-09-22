@@ -32,13 +32,23 @@ on:
         description: "Dry run — check packaging and workflow wiring, upload nothing (does NOT exercise OIDC)"
         type: boolean
         default: true
+      # Resuming a release whose run failed AFTER npm had taken the version
+      # (v1.11.2: the provenance check timed out and every later target was
+      # skipped). Dispatch from `main` with dry_run=false and the release tag:
+      # the npm step sees the version is already published and moves on, the
+      # image is built with this tag in its provenance, and the remaining
+      # targets get their normal run. Must equal `v` + package.json version.
+      release_tag:
+        description: "Resume a release: the vX.Y.Z tag npm already has (leave empty for a normal run)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
-# Two runs publishing the same version would race; npm would reject the second
-# with 403 (versions are immutable), but a half-finished release is worse than
-# a queued one.
+# Two runs publishing the same version would race. The second would find the
+# version already on npm and skip the upload, but its registry and image steps
+# would then interleave with the first's — so queue, never overlap.
 concurrency:
   group: publish
   cancel-in-progress: false
@@ -68,9 +78,9 @@ jobs:
       # they disagree, v1.9.1 ships the contents of 1.9.0 under the wrong name
       # and npm versions are immutable — there is no taking it back.
       - name: Tag and package version must agree
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'release' && github.ref_name || inputs.release_tag }}
         run: |
           set -euo pipefail
           pkg="v$(node -p "require('./package.json').version")"
@@ -106,7 +116,8 @@ jobs:
   publish:
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Room for the provenance check's five-minute budget on a slow registry day.
+    timeout-minutes: 20
     # The container jobs below gate on this rather than re-deriving "was this a
     # dry run?" from the event. One source of truth for whether anything was
     # actually released.
@@ -164,6 +175,12 @@ jobs:
       # No --provenance flag and no NODE_AUTH_TOKEN: trusted publishing
       # generates provenance on its own, and supplying a token here would
       # defeat the point of having disallowed them.
+      #
+      # Idempotent on purpose: if the version is already on npm, the upload is
+      # skipped rather than failed. npm versions are immutable, so a retry of
+      # `npm publish` can never succeed — treating it as fatal only meant that
+      # a run which died after the upload could not be re-run, and every
+      # target behind npm had to be completed by hand.
       - name: Publish to npm
         id: publish
         env:
@@ -174,10 +191,15 @@ jobs:
             echo "Dry run — validating the tarball and OIDC setup, uploading nothing."
             npm publish --dry-run
             echo "published=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=$(node -p "require('./package.json').version")
+          if npm view "ccu-mcp@${version}" version >/dev/null 2>&1; then
+            echo "::notice::ccu-mcp@${version} is already on npm — skipping the upload and continuing with the remaining targets."
           else
             npm publish
-            echo "published=true" >> "$GITHUB_OUTPUT"
           fi
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
       # A publish that silently lands without provenance would still look like
       # success, and `signed_releases` would be a claim we could not back.
@@ -186,29 +208,28 @@ jobs:
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          # The registry is read-your-writes for a fresh version, but give the
-          # CDN a moment before calling it a failure.
-          seen=0
-          for attempt in 1 2 3 4 5; do
-            if npm view "ccu-mcp@${version}" --json > view.json 2>/dev/null; then
-              seen=1
-              break
+          # `npm publish` returns before the version is readable: v1.11.2 took
+          # longer than 50 seconds to appear, which failed this step and skipped
+          # every target behind it. Allow minutes, not seconds, and keep polling
+          # until the attestations themselves are visible — the version can show
+          # up a moment before its provenance does.
+          attempts=20
+          for attempt in $(seq 1 "$attempts"); do
+            if npm view "ccu-mcp@${version}" --json > view.json 2> view.err \
+               && node -e 'const v = require("./view.json"); process.exit(v.dist && v.dist.attestations ? 0 : 1)'; then
+              node -p 'JSON.stringify(require("./view.json").dist.attestations)' | sed 's/^/provenance present: /'
+              exit 0
             fi
-            echo "attempt ${attempt}: version not visible yet, waiting"
-            sleep 10
+            echo "attempt ${attempt}/${attempts}: version or its provenance not visible yet, waiting 15s"
+            sleep 15
           done
-          if [ "$seen" -ne 1 ]; then
+          if [ -s view.json ]; then
+            echo "::error::ccu-mcp@${version} is on the registry but shows NO provenance attestations."
+          else
             echo "::error::ccu-mcp@${version} did not become visible on the registry; cannot confirm provenance."
-            exit 1
+            echo "last npm view error:"; cat view.err
           fi
-          node -e '
-            const v = require("./view.json");
-            if (!v.dist || !v.dist.attestations) {
-              console.error("::error::ccu-mcp@" + v.version + " published WITHOUT provenance attestations.");
-              process.exit(1);
-            }
-            console.log("provenance present:", JSON.stringify(v.dist.attestations));
-          '
+          exit 1
 
       # The MCP registry entry points consumers at the npm package, so npm must
       # land first. Same job, not a second one, so the release costs ONE
@@ -412,7 +433,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             BUILD_COMMIT=${{ github.sha }}
-            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || '' }}
+            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag || '' }}
           # buildx's own provenance attestation would wrap a single-platform
           # build in an index and break push-by-digest below. GitHub's
           # attestation (further down) is the one this release actually makes.
@@ -447,7 +468,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             BUILD_COMMIT=${{ github.sha }}
-            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || '' }}
+            BUILD_TAG=${{ github.ref_type == 'tag' && github.ref_name || inputs.release_tag || '' }}
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
