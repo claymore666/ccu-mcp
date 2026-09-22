@@ -356,6 +356,24 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    trusted-publisher config — just don't read a green dry run as proof the
    credentials work.
 
+   **If the run dies after npm has taken the version** — the v1.11.2 failure
+   mode: `npm publish` succeeded, a later step in the `publish` job failed,
+   and the MCP registry, Smithery and the image were all skipped — do not
+   re-run the failed job and do not complete the targets by hand. Re-dispatch
+   the workflow from `main` with the tag it should resume:
+   ```sh
+   gh workflow run publish.yml --ref main -f dry_run=false -f release_tag=vX.Y.Z
+   ```
+   The npm step finds the version already published and skips the upload
+   (versions are immutable, so a retry could never have succeeded anyway);
+   everything behind it runs as it would have, including the native arm64
+   build and the per-architecture attestations, which a manual `docker build`
+   cannot reproduce. `release_tag` must equal `v` + `package.json` version —
+   the `verify` job refuses otherwise — and is what the image records as its
+   build tag, since a dispatch from `main` has no tag of its own. Note that
+   the image's build commit will be `main`'s head at dispatch time; if a fix
+   had to land on `main` first, that is one commit past the release tag.
+
    **If CI publishing is broken mid-release**, fall back to `npm publish` from
    the tagged checkout with `--otp=<code>`. It works, but produces no
    provenance — note it in the release and re-check `signed_releases`.
@@ -408,11 +426,13 @@ After publishing:
 | `publish.yml` never starts | environment branch policy allows only `v*` tags and `main` | check the run was triggered from a tag, not `dev` |
 | `publish.yml` waits forever | `release` environment needs your approval | approve the deployment in the run's UI |
 | npm rejects the OIDC exchange | workflow filename, environment name or repo does not match the trusted-publisher config on npmjs.com | all three are pinned — reconcile them, don't add a token |
-| Published, but "Verify provenance landed" fails | published without attestations (e.g. a manual fallback publish) | the version is immutable; note it, and fix the path before the next release |
-| `npm publish` ends `403 cannot publish over previously published version` | version already on npm (npm is immutable) | bump to the next patch; never re-use a version |
+| Published, but "Verify provenance landed" fails with "NO provenance attestations" | published without attestations (e.g. a manual fallback publish) | the version is immutable; note it, and fix the path before the next release |
+| Published, but "Verify provenance landed" fails with "did not become visible" | the registry took longer than the step's five-minute budget to serve the new version | confirm with `npm view ccu-mcp@X.Y.Z --json` by hand, then resume with `gh workflow run publish.yml --ref main -f dry_run=false -f release_tag=vX.Y.Z` (step 8) |
+| `publish.yml` succeeded on npm, the rest was skipped | a step after `npm publish` failed in the same job; `docker` and `docker-manifest` gate on that job succeeding | resume via `workflow_dispatch` with `release_tag` (step 8) — the npm step skips an already-published version instead of failing |
+| `npm publish` ends `403 cannot publish over previously published version` | manual fallback path; version already on npm (npm is immutable) | the CI path skips this case itself; by hand, stop — the version is out, complete the other targets instead |
 | `mcp-publisher publish` rejects the version | `server.json` version ≠ npm package version, or `mcpName` missing in `package.json` | align all three version spots (step 2); ensure `package.json` `mcpName` matches `server.json` `name` |
 | `mcp-publisher` 401 / auth error | publisher login expired | `mcp-publisher login github` again |
-| GitHub Release exists but npm/registry don't | published the release before the `publish` commands | run `npm publish` + `mcp-publisher publish` from the tagged checkout |
+| GitHub Release exists but npm/registry don't | `publish.yml` never ran or was not approved | approve or re-dispatch the run (step 8); only if CI itself is broken, run `npm publish` + `mcp-publisher publish` from the tagged checkout |
 | `docker-manifest` fails with "Expected 2 per-architecture digests" | one matrix leg failed; `fail-fast: false` let the other finish | fix the failing architecture and re-run the job — no tag was written, so nothing is half-published |
 | Image smoke test fails on "does not report commit" | `BUILD_COMMIT` stopped reaching `gen-build-info.mjs` (build-arg renamed, `ARG` dropped from the builder stage) | reconcile `Dockerfile` and the `build-args:` block; the image would otherwise ship with null provenance |
 | Image smoke test fails on "never reported healthy" | the server inside the image does not come up — the container logs are printed right below the error | reproduce locally with `bash scripts/smoke-image.sh <image>`; nothing was pushed |
