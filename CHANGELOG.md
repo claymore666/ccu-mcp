@@ -3,6 +3,36 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.2 — 2026-09-22
+
+Dependency maintenance, with one security-relevant fix. **No code changes** —
+every tool, flag and configuration variable behaves exactly as in v1.11.1, and
+the published npm tarball is identical, since `files` ships `dist/` only. The
+container image picks up the newer dependencies below.
+
+### Security
+
+- `hono` (transitive, via `@modelcontextprotocol/sdk`) 4.13.0 → 4.13.7,
+  clearing three medium-severity advisories: an unbounded dot-notation nesting
+  DoS in `parseBody()`, an incomplete fix for CVE-2026-39408 where `toSSG()`
+  could still write files outside the output directory, and a query-parser
+  fragment-handling differential that affects cache-key/proxy interpretation.
+  Only reachable when the HTTP-transport path is in use, not the stdio path.
+
+### Dependencies
+
+- `zod` 4.5.4 → 4.6.5 (production).
+- GitHub Actions pins: `docker/build-push-action` 7.3.0 → 7.4.0,
+  `docker/setup-buildx-action` 4.3.0 → 4.4.1, `github/codeql-action`
+  (`init`/`analyze`/`upload-sarif`) 4.37.9 → 4.38.1.
+- Docker base image bump (`node` digest `e67514e` → `ebfe2f9`).
+- Dev-only: `oxlint` 1.81.0 → 1.83.0, `@types/node` 24.13.3 → 24.13.5,
+  `fast-check` 4.9.0 → 4.10.1, the `vitest` group.
+
+### Internal
+
+- Made the rotation failing-tick test deterministic.
+
 ## v1.11.1 — 2026-09-08
 
 Dependency maintenance only. **No code changes** — every tool, flag and
