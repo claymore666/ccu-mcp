@@ -246,9 +246,35 @@ jobs:
         if: steps.publish.outputs.published == 'true'
         run: ./mcp-publisher login github-oidc
 
+      # The registry rejects a duplicate version outright (400), so a resumed
+      # run must not re-publish what an earlier run — or a manual completion —
+      # already landed. Check first; and because the read path is flaky, treat
+      # the duplicate rejection itself as "already there" rather than a failure.
       - name: Publish to the MCP registry
         if: steps.publish.outputs.published == 'true'
-        run: ./mcp-publisher publish
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          name=$(node -p "require('./server.json').name")
+          if curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=${name}" -o registry.json 2>/dev/null \
+             && node -e '
+               const want = process.argv[1];
+               const j = require("./registry.json");
+               const have = (j.servers || []).some((s) => (s.version || (s.server && s.server.version)) === want);
+               process.exit(have ? 0 : 1);
+             ' "$version"; then
+            echo "::notice::${name}@${version} is already on the MCP registry — skipping the publish."
+            exit 0
+          fi
+          if ./mcp-publisher publish 2>&1 | tee publish.log; then
+            exit 0
+          fi
+          if grep -q "duplicate version" publish.log; then
+            echo "::notice::${name}@${version} is already on the MCP registry (publish reported a duplicate) — continuing."
+            exit 0
+          fi
+          echo "::error::mcp-publisher publish failed; see the output above."
+          exit 1
 
       # A publish that reports success but does not become isLatest leaves
       # consumers resolving the previous version — the failure mode the release
