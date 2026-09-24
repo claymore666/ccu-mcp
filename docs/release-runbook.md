@@ -365,8 +365,13 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    gh workflow run publish.yml --ref main -f dry_run=false -f release_tag=vX.Y.Z
    ```
    The npm step finds the version already published and skips the upload
-   (versions are immutable, so a retry could never have succeeded anyway);
-   everything behind it runs as it would have, including the native arm64
+   (versions are immutable, so a retry could never have succeeded anyway),
+   and the MCP registry step does the same — that registry rejects a
+   duplicate version with a 400, which is what stopped the first resumed
+   v1.11.2 run after the registry had been completed by hand. Smithery
+   accepts a re-publish of the same version and simply records another
+   release, so it needs no such guard. Everything else runs as it would
+   have, including the native arm64
    build and the per-architecture attestations, which a manual `docker build`
    cannot reproduce. `release_tag` must equal `v` + `package.json` version —
    the `verify` job refuses otherwise — and is what the image records as its
