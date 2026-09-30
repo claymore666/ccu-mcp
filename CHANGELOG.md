@@ -5,7 +5,7 @@ All notable changes to ccu-mcp are documented here. Each release is a tag
 
 ## v1.11.3 — 2026-09-30
 
-Dependency maintenance, with one security-relevant fix. **No code changes** —
+Dependency maintenance, with two security-relevant fixes. **No code changes** —
 every tool, flag and configuration variable behaves exactly as in v1.11.2, and
 the published npm tarball is identical, since `files` ships `dist/` only. npm
 consumers already resolve the production bumps below from the unchanged ranges
@@ -23,6 +23,12 @@ committed lockfile, now pick them up too.
   does not use `express-rate-limit` or the SDK's auth router — its rate limiter
   is its own — so the vulnerable path is not reachable from shipped code; this
   release removes the flagged version from the image regardless.
+- `fast-uri` (transitive, via `@modelcontextprotocol/sdk` → `ajv`) 3.1.7 →
+  3.1.8, clearing a medium-severity advisory: host names containing
+  percent-encoded octets were not case-normalised consistently, so two URIs
+  naming the same host could compare unequal (GHSA-hrr3-gc8f-f4qj). `ajv` uses
+  it for URI handling during JSON Schema validation; ccu-mcp makes no
+  host-based trust decisions on URIs, so the impact here is minimal.
 
 ### Dependencies
 
