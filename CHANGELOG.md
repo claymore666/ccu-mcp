@@ -3,6 +3,30 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.4 — 2026-10-07
+
+Dependency maintenance, with one security-relevant fix. **No code changes** —
+every tool, flag and configuration variable behaves exactly as in v1.11.3, and
+the published npm tarball is identical, since `files` ships `dist/` only. npm
+consumers already resolve the bumps below from the unchanged ranges in
+`package.json`; the container image and the MCPB bundle, built from the
+committed lockfile, now pick them up too.
+
+### Security
+
+- `proxy-addr` (transitive, via `@modelcontextprotocol/sdk` → `express`)
+  2.0.7 → 2.0.8, clearing a critical-severity advisory: IP spoofing via an
+  IPv4-mapped IPv6 trust subnet (GHSA-jqcg-44mw-7w3h). It only matters to code
+  that configures Express's `trust proxy`; ccu-mcp does not, so the vulnerable
+  path is not reachable from shipped code. This release removes the flagged
+  version from the image regardless.
+
+### Dependencies
+
+- `@modelcontextprotocol/sdk` 1.30.1 → 1.32.0 (production, in-range).
+- Dev-only: `oxlint` 1.83.0 → 1.86.0, `@types/node` 24.19.0 → 24.19.1, vitest
+  group (`vitest` + `@vitest/coverage-v8`).
+
 ## v1.11.3 — 2026-09-30
 
 Dependency maintenance, with two security-relevant fixes. **No code changes** —
