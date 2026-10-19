@@ -11,7 +11,7 @@
 # not a per-arch manifest, so the multi-arch build in publish.yml still resolves
 # linux/amd64 and linux/arm64 from it. Dependabot bumps digest and tag together
 # (majors are held back — see .github/dependabot.yml), so the pin will not rot.
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS builder
+FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -30,7 +30,7 @@ ENV BUILD_COMMIT=${BUILD_COMMIT} \
     BUILD_TAG=${BUILD_TAG}
 RUN npm run build
 
-FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
 # `image.source` is not decoration: GHCR links a package to a repository by this
 # label, and that link is what carries the README, the licence and the "published
 # by" provenance on the package page. Without it the image floats unattached.
