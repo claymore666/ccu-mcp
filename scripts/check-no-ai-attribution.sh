@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # AI-attribution gate: this project is published under the maintainer's
-# own name (npm, the MCP registry, Smithery), so no commit or PR may
+# own name (npm, the MCP registry, GHCR), so no commit or PR may
 # credit an AI assistant. The rule has been in CLAUDE.md from the start,
 # which is exactly why it is enforced mechanically here — a convention
 # that lives only in a gitignored file is one distracted rebase away

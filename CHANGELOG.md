@@ -3,6 +3,32 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.6 — 2026-10-21
+
+Release-pipeline fix. **No code or dependency changes** since v1.11.5 — every
+tool, flag and configuration variable behaves exactly as before, and the npm
+tarball differs only in its version. This release exists to ship the container
+image that v1.11.5 never got.
+
+### Fixed
+
+- The v1.11.5 publish run stopped at its Smithery step: Smithery's API now
+  refuses every update (`403 Updating servers has been removed`). npm and the
+  MCP registry had already published 1.11.5, but the container image jobs
+  depend on that same job and were skipped, so
+  `ghcr.io/claymore666/ccu-mcp:1.11.5` does not exist and `latest` stayed on
+  1.11.4. `1.11.6` and `latest` now carry everything in v1.11.5, including
+  its `hono` advisory fix.
+
+### Internal
+
+- **Smithery is no longer a publish target** (#301). The
+  `christian-kamien/ccu-mcp` listing stays at its last published version,
+  1.11.4; install from npm, the MCP registry or GHCR instead. The MCPB bundle
+  build that only existed to feed it is gone too, and with it the one
+  long-lived publish credential the release needed — npm and the MCP registry
+  authenticate by OIDC, GHCR with the run's own token.
+
 ## v1.11.5 — 2026-10-21
 
 Dependency maintenance, with one security-relevant fix. **No code changes** —

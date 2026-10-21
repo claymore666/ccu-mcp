@@ -1,6 +1,6 @@
 {
   "name": "ccu-mcp",
-  "version": "1.11.5",
+  "version": "1.11.6",
   "description": "MCP server for controlling HomeMatic smart home devices via the CCU JSON-RPC API",
   "mcpName": "io.github.claymore666/ccu-mcp",
   "type": "module",
@@ -27,8 +27,7 @@
     "check:node": "node scripts/check-node-version.mjs",
     "version": "node scripts/sync-server-version.mjs && git add server.json",
     "prepublishOnly": "npm run check:versions && npm run check:node && npm run lint && npm test",
-    "fuzz": "bash scripts/fuzz.sh",
-    "build:mcpb": "bash scripts/build-mcpb.sh"
+    "fuzz": "bash scripts/fuzz.sh"
   },
   "engines": {
     "node": ">=24"
