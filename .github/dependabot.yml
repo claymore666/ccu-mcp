@@ -6,6 +6,17 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # codeql-action's `init`, `analyze` and `upload-sarif` are one release
+      # pinned at three paths, and `analyze` refuses to run against a config
+      # written by a different `init` version ("Loaded a configuration file for
+      # version '4.39.0', but running version '4.38.2'"). Proposed separately,
+      # whichever lands first breaks CodeQL until the other follows: #288 and
+      # #294 bumped `init` alone and every CodeQL run on dev failed from 14 to
+      # 21 Oct, until #295 caught `analyze` up. One PR moves them together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   # The Dockerfile's base image. Now that the image is published rather than
   # built by whoever clones the repo, a stale `node:24-alpine` is something we
