@@ -3,6 +3,45 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.5 — 2026-10-21
+
+Dependency maintenance, with one security-relevant fix. **No code changes** —
+every tool, flag and configuration variable behaves exactly as in v1.11.4, and
+the published npm tarball is identical, since `files` ships `dist/` only. npm
+consumers already resolve the bumps below from the unchanged ranges in
+`package.json`; the container image and the MCPB bundle, built from the
+committed lockfile, now pick them up too.
+
+### Security
+
+- `hono` (transitive, via `@modelcontextprotocol/sdk`) 4.13.7 → 4.13.13,
+  clearing a medium-severity advisory: `serveStatic` decoded the request path a
+  second time, so a double-encoded path could slip past middleware guarding
+  static routes (GHSA-5r4p-p66f-jhc7). Neither ccu-mcp nor the SDK serves
+  static files — the SDK uses only `@hono/node-server`'s request listener for
+  the HTTP transport — so the vulnerable path is not reachable from shipped
+  code. This release removes the flagged version from the image regardless.
+
+### Dependencies
+
+- `@modelcontextprotocol/sdk` 1.32.0 → 1.32.1, `undici` 8.11.2 → 8.12.2 and
+  `zod` 4.6.5 → 4.6.7 (all production, all in-range).
+- Docker base image bump (`node` digest `ebfe2f9` → `44fce69`).
+- GitHub Actions pins: `github/codeql-action` (`init`/`analyze`/`upload-sarif`)
+  4.38.2 → 4.39.0, `actions/setup-node` 7.0.0 → 7.1.0,
+  `actions/upload-artifact` 7.0.1 → 7.0.2, `actions/download-artifact` 8.0.1 →
+  8.0.2, `ossf/scorecard-action` 2.4.4 → 2.5.0.
+- Dev-only: `oxlint` 1.86.0 → 1.88.0, `@types/node` 24.19.1 → 24.19.2, the
+  `vitest` group (5.0.3 → 5.0.5).
+
+### Internal
+
+- CodeQL failed on every run against `dev` from 14 to 21 October: Dependabot
+  bumped codeql-action's `init` on its own (#288, #294), and `analyze` refuses
+  a configuration written by a different `init` version. `analyze` is caught
+  up (#295), and Dependabot now groups all three codeql-action paths into a
+  single PR (#298) so they can no longer drift apart.
+
 ## v1.11.4 — 2026-10-07
 
 Dependency maintenance, with one security-relevant fix. **No code changes** —
