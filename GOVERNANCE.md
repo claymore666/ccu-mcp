@@ -24,7 +24,7 @@ on this model and it needs no permission.
 
 | Role | Who | Responsibilities |
 | --- | --- | --- |
-| **Maintainer** | @claymore666 | Reviews and merges PRs; triages issues; decides scope and roadmap; cuts releases (tag, npm, MCP registry, Smithery); holds all signing keys and registry credentials; receives and handles security reports; enforces the [Code of Conduct](CODE_OF_CONDUCT.md). |
+| **Maintainer** | @claymore666 | Reviews and merges PRs; triages issues; decides scope and roadmap; cuts releases (tag, npm, MCP registry, container image); holds all signing keys and registry credentials; receives and handles security reports; enforces the [Code of Conduct](CODE_OF_CONDUCT.md). |
 | **Contributor** | anyone who opens a PR | Follows [CONTRIBUTING.md](CONTRIBUTING.md); adds tests for behaviour they add or change; responds to review. Contributors hold no merge rights. |
 | **Reporter** | anyone | Files bugs and feature requests as issues; reports vulnerabilities privately per [SECURITY.md](SECURITY.md). |
 
@@ -50,9 +50,8 @@ week, if any one person became unavailable. For ccu-mcp today the honest answer
 is **no**.
 
 One person holds every credential that matters: the GitHub account, the npm
-publish rights, the MCP registry namespace, the Smithery listing, and the
-commit- and tag-signing key. Nobody else can merge a PR, cut a release, or
-publish a fix. The bus factor is 1.
+publish rights, the MCP registry namespace, and the commit- and tag-signing
+key. Nobody else can merge a PR, cut a release, or publish a fix. The bus factor is 1.
 
 What partially mitigates it:
 

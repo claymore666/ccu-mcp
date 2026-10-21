@@ -27,8 +27,7 @@
     "check:node": "node scripts/check-node-version.mjs",
     "version": "node scripts/sync-server-version.mjs && git add server.json",
     "prepublishOnly": "npm run check:versions && npm run check:node && npm run lint && npm test",
-    "fuzz": "bash scripts/fuzz.sh",
-    "build:mcpb": "bash scripts/build-mcpb.sh"
+    "fuzz": "bash scripts/fuzz.sh"
   },
   "engines": {
     "node": ">=24"
