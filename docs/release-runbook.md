@@ -3,10 +3,13 @@
 How to publish a `vX.Y.Z` of `ccu-mcp`. The release is **manual** —
 there is no release workflow (CI only builds and tests). The publish
 targets are **npm** (`npx ccu-mcp`, the primary install path), the
-**official MCP registry** (`registry.modelcontextprotocol.io`), **Smithery**,
-and the **container image** on GHCR (`ghcr.io/claymore666/ccu-mcp`,
-`linux/amd64` + `linux/arm64`). All four are published by `publish.yml` from
+**official MCP registry** (`registry.modelcontextprotocol.io`), and the
+**container image** on GHCR (`ghcr.io/claymore666/ccu-mcp`,
+`linux/amd64` + `linux/arm64`). All three are published by `publish.yml` from
 the one GitHub Release, behind one approval.
+
+Smithery was a fourth target until v1.11.5; it is no longer published to. See
+[Not applicable](#not-applicable-deliberately-omitted).
 
 The goal: a release is a tag plus two `publish` commands, with version
 numbers that agree everywhere before any of it happens.
@@ -275,35 +278,9 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    **Nothing here needs `mcp-publisher login github` any more.** The
    interactive device-code flow is only for publishing by hand.
 
-   Finally the same job builds the MCPB bundle (`npm run build:mcpb`) and
-   publishes the Smithery listing. Then the container jobs run. Four targets,
-   one approval.
-
-   **Smithery is the one place a stored credential remains.** npm and the MCP
-   registry authenticate by OIDC; Smithery has no OIDC path, and its restricted
-   service tokens cap at a 24-hour TTL — too short to survive between releases.
-   So `SMITHERY_API_KEY` is stored as an **environment** secret on `release`,
-   not a repo secret: only a job naming that environment can read it, and
-   reaching that environment needs a human approval. Rotate it there
-   (Settings → Environments → release → Secrets), never as a repo secret.
-
-   Smithery runs last on purpose — a failure there cannot abort an npm or MCP
-   publish that has already succeeded. If it does fail, everything else is
-   already live and the fix is a local rerun:
-   ```sh
-   npm run build && npm run build:mcpb
-   SMITHERY_API_KEY=… npx @smithery/cli mcp publish ccu-mcp-X.Y.Z.mcpb -n christian-kamien/ccu-mcp
-   ```
-
-   The bundle manifest is **generated** by `scripts/build-mcpb.sh` from
-   `smithery/manifest.template.json`, with the version injected from
-   `package.json`. The template carries no version deliberately — a committed
-   one would be a fourth place the release version lives, and three already
-   need a sync script and a CI gate to stay honest.
-
-   The `description` shown on Smithery is **not** settable from the bundle;
-   it is a web-dashboard field. Re-publishing appears to blank it, so check
-   the listing after a release.
+   Then the container jobs run. Three targets, one approval, and no stored
+   publish credential anywhere: npm and the MCP registry take the run's OIDC
+   token, GHCR its `GITHUB_TOKEN`.
 
    **The container image** publishes from the same run, in the `docker` and
    `docker-manifest` jobs, and needs nothing from you:
@@ -358,7 +335,7 @@ milestone — it's the source of the `Closes #N` list in the release PR.
 
    **If the run dies after npm has taken the version** — the v1.11.2 failure
    mode: `npm publish` succeeded, a later step in the `publish` job failed,
-   and the MCP registry, Smithery and the image were all skipped — do not
+   and the MCP registry and the image were both skipped — do not
    re-run the failed job and do not complete the targets by hand. Re-dispatch
    the workflow from `main` with the tag it should resume:
    ```sh
@@ -368,10 +345,8 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    (versions are immutable, so a retry could never have succeeded anyway),
    and the MCP registry step does the same — that registry rejects a
    duplicate version with a 400, which is what stopped the first resumed
-   v1.11.2 run after the registry had been completed by hand. Smithery
-   accepts a re-publish of the same version and simply records another
-   release, so it needs no such guard. Everything else runs as it would
-   have, including the native arm64
+   v1.11.2 run after the registry had been completed by hand. Everything
+   else runs as it would have, including the native arm64
    build and the per-architecture attestations, which a manual `docker build`
    cannot reproduce. `release_tag` must equal `v` + `package.json` version —
    the `verify` job refuses otherwise — and is what the image records as its
@@ -471,3 +446,16 @@ absence reads as a decision, not an oversight:
   release workflow to dry-run and no coverage gate. The pre-flight
   `npm publish --dry-run` + `mcp-publisher validate` (above) are the
   equivalent cheap checks.
+
+Dropped later, for this project's own reasons:
+
+- **Smithery** — published a stdio MCPB bundle to `christian-kamien/ccu-mcp`
+  from v1.6.0 through v1.11.4. After Smithery changed hands, its publish API
+  started refusing updates outright (`403 Updating servers has been removed`,
+  first hit by the v1.11.5 run), and the step, running inside the `publish`
+  job, took the image jobs down with it. It was only ever a thin discovery
+  listing — a stdio bundle is never hosted, so it never showed tools — and it
+  was the one target that needed a stored long-lived credential. The step, the
+  bundle build (`scripts/build-mcpb.sh`, `smithery/manifest.template.json`)
+  and the `SMITHERY_API_KEY` environment secret are gone; the listing itself
+  stays frozen at its last published version unless removed on Smithery.
