@@ -299,9 +299,14 @@ milestone — it's the source of the `Closes #N` list in the release PR.
    - Both are pushed **by digest**; `docker-manifest` then assembles them into
      the `X.Y.Z` and `latest` tags, refusing to tag at all if fewer than two
      digests arrived. `latest` is skipped for a GitHub pre-release.
-   - Provenance is attested **per architecture** (`actions/attest-build-provenance`,
-     pushed to the registry as a referrer), because `docker pull` resolves a
-     tag to one platform's manifest and that is the digest a verifier sees.
+   - Provenance is attested **per architecture and for the index**
+     (`actions/attest-build-provenance`, pushed to the registry as a
+     referrer). An attestation covers one digest, and verifiers differ in
+     which one they hold: a runtime policy checks the platform manifest it is
+     about to run, while `gh attestation verify oci://…:X.Y.Z` resolves the tag
+     to the index. Releases up to v1.11.6 have only the per-architecture
+     attestations, so for those only the `@sha256:<arch digest>` form verifies.
+     `docker-manifest` checks every form before the run goes green.
 
    These jobs deliberately do **not** name the `release` environment. There is
    no stored credential to protect — GHCR takes the run's own `GITHUB_TOKEN`,
@@ -414,6 +419,7 @@ After publishing:
 | `mcp-publisher` 401 / auth error | publisher login expired | `mcp-publisher login github` again |
 | GitHub Release exists but npm/registry don't | `publish.yml` never ran or was not approved | approve or re-dispatch the run (step 8); only if CI itself is broken, run `npm publish` + `mcp-publisher publish` from the tagged checkout |
 | `docker-manifest` fails with "Expected 2 per-architecture digests" | one matrix leg failed; `fail-fast: false` let the other finish | fix the failing architecture and re-run the job — no tag was written, so nothing is half-published |
+| "Verify the image's provenance" fails with "has no attestation that verifies" | the attestations API was slower than the step's two-minute budget, or "Attest the index" attested a digest the tag no longer points to | run `gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:X.Y.Z --repo claymore666/ccu-mcp` by hand; if it now passes, the image is complete. If not, re-run the failed `docker-manifest` job — it reads the digest it attests back from the registry, so a re-run attests whatever the tag now points to |
 | Image smoke test fails on "does not report commit" | `BUILD_COMMIT` stopped reaching `gen-build-info.mjs` (build-arg renamed, `ARG` dropped from the builder stage) | reconcile `Dockerfile` and the `build-args:` block; the image would otherwise ship with null provenance |
 | Image smoke test fails on "never reported healthy" | the server inside the image does not come up — the container logs are printed right below the error | reproduce locally with `bash scripts/smoke-image.sh <image>`; nothing was pushed |
 | `build-and-test` fails on "Node version drift" | the Dockerfile, a workflow's `node-version`, `engines` or `@types/node` disagree on the Node major | move all four in one PR — Dependabot is configured not to propose either major alone |

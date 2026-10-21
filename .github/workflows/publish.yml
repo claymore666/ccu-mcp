@@ -444,10 +444,13 @@ jobs:
           provenance: false
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
-      # Attested per architecture, not once for the index: `docker pull`
-      # resolves a multi-arch tag down to the manifest for the puller's
-      # platform, so that digest is what `gh attestation verify` is handed. An
-      # index-only attestation verifies for nobody.
+      # Attested per architecture here, and the index once more in the merge
+      # job. A verifier sees whichever digest it was handed: a runtime policy
+      # checks the platform manifest it is about to run, while
+      # `gh attestation verify oci://IMAGE:TAG` resolves the tag to the index.
+      # Each attestation covers exactly one digest, so neither stands in for
+      # the other — until v1.11.6 only this one existed, and the tag-form
+      # command the README gives returned 404 for every release.
       - name: Attest build provenance
         if: env.PUSH == 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -487,6 +490,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # attest-build-provenance again, this time for the index: the OIDC token
+      # it signs with and the attestations API it writes to.
+      id-token: write
+      attestations: write
     env:
       IMAGE: ghcr.io/${{ github.repository }}
       # Empty on workflow_dispatch, "false" for a normal release.
@@ -545,6 +552,31 @@ jobs:
 
           docker buildx imagetools create "${tags[@]}" "${refs[@]}"
 
+      # Read back from the registry rather than computed locally: the digest a
+      # verifier resolves the tag to is that of the bytes GHCR serves.
+      - name: Resolve the index digest
+        id: index
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          digest=$(docker buildx imagetools inspect "${IMAGE}:${version}" --format '{{json .Manifest}}' \
+            | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).digest')
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not read the index digest of ${IMAGE}:${version} back (got '${digest}')."
+            exit 1
+          fi
+          echo "index digest: ${digest}"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      # The tag-level attestation. See "Attest build provenance" in the docker
+      # job for why the per-architecture ones do not cover this.
+      - name: Attest the index
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
       # The tag existing is not the claim being made. The claim is that pulling
       # it on either architecture gets a working server, so read the published
       # index back and run what came out of it.
@@ -577,6 +609,44 @@ jobs:
           # build — including that the server comes up and /health answers.
           EXPECT_COMMIT="${GITHUB_SHA:0:7}" bash scripts/smoke-image.sh "${IMAGE}:${version}"
 
+      # Provenance, checked the way the README tells users to check it: by tag,
+      # which resolves to the index attested above, and by each architecture's
+      # digest, which the docker job attested. An attestation can take a moment
+      # to become visible to the API after it is written, hence the retries.
+      - name: Verify the image's provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+
+          verify_attestation() {
+            local subject="$1" attempt attempts=8
+            for attempt in $(seq 1 "${attempts}"); do
+              if gh attestation verify "oci://${subject}" --repo "${GITHUB_REPOSITORY}" > /dev/null; then
+                echo "attestation verifies: ${subject}"
+                return 0
+              fi
+              echo "attempt ${attempt}/${attempts}: no verifiable attestation for ${subject} yet, waiting 15s"
+              sleep 15
+            done
+            echo "::error::${subject} has no attestation that verifies against ${GITHUB_REPOSITORY}."
+            return 1
+          }
+
+          verify_attestation "${IMAGE}:${version}"
+
+          docker buildx imagetools inspect "${IMAGE}:${version}" --raw > index.json
+          digests=$(node -p '
+            require("./index.json").manifests
+              .filter((m) => m.platform && m.platform.os === "linux" && m.platform.architecture !== "unknown")
+              .map((m) => m.digest)
+              .join(" ")
+          ')
+          for digest in ${digests}; do
+            verify_attestation "${IMAGE}@${digest}"
+          done
+
       # No `if: always()` here, unlike the npm summary above: this one has
       # nothing to report but success, and printing a `docker pull` line for a
       # tag that failed to publish would be worse than printing nothing.
@@ -592,6 +662,6 @@ jobs:
             echo '```'
             echo
             echo "- Package: https://github.com/${GITHUB_REPOSITORY}/pkgs/container/$(basename "${GITHUB_REPOSITORY}")"
-            echo "- Platforms: linux/amd64, linux/arm64 — built natively, attested per architecture"
+            echo "- Platforms: linux/amd64, linux/arm64 — built natively, attested per architecture and as a multi-arch index"
             echo "- Verify: \`gh attestation verify oci://${IMAGE}:${version} --repo ${GITHUB_REPOSITORY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
