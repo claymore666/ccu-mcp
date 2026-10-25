@@ -3,6 +3,38 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.7 — 2026-10-25
+
+Dependency maintenance, with one security-relevant fix, and container images
+that verify by tag. **No code changes** — every tool, flag and configuration
+variable behaves exactly as in v1.11.6, and the published npm tarball differs
+only in its version, since `files` ships `dist/` only. npm consumers already
+resolve the bumps below from the unchanged ranges in `package.json`; the
+container image, built from the committed lockfile, now picks them up too.
+
+### Security
+
+- `body-parser` 2.3.0 → 2.4.0 (GHSA-27r3-jxmh-p828, high): denial of service
+  via trailing bytes after a compressed request body. It sits under the HTTP
+  transport (#306, closes #305).
+
+### Fixed
+
+- **`gh attestation verify oci://ghcr.io/claymore666/ccu-mcp:<tag>` now
+  works** (#304). Each architecture's image was attested, but a tag resolves
+  to the multi-arch index, which nothing attested, so the tag form — the one
+  the README gives — returned 404 for every release. The publish run now
+  attests the index too, and checks both the tag and each architecture's
+  digest verify before it goes green. Images up to v1.11.6 still verify only
+  by `@sha256:<arch digest>`.
+
+### Dependencies
+
+- `fast-uri` 3.1.8 → 3.1.9 (four moderate URI-parsing advisories) and
+  `ip-address` 10.7.2 → 10.7.5 (GHSA-rxp7-6hxx-x8q5, moderate), plus in-range
+  bumps of `content-type`, `iconv-lite` and `qs` pulled along by
+  `body-parser`. Lockfile only (#306).
+
 ## v1.11.6 — 2026-10-21
 
 Release-pipeline fix. **No code or dependency changes** since v1.11.5 — every
