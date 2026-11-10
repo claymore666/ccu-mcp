@@ -3,6 +3,36 @@
 All notable changes to ccu-mcp are documented here. Each release is a tag
 `vX.Y.Z` on `main`.
 
+## v1.11.8 — 2026-11-10
+
+Dependency maintenance, mainly to refresh the container image. **No code
+changes**: every tool, flag and configuration variable behaves exactly as in
+v1.11.7, and `package.json` ranges are unchanged. npm consumers already resolve
+the bumps below on a fresh install; the container image, built from the
+committed lockfile, picks them up with this release.
+
+### Security
+
+- `@hono/node-server` 2.0.12 → 2.1.6 (GHSA-rmxm-3fg6-px4f, moderate):
+  `serveStatic` decoded the request path twice, so middleware could be bypassed
+  on static paths. It is pulled in by the MCP SDK, which uses only
+  `getRequestListener` and never `serveStatic`, so ccu-mcp was not exploitable,
+  but scanners flagged the v1.11.7 image. Lockfile only (#323).
+
+### Dependencies
+
+- `@modelcontextprotocol/sdk` 1.32.1 → 1.32.2 (#309) and `undici`
+  8.12.2 → 8.12.4 (#311, #321), both lockfile only.
+- Container base image `node:24-alpine` re-pinned to a current digest
+  (#310, #316, #318). It stays on the same Node 24 line.
+
+### Internal
+
+- Dev tooling: `oxlint` 1.88 → 1.92 (#312, #315, #322), `vitest` and
+  `@vitest/coverage-v8` 5.0.5 → 5.1.0 (#319).
+- CI actions: `github/codeql-action` (#313, #317), `docker/login-action`
+  4.6 → 4.8 (#314, #320).
+
 ## v1.11.7 — 2026-10-25
 
 Dependency maintenance, with one security-relevant fix, and container images
